@@ -188,8 +188,7 @@ class Task(object):
     #         self.base_url(), pichash[:10], self.gid, self.meta['filelist'][pichash][0]
     #     )
 
-    @staticmethod
-    def get_size_range(size_text):
+    def get_size_range(self, size_text):
         _ = re.findall('(\d+(?:\.(\d+))?) *([M|K]?B)', size_text)
         if _:
             _number, _decimal, _unit = _[0]
@@ -208,6 +207,12 @@ class Task(object):
         elif _unit == 'MB':
             unit *= 1048576
         return (number - uncertain) * unit, (number + uncertain) * unit
+
+    def check_size_range(self, test_file_path, file_size_text):
+        size_bottom, size_top = self.get_size_range(file_size_text)
+        existed_file_size = os.stat(test_file_path).st_size
+        return size_bottom <= existed_file_size < size_top
+
 
     def set_reload_url(self, image_url, reload_url, fname, filesize):
         # if same file occurs several times in a gallery
@@ -233,50 +238,43 @@ class Task(object):
         else:
             self.fid_2_file_size_map[this_fid] = filesize
 
+        # two files have same url
         if image_url in self.reload_map:
-
-            #self._f_lock.acquire()
             existed_image_url, existed_file_name = self.reload_map[image_url]
             folder_path = self.get_fpath()
             existed_file = os.path.join(folder_path, existed_file_name)
-            new_file = os.path.join(folder_path, real_file_name)
             file_existed = False
             unexpected_file = False
             existed_file_id = RE_GALLERY.findall(existed_image_url)
             if os.path.exists(existed_file):
                 file_existed = True
-                size_bottom, size_top = self.get_size_range(filesize)
-                existed_file_size = os.stat(existed_file).st_size
-                if not size_bottom <= existed_file_size < size_top:
-                    unexpected_file = True
+                unexpected_file = not self.check_size_range(existed_file, filesize)
 
             if file_existed and not unexpected_file:
+                new_file = os.path.join(folder_path, real_file_name)
                 # we can just copy old file if already downloaded
                 self._f_lock.acquire()
-                try:
-                    with open(existed_file, 'rb') as _existed_file:
-                        with open(new_file, 'wb') as _new_file:
-                            _new_file.write(_existed_file.read())
-                except Exception as ex:
-                    raise ex
-                else:
-                    self._cnt_lock.acquire()
-                    self.meta['finished'] += 1
-                    self._cnt_lock.release()
+                shutil.copy2(existed_file, new_file)
                 self._f_lock.release()
+                self._cnt_lock.acquire()
+                self.meta['finished'] += 1
+                self._cnt_lock.release()
+                return
 
-            elif file_existed and unexpected_file:
-                # self._cnt_lock.acquire()
-                # self.meta['finished'] -= 1
-                # self._cnt_lock.release()
+            if file_existed and unexpected_file:
+                # target file is not what we wanted
+                # download it again
                 self.img_q.put(image_url)
 
-            if not file_existed or unexpected_file:
-                # if not downloaded, we will copy them in save_file
-                if image_url not in self.filehash_map:
-                    self.filehash_map[image_url] = []
-                self.filehash_map[image_url].append((this_fid, existed_file_id))
+            # whether file not exist or is unexpected file
+            # set a copy sequence
+            # we will copy them in save_file
+            if image_url not in self.filehash_map:
+                self.filehash_map[image_url] = []
+            self.filehash_map[image_url].append((this_fid, existed_file_id))
         else:
+            self.reload_map.setdefault(image_url, [reload_url, real_file_name])
+
             # check file size for downloaded file
             # i would like a hash check
             # but i cant get a hash before downloading the file
@@ -286,24 +284,16 @@ class Task(object):
             target_file_path = os.path.join(folder_path, real_file_name)
             if os.path.exists(target_file_path):
                 file_existed = True
-                size_bottom, size_top = self.get_size_range(filesize)
-                existed_file_size = os.stat(target_file_path).st_size
-                if not size_bottom <= existed_file_size < size_top:
-                    unexpected_file = True
+                unexpected_file = not self.check_size_range(target_file_path, filesize)
 
-            self.reload_map.setdefault(image_url, [reload_url, real_file_name])
-
-            if not file_existed:
-                self.img_q.put(image_url)
-            elif file_existed and not unexpected_file:
+            if file_existed and not unexpected_file:
+                # well that's definitely the file we need
                 self._cnt_lock.acquire()
                 self.meta['finished'] += 1
                 self._cnt_lock.release()
-            elif file_existed and unexpected_file:
-                # self._cnt_lock.acquire()
-                # self.meta['finished'] -= 1
-                # self._cnt_lock.release()
-                self.img_q.put(image_url)
+                return
+            # otherwise add it to download queue
+            self.img_q.put(image_url)
 
 
     def get_reload_url(self, imgurl):
@@ -428,7 +418,9 @@ class Task(object):
         for _file_name in os.listdir(folder_path):
             _ext = os.path.splitext(_file_name)[1]
             if _ext == '.xeh':
+                self._f_lock.acquire()
                 os.remove(os.path.join(folder_path, _file_name))
+                self._f_lock.release()
             else:
                 self._file_in_download_folder.append(_file_name)
 
@@ -569,7 +561,7 @@ class Task(object):
                     # if a file download is interrupted, it will appear in self.filehash_map as well
                     if _fid == int(fid):
                         continue
-                    fn_rep = os.path.join(fpath, fname)
+                    fn_rep = os.path.join(fpath, self.fid_2_file_name_map[_fid])
                     if not fn == fn_rep:
                         shutil.copyfile(fn, fn_rep)
                         self._cnt_lock.acquire()
