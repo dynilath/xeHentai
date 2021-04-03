@@ -68,6 +68,10 @@ class FallbackIpAdapter(HTTPAdapter):
             url = "https://%s" % url[7:]
         return requests.adapters.HTTPAdapter.cert_verify(self, conn, url, verify, cert)
 
+
+reg_509gif = re.compile(r'<img id="img" src="https://exhentai.org/img/509.gif"')
+
+
 class HttpReq(object):
     def __init__(self, headers = {}, proxy = None, proxy_policy = None, retry = 10, timeout = 10, logger = None, tname = "main"):
         self.session = requests.Session()
@@ -103,7 +107,7 @@ class HttpReq(object):
                     timeout=self.timeout,
                     stream=stream_cb != None)
             except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout,
-                    requests.exceptions.ReadTimeout) as ex:
+                    requests.exceptions.ReadTimeout, requests.exceptions.SSLError) as ex:
                 if do_proxy:
                     _ = __not_good()
                     if _:
@@ -125,6 +129,12 @@ class HttpReq(object):
                 else:
                     r.content_length = 0
                 self.logger.verbose("%s-%s %s %s %d %d" % (i18n.THREAD, self.tname, method, url, r.status_code, r.content_length))
+
+                try:
+                    t = r.text
+                except requests.RequestException:
+                    continue
+
                 # if it's a redirect, 3xx
                 if 300 < r.status_code < 400:
                     _new_url = r.headers.get("location")
@@ -149,7 +159,7 @@ class HttpReq(object):
                     self.logger.info("%s-%s proxy %s is banned for %s" % (i18n.THREAD, self.tname, _p, _t))
                     continue
 
-                if do_proxy and '509.gif' in r.text:
+                if do_proxy and 'hentai.org/img/509.gif' in r.text:
                     _p = __banned(expire=3600*24)
                     self.logger.info("%s-%s proxy %s has exceed band width" % (i18n.THREAD, self.tname, _p))
                     continue
