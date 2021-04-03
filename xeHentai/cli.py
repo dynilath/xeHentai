@@ -189,6 +189,11 @@ def parse_opt():
     parser.add_argument('--version', action = 'version',
                         version = '%s v%.3f%s' % (SCRIPT_NAME, __version__, '-dev' if DEVELOPMENT else ""),
                         help = i18n.XEH_OPT_version)
+    parser.add_argument('--max_fail', type = int, metavar = 'N',
+                        default = _def['proxy_disable_threshold'], dest = 'proxy_disable_threshold')
+    parser.add_argument('--good_bonus', type = int, metavar = 'N',
+                        default = _def['proxy_good_threshold'], dest = 'proxy_good_threshold')
+
     args = parser.parse_args()
 
     return args

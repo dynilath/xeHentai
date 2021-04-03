@@ -19,6 +19,8 @@ rename_ori = False
 # currenlty supported: socks5/4a, http(s), glype
 # by default, proxy is only used on webpages
 proxy = []
+proxy_disable_threshold = 16
+proxy_good_threshold = 16
 # also use proxy to download images
 proxy_image = True
 # only use proxy on images, not webpages

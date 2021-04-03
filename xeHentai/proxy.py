@@ -11,7 +11,7 @@ from requests.packages.urllib3.exceptions import ProxySchemeUnknown
 from . import util
 from .const import *
 
-MAX_FAIL = 4
+# MAX_FAIL = 256
 SUCCESS_THREHOLD = 16
 
 class PoolException(Exception):
@@ -21,8 +21,10 @@ class Pool(object):
     def __init__(self, disable_policy = None):
         self.proxies = {}
         self.errors = {}
+        self.MAX_FAIL = 16
+        self.GOOD_THRESHOLD = 16
         if not disable_policy:
-            self.disable_policy = lambda x1, x2: x2 > MAX_FAIL
+            self.disable_policy = lambda x1, x2: x2 > self.MAX_FAIL
         else:
             self.disable_policy = disable_policy
         self.disabled = {} # key: expire
@@ -57,7 +59,7 @@ class Pool(object):
         return n
 
     def banned(self, addr):
-        def n(weight=MAX_FAIL, expire=0):
+        def n(weight=self.MAX_FAIL, expire=0):
             if addr not in self.disabled:
                 self.proxies[addr][2] = weight
                 self.disabled[addr] = expire + time.time()
@@ -68,8 +70,8 @@ class Pool(object):
     def good(self, addr):
         def n(weight=1):
             self.proxies[addr][1] += weight
-            if self.proxies[addr][1] > SUCCESS_THREHOLD:
-                self.proxies[addr][1] -= SUCCESS_THREHOLD
+            if self.proxies[addr][1] > self.GOOD_THRESHOLD:
+                self.proxies[addr][1] -= self.GOOD_THRESHOLD
                 self.proxies[addr][2] -= weight
                 if self.proxies[addr][2] < -1:
                     self.proxies[addr][2] = 0
@@ -104,6 +106,14 @@ class Pool(object):
         else:
             raise ValueError("%s is not an acceptable proxy address" % addr)
         self.proxies[addr] = [p, 0, 0]
+
+    def set_max_fail(self, threhold):
+        self.MAX_FAIL = threhold
+
+    def set_good_threshold(self, threhold):
+        self.GOOD_THRESHOLD = threhold
+        pass
+
 
 def socks_proxy(addr, trace_proxy):
     proxy_info = {

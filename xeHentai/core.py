@@ -74,6 +74,10 @@ class xeHentai(object):
                 except Exception as ex:
                     self.logger.warning(traceback.format_exc())
             self.logger.debug(i18n.PROXY_CANDIDATE_CNT % len(self.proxy.proxies))
+            if cfg_dict['proxy_disable_threshold']:
+                self.proxy.set_max_fail(cfg_dict['proxy_disable_threshold'])
+            if cfg_dict['proxy_good_threshold']:
+                self.proxy.set_good_threshold(cfg_dict['proxy_good_threshold'])
         if cfg_dict['dir'] and not os.path.exists(cfg_dict['dir']):
             try:
                 os.makedirs(cfg_dict['dir'])
@@ -331,11 +335,11 @@ class xeHentai(object):
                             (self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(_tid, *task.get_fname(_x[1]))),
                             mon.vote(_tid, 0))),
                         lambda _x, _tid=tid: (
-                            task.page_q.put(task.get_reload_url(_x[1])) if '509.gif' not in _x[1] else None,
+                            task.page_q.put(task.get_reload_url(_x[1])) if 'hentai.org/img/509.gif' not in _x[1] else None,
                             task.reload_map.pop(_x[1]) if _x[1] in task.reload_map else None, # delete old url in reload_map
                             self.logger.debug(
                                 i18n.XEH_DOWNLOAD_HAS_ERROR % (tid,
-                                                               i18n.c(_x[0]) + ' (' + _x[1][_x[1].rfind('/')+1:] + ') ')),
+                                                               i18n.c(_x[0]) + ' (' + _x[1] + ') ')),
                             mon.vote(_tid, _x[0])),
                         mon.wrk_keepalive,
                         util.get_proxy_policy(task.config),
