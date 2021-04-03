@@ -253,9 +253,10 @@ class Task(object):
             if file_existed and not unexpected_file:
                 new_file = os.path.join(folder_path, real_file_name)
                 # we can just copy old file if already downloaded
-                self._f_lock.acquire()
-                shutil.copy2(existed_file, new_file)
-                self._f_lock.release()
+                if not existed_file == new_file:
+                    self._f_lock.acquire()
+                    shutil.copy2(existed_file, new_file)
+                    self._f_lock.release()
                 self._cnt_lock.acquire()
                 self.meta['finished'] += 1
                 self._cnt_lock.release()
@@ -327,51 +328,55 @@ class Task(object):
         arc = "%s.zip" % folder_path
         if os.path.exists(arc):
             # if the zipfile exists, check the url written in the zipfile
-            with zipfile.ZipFile(arc, 'r') as zipfile_target:
-                metadata = self.decode_meta(zipfile_target.comment.decode('UTF-8'))
-                # check fidmap in the file, if there isn't one, then just renew the zip
-                if 'fid_fname_map' not in metadata or not len(metadata['fid_fname_map']) == self.meta['total']:
-                    is_fid_file_name_map_existed = False
-                # only remove all file when task is download ori but existing file is not
-                if 'download_ori' in metadata and not metadata['download_ori'] and self.config['download_ori']:
-                    will_extract_old_file = True
-                if 'rename_ori' in metadata and not metadata['rename_ori'] == self.config['rename_ori']:
-                    will_extract_old_file = True
-                if 'url' in metadata and not metadata['url'] == self.url:
-                    will_extract_old_file = True
+            try:
+                with zipfile.ZipFile(arc, 'r') as zipfile_target:
+                    metadata = self.decode_meta(zipfile_target.comment.decode('UTF-8'))
+                    # check fidmap in the file, if there isn't one, then just renew the zip
+                    if 'fid_fname_map' not in metadata or not len(metadata['fid_fname_map']) == self.meta['total']:
+                        is_fid_file_name_map_existed = False
+                    # only remove all file when task is download ori but existing file is not
+                    if 'download_ori' in metadata and not metadata['download_ori'] and self.config['download_ori']:
+                        will_extract_old_file = True
+                    if 'rename_ori' in metadata and not metadata['rename_ori'] == self.config['rename_ori']:
+                        will_extract_old_file = True
+                    if 'url' in metadata and not metadata['url'] == self.url:
+                        will_extract_old_file = True
 
-                # when url matches, check every image
-                file_name_list = zipfile_target.namelist()
-                if is_fid_file_name_map_existed:
-                    for _fid, _file_name in metadata['fid_fname_map'].items():
-                        if _file_name in file_name_list:
-                            zip_info = zipfile_target.getinfo(_file_name)
-                            _name, _ext = os.path.splitext(_file_name)
-                            if zip_info.file_size == 0 or _ext == '.xeh':
-                                truncated_img_list.append(_file_name)
-                            elif _ext == '.xehdone':
-                                continue
-                            else:
-                                good_img_list.append(_file_name)
-                else:
-                    for in_zip_file_name in file_name_list:
-                        zip_info = zipfile_target.getinfo(in_zip_file_name)
-                        if not zip_info.is_dir():
-                            _name, _ext = os.path.splitext(in_zip_file_name)
-                            if zip_info.file_size == 0 or _ext == '.xeh':
-                                truncated_img_list.append(in_zip_file_name)
-                            elif _ext == '.xehdone':
-                                continue
-                            else:
-                                good_img_list.append(in_zip_file_name)
+                    # when url matches, check every image
+                    file_name_list = zipfile_target.namelist()
+                    if is_fid_file_name_map_existed:
+                        for _fid, _file_name in metadata['fid_fname_map'].items():
+                            if _file_name in file_name_list:
+                                zip_info = zipfile_target.getinfo(_file_name)
+                                _name, _ext = os.path.splitext(_file_name)
+                                if zip_info.file_size == 0 or _ext == '.xeh':
+                                    truncated_img_list.append(_file_name)
+                                elif _ext == '.xehdone':
+                                    continue
+                                else:
+                                    good_img_list.append(_file_name)
+                    else:
+                        for in_zip_file_name in file_name_list:
+                            zip_info = zipfile_target.getinfo(in_zip_file_name)
+                            if not zip_info.is_dir():
+                                _name, _ext = os.path.splitext(in_zip_file_name)
+                                if zip_info.file_size == 0 or _ext == '.xeh':
+                                    truncated_img_list.append(in_zip_file_name)
+                                elif _ext == '.xehdone':
+                                    continue
+                                else:
+                                    good_img_list.append(in_zip_file_name)
 
-                if len(truncated_img_list) > 0 or not len(good_img_list) == self.meta['total'] \
-                        or not is_fid_file_name_map_existed or will_extract_old_file:
-                    # extract all image when some images is truncated
-                    # or when download is not finished
-                    zipfile_target.extractall(folder_path)
-                    zipfile_target.close()
-                    os.remove(arc)
+                    if len(truncated_img_list) > 0 or not len(good_img_list) == self.meta['total'] \
+                            or not is_fid_file_name_map_existed or will_extract_old_file:
+                        # extract all image when some images is truncated
+                        # or when download is not finished
+                        zipfile_target.extractall(folder_path)
+                        zipfile_target.close()
+                        os.remove(arc)
+            except zipfile.BadZipFile:
+                os.remove(arc)
+                return False
 
         # a zip file properly commented is trustworthy, so program will assume it was completed
         if len(truncated_img_list) == 0 and len(good_img_list) == self.meta['total'] and is_fid_file_name_map_existed\
