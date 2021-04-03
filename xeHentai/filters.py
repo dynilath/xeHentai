@@ -126,7 +126,7 @@ def flt_quota_check(func):
             fail((ERR_CONNECTION_ERROR, r._real_url))
         elif r.status_code == 403:
             fail((ERR_KEY_EXPIRED, r._real_url))
-        elif r.status_code == 509 or r.content_length in [925, 28658, 144, 210, 1009] or '509.gif' in r.url:
+        elif r.status_code == 509 or r.content_length in [925, 28658, 144, 210, 1009] or 'hentai.org/img/509.gif' in r.url:
             fail((ERR_QUOTA_EXCEEDED, r._real_url))
             # will not call the decorated filter
         elif r.content_length < 200 and \
