@@ -326,6 +326,22 @@ class Task(object):
         # existing of a file doesn't mean the file is correctly downloaded
         # scan zip
         arc = "%s.zip" % folder_path
+
+        # many of those ongoing galleries is titled like 'XXXX 1~12[ongoing]'
+        matched = re.search(r'(\d+)( *[-~] *)(\d+)(.+)',arc)
+        if matched:
+            beg_serial = int(matched.group(1))
+            arc_serial = int(matched.group(3))
+            if beg_serial < arc_serial:
+                prefix = arc[0:matched.span(2)[1]]
+                suffix = matched.group(4)
+                # search from <beg_serial>~<beg_serial> to <beg_serial>~<arc_serial>
+                for i in range(beg_serial+1,arc_serial,1):
+                    test_arc = prefix+str(i)+suffix
+                    if os.path.exists(test_arc):
+                        arc = test_arc
+                        break
+
         if os.path.exists(arc):
             # if the zipfile exists, check the url written in the zipfile
             try:
@@ -489,6 +505,14 @@ class Task(object):
             if not int(_fid) in self.download_range:
                 return
 
+        # assuming image files are not changed
+        # image file may have changed
+        # if int(_fid) in self._flist_done:
+        #    self._cnt_lock.acquire()
+        #    self._flist_done.remove(int(_fid))
+        #    self.meta['finished'] = len(self._flist_done)
+        #    self._cnt_lock.release()
+
         if _fid not in self.fid_2_original_file_name_map:
             _is_crashed = False
             for fid_in_list, file_name_in_list in self.fid_2_original_file_name_map.items():
@@ -523,6 +547,10 @@ class Task(object):
         if not os.path.exists(fpath):
             os.mkdir(fpath)
         self._f_lock.release()
+
+        if imgurl not in self.reload_map:
+            return
+
         pageurl, fname = self.reload_map[imgurl]
         _ = re.findall("/([^/\?]+)(?:\?|$)", redirect_url)
         if _: # change it if it's a full image
@@ -564,7 +592,7 @@ class Task(object):
             if imgurl in self.filehash_map:
                 for _fid, _ in self.filehash_map[imgurl]:
                     # if a file download is interrupted, it will appear in self.filehash_map as well
-                    if _fid == int(fid):
+                    if int(_fid) == int(fid):
                         continue
                     fn_rep = os.path.join(fpath, self.fid_2_file_name_map[_fid])
                     if not fn == fn_rep:
