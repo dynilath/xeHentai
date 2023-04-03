@@ -79,4 +79,4 @@ def htmlescape(s):
     return htmlre.sub(replc, s)
 
 def legalpath(s):
-    return filename_filter.sub(lambda x:"", s)
+    return filename_filter.sub(lambda x:"", s).strip()
