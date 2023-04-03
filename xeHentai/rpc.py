@@ -26,9 +26,10 @@ else:
     from urlparse import urlparse
 
 cmdre = re.compile("([a-z])([A-Z])")
-pathre = re.compile("/(?:jsonrpc|img|zip)")
-imgpathre = re.compile("/img")
-zippathre = re.compile("/zip")
+pathre = re.compile("/(?:jsonrpc|img/|zip/|static/|ui/$)")
+staticre = re.compile("/static/")
+imgpathre = re.compile("/img/")
+zippathre = re.compile("/zip/")
 
 class RPCServer(Thread):
     def __init__(self, xeH, bind_addr, secret = None, logger = None, exit_check = None):
@@ -50,6 +51,9 @@ class RPCServer(Thread):
             self.logger.info(i18n.RPC_STARTED % (self.bind_addr[0], self.bind_addr[1]))
             while not self._exit("rpc"):
                 self.server.handle_request()
+
+def is_readable_obj(obj):
+    return hasattr(obj, "read")
 
 def is_file_obj(obj):
     if PY3K:
@@ -304,6 +308,7 @@ class Handler(BaseHTTPRequestHandler):
             rt = rt.encode('utf-8')
         self.wfile.write(rt)
         self.wfile.write(b'\n')
+        self.xeH.logger.verbose("RPC post finished.")
         return
 
 

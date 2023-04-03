@@ -189,7 +189,7 @@ class HttpReq(object):
 
 class HttpWorker(Thread, HttpReq):
     def __init__(self, tname, task_queue, flt, suc, fail, headers={}, proxy=None, proxy_policy=None,
-            retry=3, timeout=10, logger=None, keep_alive=None, stream_mode=False):
+            retry=10, timeout=10, logger=None, keep_alive=None, stream_mode=False):
         """
         Construct a new 'HttpWorker' obkect
 
@@ -432,6 +432,11 @@ class Monitor(Thread):
                         self.logger.warning(i18n.TASK_STUCK % self.task.guid)
                         last_change = time.time()
                         CHECK_INTERVAL *= 2
+                    if CHECK_INTERVAL > 600:
+                        if self.task.state not in (TASK_STATE_PAUSED, TASK_STATE_FINISHED, TASK_STATE_FAILED):
+                            if self.task._monitor:
+                                self.task._monitor._exit = lambda x: True
+                            self.task.state = TASK_STATE_PAUSED
                         # break
             time.sleep(0.5)
         if self.task.meta['finished'] == self.task.meta['total']:

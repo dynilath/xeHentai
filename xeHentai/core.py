@@ -306,6 +306,7 @@ class xeHentai(object):
                     task_guid, task.meta['total'] - task.meta['finished'],
                     task.meta['total']))
                 # spawn thread to scan images
+                task.img_q.queue.clear()
                 for i in range(task.config['scan_thread_cnt']):
                     tid = 'scan-%d' % (i + 1)
                     _ = self._get_httpworker(tid, task.page_q,
