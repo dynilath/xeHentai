@@ -422,15 +422,17 @@ class xeHentai(object):
                 p.join()
 
     def save_session(self):
-        with open("h.json", "w") as f:
-            try:
+        try:
+            with open("h.next", "w") as f:
                 f.write(json.dumps({
                     'tasks':{} if not self.cfg['save_tasks'] else
                         {k: v.to_dict() for k,v in self._all_tasks.items()},
                     'cookies':self.cookies}))
-            except Exception as ex:
-                self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
-                return ERR_SAVE_SESSION_FAILED, str(ex)
+            os.path.exists("h.json") and os.remove("h.json")
+            os.rename("h.next", "h.json")
+        except Exception as ex:
+            self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
+            return ERR_SAVE_SESSION_FAILED, str(ex)
         return ERR_NO_ERROR, None
 
     def load_session(self):
