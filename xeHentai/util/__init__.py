@@ -12,7 +12,7 @@ import random
 from ..const import *
 
 if os.name == 'nt':
-    filename_filter = re.compile("[|:?\\/*'\"<>]|\.+(?:$)")
+    filename_filter = re.compile("[|:?\\/*'\"<>]")
 else:# assume posix
     filename_filter = re.compile("[\/:]")
 
@@ -79,4 +79,7 @@ def htmlescape(s):
     return htmlre.sub(replc, s)
 
 def legalpath(s):
-    return filename_filter.sub(lambda x:"", s).strip()
+    ret = filename_filter.sub(lambda x:"", s)
+    if ret.endswith(".") or ret.endswith(" "):
+        ret = ret[:-1] + "_"
+    return ret
