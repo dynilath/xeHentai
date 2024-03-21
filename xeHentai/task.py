@@ -19,6 +19,7 @@ if PY3K:
 else:
     from Queue import Queue, Empty
 
+
 class Task(object):
     def __init__(self, url, cfgdict):
         self.url = url
@@ -32,8 +33,9 @@ class Task(object):
         self.config = cfgdict
         self.meta = {}
         self.has_ori = False
-        self.reload_map = {} # {url:reload_url}
-        self.filehash_map = {} # map same hash to different ids, {url:((id, fname), )}
+        self.reload_map = {}  # {url:reload_url}
+        # map same hash to different ids, {url:((id, fname), )}
+        self.filehash_map = {}
 
         # renamed map just don't work well with extension part
 
@@ -77,12 +79,12 @@ class Task(object):
 
         # and, the fid in these map will all be str
         # when int key dumps into files by python, it is somehow transformed into str
-        # and an error would occur when you load it again 
+        # and an error would occur when you load it again
 
         self.img_q = None
         self.page_q = None
         self.list_q = None
-        self._flist_done = set() # store id, don't save, will generate when scan
+        self._flist_done = set()  # store id, don't save, will generate when scan
         self._monitor = None
         self._cnt_lock = RLock()
         self._f_lock = RLock()
@@ -90,7 +92,7 @@ class Task(object):
     def cleanup(self, before_delete=False):
         if before_delete:
             if 'delete_task_files' in self.config and self.config['delete_task_files'] and \
-                'title' in self.meta: # maybe it's a error task and meta is empty
+                    'title' in self.meta:  # maybe it's a error task and meta is empty
                 fpath = self.get_fpath()
                 # TODO: ascii can't decode? locale not enus, also check save_file
                 if os.path.exists(fpath):
@@ -189,7 +191,7 @@ class Task(object):
     #     )
 
     def get_size_range(self, size_text):
-        _ = re.findall('(\d+(?:\.(\d+))?) *([M|K]?B)', size_text)
+        _ = re.findall('(\d+(?:\.(\d+))?) *([M|K]?i?B)', size_text)
         if _:
             _number, _decimal, _unit = _[0]
         else:
@@ -202,9 +204,9 @@ class Task(object):
                 uncertain /= 10
 
         unit = 1
-        if _unit == 'KB':
+        if _unit == 'KiB' or _unit == 'KB':
             unit *= 1024
-        elif _unit == 'MB':
+        elif _unit == 'MiB' or _unit == 'MB':
             unit *= 1048576
         return (number - uncertain) * unit, (number + uncertain) * unit
 
@@ -213,6 +215,11 @@ class Task(object):
         existed_file_size = os.stat(test_file_path).st_size
         return size_bottom <= existed_file_size < size_top
 
+    def set_fid_done(self, fid):
+        self._cnt_lock.acquire()
+        self._flist_done.add(int(fid))
+        self.meta['finished'] = len(self._flist_done)
+        self._cnt_lock.release()
 
     def set_reload_url(self, image_url, reload_url, fname, filesize):
         # if same file occurs several times in a gallery
@@ -226,7 +233,8 @@ class Task(object):
             ext = os.path.splitext(real_file_name)[1]
 
         if not self.config['rename_ori']:
-            real_file_name = "%%0%dd%%s" % (len(str(self.meta['total']))) % (int(this_fid), ext)
+            real_file_name = "%%0%dd%%s" % (
+                len(str(self.meta['total']))) % (int(this_fid), ext)
 
         if this_fid in self.fid_2_file_name_map:
             self.fid_2_file_name_map[this_fid] = real_file_name
@@ -248,7 +256,10 @@ class Task(object):
             existed_file_id = RE_GALLERY.findall(existed_image_url)
             if os.path.exists(existed_file):
                 file_existed = True
-                unexpected_file = not self.check_size_range(existed_file, filesize)
+                unexpected_file = not self.check_size_range(
+                    existed_file, filesize)
+                print('>> file existed, expected size: %s, %s' %
+                      (filesize, 'unexpected' if unexpected_file else 'expected'))
 
             if file_existed and not unexpected_file:
                 new_file = os.path.join(folder_path, real_file_name)
@@ -257,15 +268,15 @@ class Task(object):
                     self._f_lock.acquire()
                     shutil.copy2(existed_file, new_file)
                     self._f_lock.release()
-                self._cnt_lock.acquire()
-                self.meta['finished'] += 1
-                self._cnt_lock.release()
+                self.set_fid_done(this_fid)
                 return
 
             if file_existed and unexpected_file:
                 # target file is not what we wanted
                 # download it again
                 self.img_q.put(image_url)
+
+            del self.reload_map[image_url]
 
             # whether file not exist or is unexpected file
             # set a copy sequence
@@ -285,17 +296,15 @@ class Task(object):
             target_file_path = os.path.join(folder_path, real_file_name)
             if os.path.exists(target_file_path):
                 file_existed = True
-                unexpected_file = not self.check_size_range(target_file_path, filesize)
+                unexpected_file = not self.check_size_range(
+                    target_file_path, filesize)
 
             if file_existed and not unexpected_file:
                 # well that's definitely the file we need
-                self._cnt_lock.acquire()
-                self.meta['finished'] += 1
-                self._cnt_lock.release()
+                self.set_fid_done(this_fid)
                 return
             # otherwise add it to download queue
             self.img_q.put(image_url)
-
 
     def get_reload_url(self, imgurl):
         if not imgurl or imgurl not in self.reload_map:
@@ -328,7 +337,7 @@ class Task(object):
         arc = "%s.zip" % folder_path
 
         # many of those ongoing galleries is titled like 'XXXX 1~12[ongoing]'
-        matched = re.search(r'(\d+)( *[-~] *)(\d+)(.+)',arc)
+        matched = re.search(r'(\d+)( *[-~] *)(\d+)(.+)', arc)
         if matched:
             beg_serial = int(matched.group(1))
             arc_serial = int(matched.group(3))
@@ -336,7 +345,7 @@ class Task(object):
                 prefix = arc[0:matched.span(2)[1]]
                 suffix = matched.group(4)
                 # search from <beg_serial>~<beg_serial> to <beg_serial>~<arc_serial>
-                for i in range(beg_serial+1,arc_serial,1):
+                for i in range(beg_serial+1, arc_serial, 1):
                     test_arc = prefix+str(i)+suffix
                     if os.path.exists(test_arc):
                         arc = test_arc
@@ -346,7 +355,8 @@ class Task(object):
             # if the zipfile exists, check the url written in the zipfile
             try:
                 with zipfile.ZipFile(arc, 'r') as zipfile_target:
-                    metadata = self.decode_meta(zipfile_target.comment.decode('UTF-8'))
+                    metadata = self.decode_meta(
+                        zipfile_target.comment.decode('UTF-8'))
                     # check fidmap in the file, if there isn't one, then just renew the zip
                     if 'fid_fname_map' not in metadata or not len(metadata['fid_fname_map']) == self.meta['total']:
                         is_fid_file_name_map_existed = False
@@ -375,7 +385,8 @@ class Task(object):
                         for in_zip_file_name in file_name_list:
                             zip_info = zipfile_target.getinfo(in_zip_file_name)
                             if not zip_info.is_dir():
-                                _name, _ext = os.path.splitext(in_zip_file_name)
+                                _name, _ext = os.path.splitext(
+                                    in_zip_file_name)
                                 if zip_info.file_size == 0 or _ext == '.xeh':
                                     truncated_img_list.append(in_zip_file_name)
                                 elif _ext == '.xehdone':
@@ -410,7 +421,7 @@ class Task(object):
             return True
         return False
 
-    def scan_downloaded(self, fid_2_page_url_map, scaled = True):
+    def scan_downloaded(self, fid_2_page_url_map, scaled=True):
         folder_path = self.get_fpath()
         is_done_file = False
         _range_idx = 0
@@ -433,7 +444,8 @@ class Task(object):
 
         guess_fid_2_file_name_map = {}
 
-        re_name_filter = re.compile('^(\d{%d})\..+$' % len(str(self.meta['total'])))
+        re_name_filter = re.compile(
+            '^(\d{%d})\..+$' % len(str(self.meta['total'])))
         self._file_in_download_folder = []
 
         for _file_name in os.listdir(folder_path):
@@ -453,7 +465,8 @@ class Task(object):
             for _file_name in self._file_in_download_folder:
                 _ = re_name_filter.findall(_file_name)
                 if _:
-                    guess_fid_2_file_name_map.setdefault(str(int(_[0])), _file_name)
+                    guess_fid_2_file_name_map.setdefault(
+                        str(int(_[0])), _file_name)
 
         for _fid, _url in fid_2_page_url_map.items():
             image_done_file = False
@@ -462,7 +475,8 @@ class Task(object):
                 size_text = self.fid_2_file_size_map[_fid]
                 guess_file_name = guess_fid_2_file_name_map[_fid]
                 bottom, top = self.get_size_range(size_text)
-                size = os.stat(os.path.join(folder_path, guess_file_name)).st_size
+                size = os.stat(os.path.join(
+                    folder_path, guess_file_name)).st_size
                 if bottom <= size < top:
                     file_name = guess_file_name
                     image_done_file = True
@@ -478,12 +492,13 @@ class Task(object):
 
         self.meta['finished'] = len(self._flist_done)
         if self.config['download_range']:
-            self.meta['finished'] += (self.meta['total'] - len(self.download_range))
+            self.meta['finished'] += (self.meta['total'] -
+                                      len(self.download_range))
         if self.meta['finished'] == self.meta['total']:
             return True
         return False
 
-    def queue_wrapper(self, callback_page_url_setdefault, pichash = None, img_tuble = None):
+    def queue_wrapper(self, callback_page_url_setdefault, pichash=None, img_tuble=None):
         # if url is not finished, call callback to put into queue
         # type 1: normal file; type 2: resampled url
         # if pichash:
@@ -528,7 +543,8 @@ class Task(object):
                 _assume_file_name = _original_file_name
                 while _is_crashed:
                     _is_crashed = False
-                    _assume_file_name = '%s_%d%s' % (_file_name, _append_quote, _ext)
+                    _assume_file_name = '%s_%d%s' % (
+                        _file_name, _append_quote, _ext)
                     for fid_in_list, file_name_in_list in self.fid_2_original_file_name_map.items():
                         if _assume_file_name == file_name_in_list:
                             _is_crashed = True
@@ -536,7 +552,8 @@ class Task(object):
                     if _is_crashed:
                         _append_quote += 1
                 _original_file_name = _assume_file_name
-            self.fid_2_original_file_name_map.setdefault(_fid, _original_file_name)
+            self.fid_2_original_file_name_map.setdefault(
+                _fid, _original_file_name)
 
         callback_page_url_setdefault(_fid, _page_url)
 
@@ -553,7 +570,7 @@ class Task(object):
 
         pageurl, fname = self.reload_map[imgurl]
         _ = re.findall("/([^/\?]+)(?:\?|$)", redirect_url)
-        if _: # change it if it's a full image
+        if _:  # change it if it's a full image
             fname = _[0]
             self.reload_map[imgurl][1] = fname
         _, fid = RE_GALLERY.findall(pageurl)[0]
@@ -594,7 +611,8 @@ class Task(object):
                     # if a file download is interrupted, it will appear in self.filehash_map as well
                     if int(_fid) == int(fid):
                         continue
-                    fn_rep = os.path.join(fpath, self.fid_2_file_name_map[_fid])
+                    fn_rep = os.path.join(
+                        fpath, self.fid_2_file_name_map[_fid])
                     if not fn == fn_rep:
                         shutil.copyfile(fn, fn_rep)
                         self._cnt_lock.acquire()
@@ -616,7 +634,7 @@ class Task(object):
     def get_fpath(self):
         return os.path.join(self.config['dir'], util.legalpath(self.meta['title']))
 
-    def get_fidpad(self, fid, ext = '.jpg'):
+    def get_fidpad(self, fid, ext='.jpg'):
         if fid in self.fid_2_file_name_map:
             ext = os.path.splitext(self.fid_2_file_name_map[fid])[1]
         fid = int(fid)
@@ -669,10 +687,9 @@ class Task(object):
             self.gid, self.sethash = _[0]
         return self
 
-
     def to_dict(self):
-        d = dict({k:v for k, v in self.__dict__.items()
-            if not k.endswith('_q') and not k.startswith("_")})
+        d = dict({k: v for k, v in self.__dict__.items()
+                  if not k.endswith('_q') and not k.startswith("_")})
         for k in ['img_q', 'page_q', 'list_q']:
             if getattr(self, k):
                 d[k] = [e for e in getattr(self, k).queue]

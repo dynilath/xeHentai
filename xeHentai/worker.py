@@ -52,16 +52,16 @@ class FallbackIpAdapter(HTTPAdapter):
                                       (":%d" % parsed.port) if parsed.port else "")
                 _scheme = 'https'
             return self.poolmanager.connection_from_host(_hostname, parsed.port, scheme=_scheme,
-                                                            pool_kwargs={'assert_hostname': parsed.hostname})
+                                                         pool_kwargs={'assert_hostname': parsed.hostname})
         else:
             # fallback
             return requests.adapters.HTTPAdapter.get_connection(self, url, proxies)
-    
+
     def add_headers(self, request, **kwargs):
         if not request.headers.get('Host'):
             parsed = urlparse(request.url)
             request.headers['Host'] = parsed.hostname
-    
+
     def cert_verify(self, conn, url, verify, cert):
         # let the super run verify process
         if url.startswith('http://'):
@@ -69,17 +69,18 @@ class FallbackIpAdapter(HTTPAdapter):
         return requests.adapters.HTTPAdapter.cert_verify(self, conn, url, verify, cert)
 
 
-reg_509gif = re.compile(r'<img id="img" src="https://exhentai.org/img/509.gif"')
+reg_509gif = re.compile(
+    r'<img id="img" src="https://exhentai.org/img/509.gif"')
 
 
 class HttpReq(object):
-    def __init__(self, headers = {}, proxy = None, proxy_policy = None, retry = 10, timeout = 10, logger = None, tname = "main"):
+    def __init__(self, headers={}, proxy=None, proxy_policy=None, retry=2, timeout=10, logger=None, tname="main"):
         self.session = requests.Session()
         self.session.headers = headers
-        #for u in ('forums.e-hentai.org', 'e-hentai.org', 'exhentai.org'):
+        # for u in ('forums.e-hentai.org', 'e-hentai.org', 'exhentai.org'):
         #    self.session.mount('http://%s' % u, FallbackIpAdapter())
         #    self.session.mount('https://%s' % u, FallbackIpAdapter())
-        #self.session.mount('http://', requests.adapters.HTTPAdapter)
+        # self.session.mount('http://', requests.adapters.HTTPAdapter)
         self.retry = retry
         self.timeout = timeout
         self.proxy = proxy
@@ -98,14 +99,15 @@ class HttpReq(object):
                 # if proxy_policy is set and match current url, use proxy
                 if url and self.proxy and self.proxy_policy and self.proxy_policy.match(url):
                     do_proxy = True
-                    f, __not_good, __good, __banned = self.proxy.proxied_request(self.session)
+                    f, __not_good, __good, __banned = self.proxy.proxied_request(
+                        self.session)
                 else:
                     f = self.session.request
                 r = f(method, url,
-                    allow_redirects=False,
-                    data=data,
-                    timeout=self.timeout,
-                    stream=stream_cb != None)
+                      allow_redirects=False,
+                      data=data,
+                      timeout=self.timeout,
+                      stream=stream_cb != None)
             except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout,
                     requests.exceptions.ReadTimeout, requests.exceptions.SSLError) as ex:
                 if do_proxy:
@@ -114,12 +116,14 @@ class HttpReq(object):
                         self.logger.info("%s-%s proxy %s is disabled for failed too often" %
                                          (i18n.THREAD, self.tname, _))
                 else:
-                    self.logger.warning("%s-%s %s %s: %s" % (i18n.THREAD, self.tname, method, url, ex))
+                    self.logger.warning("%s-%s %s %s: %s" %
+                                        (i18n.THREAD, self.tname, method, url, ex))
                 time.sleep(random.random() + 0.618)
             except requests.exceptions.ReadTimeout:
                 continue
             except requests.RequestException as ex:
-                self.logger.warning("%s-%s %s %s: %s" % (i18n.THREAD, self.tname, method, url, ex))
+                self.logger.warning("%s-%s %s %s: %s" %
+                                    (i18n.THREAD, self.tname, method, url, ex))
                 time.sleep(random.random() + 0.618)
             else:
                 if r.headers.get('content-length'):
@@ -128,7 +132,8 @@ class HttpReq(object):
                     r.content_length = len(r.content)
                 else:
                     r.content_length = 0
-                self.logger.verbose("%s-%s %s %s %d %d" % (i18n.THREAD, self.tname, method, url, r.status_code, r.content_length))
+                self.logger.verbose("%s-%s %s %s %d %d" % (i18n.THREAD,
+                                    self.tname, method, url, r.status_code, r.content_length))
 
                 try:
                     t = r.text
@@ -141,7 +146,8 @@ class HttpReq(object):
                     if _new_url:
                         url_history.append(url)
                         if len(url_history) > DEFAULT_MAX_REDIRECTS:
-                            self.logger.warning("%s-%s %s %s: too many redirects" % (i18n.THREAD, self.tname, method, url))
+                            self.logger.warning(
+                                "%s-%s %s %s: too many redirects" % (i18n.THREAD, self.tname, method, url))
                             return _filter(_FakeResponse(url_history[0]), suc, fail)
                         url = _new_url
                         continue
@@ -156,18 +162,21 @@ class HttpReq(object):
                     self.logger.warn(i18n.PROXY_DISABLE_BANNED % _t)
                     # fail this proxy immediately and set expire time
                     _p = __banned(expire=_t)
-                    self.logger.info("%s-%s proxy %s is banned for %s" % (i18n.THREAD, self.tname, _p, _t))
+                    self.logger.info("%s-%s proxy %s is banned for %s" %
+                                     (i18n.THREAD, self.tname, _p, _t))
                     continue
 
                 if do_proxy and 'hentai.org/img/509.gif' in r.text:
                     _p = __banned(expire=3600*24)
-                    self.logger.info("%s-%s proxy %s has exceed band width" % (i18n.THREAD, self.tname, _p))
+                    self.logger.info(
+                        "%s-%s proxy %s has exceed band width" % (i18n.THREAD, self.tname, _p))
                     continue
 
                 if do_proxy and r.ok:
                     _p = __good()
                     if _p:
-                        self.logger.info("%s-%s proxy %s is very good" % (i18n.THREAD, self.tname, _p))
+                        self.logger.info("%s-%s proxy %s is very good" %
+                                         (i18n.THREAD, self.tname, _p))
 
                 if r.status_code == 200 and r.content_length == 0:
                     if do_proxy:
@@ -186,10 +195,9 @@ class HttpReq(object):
         return _filter(_FakeResponse(url_history[0]), suc, fail)
 
 
-
 class HttpWorker(Thread, HttpReq):
     def __init__(self, tname, task_queue, flt, suc, fail, headers={}, proxy=None, proxy_policy=None,
-            retry=10, timeout=10, logger=None, keep_alive=None, stream_mode=False):
+                 retry=3, timeout=10, logger=None, keep_alive=None, stream_mode=False):
         """
         Construct a new 'HttpWorker' obkect
 
@@ -208,8 +216,9 @@ class HttpWorker(Thread, HttpReq):
         :param stream_mode: set the request to use stream mode, keep_alive will be called every iteration
         :return: returns nothing
         """
-        HttpReq.__init__(self, headers, proxy, proxy_policy, retry, timeout, logger, tname = tname)
-        Thread.__init__(self, name = tname)
+        HttpReq.__init__(self, headers, proxy, proxy_policy,
+                         retry, timeout, logger, tname=tname)
+        Thread.__init__(self, name=tname)
         Thread.setDaemon(self, True)
         self.task_queue = task_queue
         self.logger = logger
@@ -221,7 +230,7 @@ class HttpWorker(Thread, HttpReq):
         self.f_fail = fail
         self.stream_mode = stream_mode
         # if we don't checkin in this zombie_threshold time, monitor will regard us as zombie
-        self.zombie_threshold = timeout * (retry + 1) 
+        self.zombie_threshold = timeout * (retry + 1)
         self.run_once = False
 
     def _finish_queue(self, *args):
@@ -235,7 +244,7 @@ class HttpWorker(Thread, HttpReq):
         self.logger.verbose("t-%s start" % self.name)
         _stream_cb = None
         if self.stream_mode:
-            _stream_cb = lambda x:self._keepalive(self)
+            def _stream_cb(x): return self._keepalive(self)
         while not self._keepalive(self) and not self._exit(self):
             try:
                 url = self.task_queue.get(False)
@@ -252,21 +261,25 @@ class HttpWorker(Thread, HttpReq):
             self.run_once = True
             try:
                 self._working = True
-                self.request("GET", url, self.flt, self.f_suc, self.f_fail, stream_cb=_stream_cb)
+                self.request("GET", url, self.flt, self.f_suc,
+                             self.f_fail, stream_cb=_stream_cb)
             except PoolException as ex:
-                self.logger.warning("%s-%s %s" % (i18n.THREAD, self.tname, str(ex)))
+                self.logger.warning("%s-%s %s" %
+                                    (i18n.THREAD, self.tname, str(ex)))
                 break
             except Exception as ex:
-                self.logger.warning(i18n.THREAD_UNCAUGHT_EXCEPTION % (self.tname, traceback.format_exc()))
+                self.logger.warning(i18n.THREAD_UNCAUGHT_EXCEPTION % (
+                    self.tname, traceback.format_exc()))
                 self.flt(_FakeResponse(url), self.f_suc, self.f_fail)
         # notify monitor the last time
         self.logger.verbose("t-%s exit" % self.name)
-        self._keepalive(self, _exit = True)
+        self._keepalive(self, _exit=True)
+
 
 class ArchiveWorker(Thread):
     # this worker is not managed by monitor
-    def __init__(self, logger, task, exit_check = None):
-        Thread.__init__(self, name = "archiver%s" % task.guid)
+    def __init__(self, logger, task, exit_check=None):
+        Thread.__init__(self, name="archiver%s" % task.guid)
         Thread.setDaemon(self, True)
         self.logger = logger
         self.task = task
@@ -284,15 +297,17 @@ class ArchiveWorker(Thread):
             pth = self.task.make_archive()
         except Exception as ex:
             self.task.state = TASK_STATE_FAILED
-            self.logger.error(i18n.TASK_ERROR % (self.task.guid, i18n.c(ERR_CANNOT_MAKE_ARCHIVE) % traceback.format_exc()))
+            self.logger.error(i18n.TASK_ERROR % (self.task.guid, i18n.c(
+                ERR_CANNOT_MAKE_ARCHIVE) % traceback.format_exc()))
         else:
             self.task.state = TASK_STATE_FINISHED
-            self.logger.info(i18n.TASK_MAKE_ARCHIVE_FINISHED % (self.task.guid, pth, time.time() - t))
+            self.logger.info(i18n.TASK_MAKE_ARCHIVE_FINISHED %
+                             (self.task.guid, pth, time.time() - t))
 
 
 class Monitor(Thread):
     def __init__(self, req, proxy, logger, task, exit_check=None, ignored_errors=[]):
-        Thread.__init__(self, name = "monitor%s" % task.guid)
+        Thread.__init__(self, name="monitor%s" % task.guid)
         Thread.setDaemon(self, True)
         # the count of votes per error code
         self.vote_result = {}
@@ -313,16 +328,16 @@ class Monitor(Thread):
         self._cleaning_up = False
 
         if os.name == "nt":
-            self.set_title = lambda s:os.system("TITLE %s" % (
+            self.set_title = lambda s: os.system("TITLE %s" % (
                 s if PY3K else s.encode(CODEPAGE, 'replace')))
         elif os.name == 'posix':
             import sys
-            self.set_title = lambda s:sys.stdout.write("\033]2;%s\007" % (
+            self.set_title = lambda s: sys.stdout.write("\033]2;%s\007" % (
                 s if PY3K else s.encode(CODEPAGE, 'replace')))
 
     def set_vote_ns(self, tnames):
         t = time.time()
-        self.thread_last_seen = {k:t for k in tnames}
+        self.thread_last_seen = {k: t for k in tnames}
 
     def vote(self, tname, code):
         # thread_id, result_code
@@ -335,7 +350,7 @@ class Monitor(Thread):
             self.vote_result[code] += 1
         self.votelock.release()
 
-    def wrk_keepalive(self, wrk_thread, _exit = False):
+    def wrk_keepalive(self, wrk_thread, _exit=False):
         tname = wrk_thread.name
         if tname in self.thread_zombie:
             self.thread_zombie.remove(tname)
@@ -382,8 +397,8 @@ class Monitor(Thread):
             self.task.meta['has_ori'] = True
             self.vote_cleared.add(ERR_IMAGE_RESAMPLED)
         elif ERR_QUOTA_EXCEEDED in self.vote_result and \
-            ERR_QUOTA_EXCEEDED not in self.vote_cleared and \
-            self.vote_result[ERR_QUOTA_EXCEEDED] >= len(self.thread_last_seen):
+                ERR_QUOTA_EXCEEDED not in self.vote_cleared and \
+                self.vote_result[ERR_QUOTA_EXCEEDED] >= len(self.thread_last_seen):
             self.logger.error(i18n.TASK_STOP_QUOTA_EXCEEDED % self.task.guid)
             self.task.state = TASK_STATE_FAILED
 
@@ -416,7 +431,8 @@ class Monitor(Thread):
             if intv == CHECK_INTERVAL:
                 _ = "%s %dW/%dR/%dZ, %s %dR/%dD/%dA" % (
                     i18n.THREAD,
-                    thread_working, len(self.thread_last_seen), len(self.thread_zombie),
+                    thread_working, len(self.thread_last_seen), len(
+                        self.thread_zombie),
                     i18n.QUEUE,
                     self.task.img_q.qsize() if self.task.img_q else 0,
                     self.task.meta['finished'], self.task.meta['total'])
@@ -446,5 +462,6 @@ class Monitor(Thread):
             self.task.state = TASK_STATE_FINISHED
         self.task.cleanup()
 
+
 if __name__ == '__main__':
-    print(HttpReq().request("GET", "https://ipip.tk", lambda x:x, None, None))
+    print(HttpReq().request("GET", "https://ipip.tk", lambda x: x, None, None))
