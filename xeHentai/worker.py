@@ -3,18 +3,28 @@
 # Contributor:
 #      fffonion        <fffonion@gmail.com>
 
+from .proxy import PoolException
+from .i18n import i18n
+from .const import *
+from . import util
+from threading import Thread, RLock
+import traceback
+from requests.adapters import HTTPAdapter
 import re
 import math
 import time
 import random
 import requests
-from requests.adapters import HTTPAdapter
-import traceback
-from threading import Thread, RLock
-from . import util
-from .const import *
-from .i18n import i18n
-from .proxy import PoolException
+import urllib3
+
+requests.packages.urllib3.disable_warnings()
+requests.packages.urllib3.util.ssl_.DEFAULT_CIPHERS += ':HIGH:!DH:!aNULL'
+try:
+    requests.packages.urllib3.contrib.pyopenssl.util.ssl_.DEFAULT_CIPHERS += ':HIGH:!DH:!aNULL'
+except AttributeError:
+    # no pyopenssl support used / needed / available
+    pass
+
 if PY3K:
     from queue import Queue, Empty
     from urllib.parse import urlparse, urlunparse
