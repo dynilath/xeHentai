@@ -46,7 +46,7 @@ RE_URL_ALL = re.compile('.')
 
 RE_LOCAL_ADDR = re.compile('(^localhost)|(^127\.)|(^192\.168\.)|(^10\.)|(^172\.1[6-9]\.)|(^172\.2[0-9]\.)|(^172\.3[0-1]\.)|(^::1$)|(^[fF][cCdD])')
 
-RESTR_SITE = "https*://(?:[g\.]*e\-|ex)hentai\.org"
+RESTR_SITE = "https?:\/\/(?:e-|ex)hentai\.org"
 
 FALLBACK_CF_IP = ("104.24.255.11", "104.24.254.11")
 FALLBACK_IP_MAP = {

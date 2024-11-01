@@ -11,6 +11,7 @@ from .const import *
 SUC = 0
 FAIL = 1
 
+
 def login_exhentai(r, suc, fail):
     # input login response
     # add cookies if suc; log error fail
@@ -26,7 +27,7 @@ def login_exhentai(r, suc, fail):
             fail("ex: %s" % ex)
         return FAIL
     else:
-        suc({'ipb_member_id':cooid, 'ipb_pass_hash':coopw})
+        suc({'ipb_member_id': cooid, 'ipb_pass_hash': coopw})
         return SUC
 
 
@@ -42,7 +43,7 @@ def flt_metadata(r, suc, fail):
         return fail(ERR_GALLERY_NOT_FOUND)
     if re.match("This gallery is pining for the fjords", r.text):
         return fail(ERR_ONLY_VISIBLE_EXH)
-    elif re.match("Your IP address has been temporarily banned", r.text):
+    elif re.match("This IP address has been temporarily banned", r.text):
         fail(ERR_IP_BANNED)
         return re.findall("The ban expires in (.+)", r.text)[0]
     meta = {}
@@ -52,13 +53,16 @@ def flt_metadata(r, suc, fail):
     # meta['resampled'] = {}
 
     try:
-        meta['gjname'] = util.htmlescape(re.findall('="gj">(.*?)</h1>', r.text)[0])
-        meta['gnname'] = util.htmlescape(re.findall('="gn">(.*?)</h1>', r.text)[0])
+        meta['gjname'] = util.htmlescape(
+            re.findall('="gj">(.*?)</h1>', r.text)[0])
+        meta['gnname'] = util.htmlescape(
+            re.findall('="gn">(.*?)</h1>', r.text)[0])
         # don't assign title now, select gj/gn based on cfg['jpn_title']
         # meta['title'] = meta['gjname'] if meta['gjname'] else meta['gnname']
-        meta['total'] = int(re.findall('Length:</td><td class="gdt2">(\d+)\s+page', r.text)[0])
+        meta['total'] = int(re.findall(
+            'Length:</td><td class="gdt2">(\d+)\s+page', r.text)[0])
         meta['finished'] = 0
-        meta['tags'] = re.findall("toggle_tagmenu\('([^']+)'", r.text)
+        meta['tags'] = re.findall("toggle_tagmenu\([^)']+'([^']+)'", r.text)
 
         # TODO: parse cookie to calc thumbnail_cnt (tr_2, ts_m)
         _ = re.findall("Showing (\d+) \- (\d+) of ([\d,]+) images", r.text)[0]
@@ -106,14 +110,14 @@ def flt_metadata(r, suc, fail):
 def flt_pageurl(r, suc, fail):
     # input gallery response
     # add per image urls if suc; finish task if fail
-    #picpage = re.findall(
+    # picpage = re.findall(
     #    '<a href="(%s/./[a-f0-9]{10}/\d+\-\d+)"><img alt="\d+" title="Page' % RESTR_SITE,
     #    r.text)
 
     picpage = re.findall(
-        '<a href="(%s/./[a-f0-9]{10}/\d+\-\d+)"><img alt="\d+" title="Page (\d+): ([^"]*)"' % RESTR_SITE,
+        '<a href="(%s\/.\/[a-f0-9]{10}\/\d+\-\d+)"><div title="Page (\d+): ([^"]*)"' % RESTR_SITE,
         r.text)
-    #(page url, page id, original file name)
+    # (page url, page id, original file name)
     if not picpage:
         fail(ERR_NO_PAGEURL_FOUND)
     for p in picpage:
@@ -122,7 +126,7 @@ def flt_pageurl(r, suc, fail):
 
 def flt_quota_check(func):
     def _(r, suc, fail):
-        if r.status_code == 600:# tcp layer error
+        if r.status_code == 600:  # tcp layer error
             fail((ERR_CONNECTION_ERROR, r._real_url))
         elif r.status_code == 403:
             fail((ERR_KEY_EXPIRED, r._real_url))
@@ -143,7 +147,7 @@ def flt_quota_check(func):
 
 def flt_imgurl_wrapper(ori):
     @flt_quota_check
-    def flt_imgurl(r, suc, fail, ori = ori):
+    def flt_imgurl(r, suc, fail, ori=ori):
         # input per image page response
         # add (image url, reload url, filename) to queue if suc
         # return (errorcode, page_url) if fail
@@ -157,27 +161,36 @@ def flt_imgurl_wrapper(ori):
                 break
             picurl = util.htmlescape(_[0])
 
-            _ = re.findall('</a></div><div>(.*?) ::.*?:: ([0-9/.]+ [M|K]?i?B)</di', r.text)
+            _ = re.findall(
+                '</a></div><div>(.*?) ::.*?:: ([0-9/.]+ [M|K]?i?B)</di', r.text)
             if not _:
                 break
-            filename,filesize = _[0]
+            filename, filesize = _[0]
 
             if 'image.php' in filename:
                 _ = re.findall('n=(.+)', picurl)
                 if not _:
                     break
                 filename = _[0]
+
+            _ = re.findall('.+/(\d+)-(\d*)', r._real_url)
+            if not _:
+                break
+            index = _[0]
+
+            if filename[0] == '.':
+                filename = index[1] + filename
+
             _ = re.findall('.+\.([a-zA-Z]+)', filename)
             if not _:
                 break
             fmt = _[0]
             # http://exhentai.org/fullimg.php?gid=577354&page=2&key=af594b7cf3
-            _ = re.findall('.+/(\d+)-(\d*)', r._real_url)
-            if not _:
-                break
-            index = _[0]
-            fullurl = re.findall('class="mr".+<a href="(.+)"\s*>Download original', r.text)
-            ori_file_size = re.findall('>Download original [0-9]+ x [0-9]+ ([0-9/.]+ [A-Z]{2}) source</a>', r.text)  # like 2.20MB
+
+            fullurl = re.findall(
+                'class="mr".+<a href="(.+)"\s*>Download original', r.text)
+            ori_file_size = re.findall(
+                '>Download original [0-9]+ x [0-9]+ ([0-9\/.]+ [a-zA-Z]{2,})<\/a>', r.text)  # like 2.20MB
             if not ori_file_size:
                 ori_file_size = [filesize]
 
@@ -189,7 +202,8 @@ def flt_imgurl_wrapper(ori):
             if not _:
                 break
             js_nl = _[0]
-            reload_url = "%s%snl=%s" % (r._real_url, "&" if "?" in r._real_url else "?", js_nl)
+            reload_url = "%s%snl=%s" % (
+                r._real_url, "&" if "?" in r._real_url else "?", js_nl)
             if ori:
                 # we will parse the 302 url to get original filename
                 return suc((fullurl, reload_url, filename, ori_file_size[0]))
@@ -204,7 +218,7 @@ def flt_imgurl_wrapper(ori):
 def download_file_wrapper(dirpath):
 
     @flt_quota_check
-    def download_file(r, suc, fail, dirpath = dirpath):
+    def download_file(r, suc, fail, dirpath=dirpath):
         # input image/archive response
         # return (binary, url) if suc; return (errocode, url) if fail
         if r.status_code == 404:
@@ -214,7 +228,7 @@ def download_file_wrapper(dirpath):
         # the first is original and the last is scaled
         # _FakeReponse will be filtered in flt_quota_check
         if not r.content_length or \
-            p and p[-1] and int(p[-1][1]) != r.content_length:
+                p and p[-1] and int(p[-1][1]) != r.content_length:
             return fail((ERR_IMAGE_BROKEN, r._real_url, r.url))
         if not hasattr(r, 'iter_content_cb'):
             return fail((ERR_STREAM_NOT_IMPLEMENTED, r._real_url, r.url))
@@ -235,7 +249,7 @@ def download_file_wrapper(dirpath):
             if length_read != r.content_length:
                 fail((ERR_IMAGE_BROKEN, r._real_url, r.url))
                 raise DownloadAbortedException()
-            
+
         suc((_yield, r._real_url, r.url))
 
     return download_file
