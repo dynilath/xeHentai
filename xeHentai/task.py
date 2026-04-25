@@ -632,7 +632,13 @@ class Task(object):
         return int(fid), fname
 
     def get_fpath(self):
-        return os.path.join(self.config['dir'], util.legalpath(self.meta['title']))
+        """ 
+        Gets file path for the task.
+        If the download is not done, this is the folder path for downloading files.
+        If the download is done, this is the zip file path without extension.
+        """
+        gallery_id = self.gid if hasattr(self, 'gid') else 'unknown'
+        return os.path.join(self.config['dir'], f"{gallery_id} - {util.legalpath(self.meta['title'])}")
 
     def get_fidpad(self, fid, ext='.jpg'):
         if fid in self.fid_2_file_name_map:
