@@ -109,7 +109,7 @@ class HttpReq(object):
                 # if proxy_policy is set and match current url, use proxy
                 if url and self.proxy and self.proxy_policy and self.proxy_policy.match(url):
                     do_proxy = True
-                    f, __not_good, __good, __banned = self.proxy.proxied_request(
+                    f, __proxy_control = self.proxy.proxied_request(
                         self.session)
                 else:
                     f = self.session.request
@@ -117,17 +117,18 @@ class HttpReq(object):
                       allow_redirects=False,
                       data=data,
                       timeout=self.timeout,
-                      stream=stream_cb != None)
+                      stream=stream_cb is not None,
+                      verify=False)
             except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout,
                     requests.exceptions.ReadTimeout, requests.exceptions.SSLError) as ex:
                 if do_proxy:
-                    _ = __not_good()
+                    _ = __proxy_control.not_good()
                     if _:
                         self.logger.info("%s-%s proxy %s is disabled for failed too often" %
                                          (i18n.THREAD, self.tname, _))
-                else:
-                    self.logger.warning("%s-%s %s %s: %s" %
-                                        (i18n.THREAD, self.tname, method, url, ex))
+
+                self.logger.warning("%s-%s %s %s: %s" %
+                                    (i18n.THREAD, self.tname, method, url, ex))
                 time.sleep(random.random() + 0.618)
             except requests.exceptions.ReadTimeout:
                 continue
@@ -171,26 +172,26 @@ class HttpReq(object):
                     _t = util.parse_human_time(r.text)
                     self.logger.warn(i18n.PROXY_DISABLE_BANNED % _t)
                     # fail this proxy immediately and set expire time
-                    _p = __banned(expire=_t)
+                    _p = __proxy_control.banned(expire=_t)
                     self.logger.info("%s-%s proxy %s is banned for %s" %
                                      (i18n.THREAD, self.tname, _p, _t))
                     continue
 
                 if do_proxy and 'hentai.org/img/509.gif' in r.text:
-                    _p = __banned(expire=3600*24)
+                    _p = __proxy_control.limit_exceeded()
                     self.logger.info(
                         "%s-%s proxy %s has exceed band width" % (i18n.THREAD, self.tname, _p))
                     continue
 
                 if do_proxy and r.ok:
-                    _p = __good()
+                    _p = __proxy_control.good()
                     if _p:
                         self.logger.info("%s-%s proxy %s is very good" %
                                          (i18n.THREAD, self.tname, _p))
 
                 if r.status_code == 200 and r.content_length == 0:
                     if do_proxy:
-                        __not_good()
+                        __proxy_control.not_good()
                     continue
 
                 r.encoding = "utf-8"
@@ -463,7 +464,10 @@ class Monitor(Thread):
                             if self.task._monitor:
                                 self.task._monitor._exit = lambda x: True
                             self.task.state = TASK_STATE_PAUSED
-                        # break
+                            CHECK_INTERVAL = 10
+                        else:
+                            CHECK_INTERVAL = 600
+                        break
             time.sleep(0.5)
         if self.task.meta['finished'] == self.task.meta['total']:
             # rename is finished along with downloading process
