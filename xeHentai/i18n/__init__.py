@@ -25,13 +25,12 @@ class _(object):
                 (cls.ERR_NOMSG % code) or \
                     lng_fallback.err_msg[code] ) or \
             lng.err_msg[code]
-        return _ if PY3K else (
-            _ if isinstance(_, unicode) else _.decode('utf-8')) # cls.ERR_NOMSG % code is unicode
+        return _
 
     def __getattr__(cls, idx):
         _ = not hasattr(lng, idx) and \
             getattr(lng_fallback, idx) or \
             getattr(lng, idx)
-        return _ if PY3K else _.decode('utf-8')
+        return _
 
 i18n = _()

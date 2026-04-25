@@ -13,17 +13,11 @@ from threading import Thread
 from .const import *
 from .const import __version__
 from .i18n import i18n
-if PY3K:
-    from socketserver import ThreadingMixIn
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-    from io import IOBase
-    from io import BytesIO as StringIO
-    from urllib.parse import urlparse
-else:
-    from SocketServer import ThreadingMixIn
-    from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
-    from cStringIO import StringIO 
-    from urlparse import urlparse
+from socketserver import ThreadingMixIn
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from io import IOBase
+from io import BytesIO as StringIO
+from urllib.parse import urlparse
 
 cmdre = re.compile("([a-z])([A-Z])")
 pathre = re.compile("/(?:jsonrpc|img/|zip/|static/|ui/$)")
@@ -56,19 +50,14 @@ def is_readable_obj(obj):
     return hasattr(obj, "read")
 
 def is_file_obj(obj):
-    if PY3K:
-        return isinstance(obj, IOBase)
-    return isinstance(obj, file)
+    return isinstance(obj, IOBase)
 
 def is_str_obj(obj):
-    if PY3K:
-        return isinstance(obj, str)
-    return isinstance(obj, basestring)
+    return isinstance(obj, str)
 
 def hash_link(secret, url):
     _ = "%s-xehentai-%s" % (secret if secret else "", url)
-    if PY3K:
-        _ = _.encode('utf-8')
+    _ = _.encode('utf-8')
     return md5(_).hexdigest()[:8]
 
 def gen_thumbnail(fh, args):
@@ -238,15 +227,13 @@ class Handler(BaseHTTPRequestHandler):
 
     @path_filter
     def do_POST(self):
-        _get_header = lambda h: self.headers.get_all(h)[0] if PY3K else \
-            self.headers.getheader(h)
+        _get_header = lambda h: self.headers.get_all(h)[0]
         d = self.rfile.read(int(_get_header('Content-Length')))
         code = 200
         rt = b''
         while True:
             try:
-                if PY3K:
-                    d = d.decode('utf-8')
+                d = d.decode('utf-8')
                 j = json.loads(d)
                 assert('method' in j and j['method'] != None and 'id' in j)
             except ValueError:
@@ -275,8 +262,6 @@ class Handler(BaseHTTPRequestHandler):
                     if len(params[0]) == 0:
                         break
                     secret = params[0][0]
-                    if not PY3K and isinstance(secret, unicode):
-                        secret = secret.encode('utf-8')
                     if is_str_obj(secret) and re.findall("token:%s" % self.secret, secret):
                         params[0].pop(0)
                         authorized = True
@@ -304,8 +289,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json-rpc")
         self.send_header("Content-Length", len(rt))
         self.end_headers()
-        if PY3K:
-            rt = rt.encode('utf-8')
+        rt = rt.encode('utf-8')
         self.wfile.write(rt)
         self.wfile.write(b'\n')
         self.xeH.logger.verbose("RPC post finished.")

@@ -19,12 +19,9 @@ class tz_GMT8(datetime.tzinfo):
         return datetime.timedelta(0)
 
 def safestr(s):
-    if (PY3K and isinstance(s, bytes)) or (not PY3K and not isinstance(s, unicode)):
+    if isinstance(s, bytes):
         s = s.decode("utf-8")
-    if PY3K:
-        return s
-    return s.encode(locale.getdefaultlocale()[1] or 'utf-8', 'replace')
-    #return _.decode('utf-8') if PY3K else _
+    return s
 
 if os.name == 'nt':
     endl = '\r\n'

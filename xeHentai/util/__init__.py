@@ -16,8 +16,7 @@ if os.name == 'nt':
 else:# assume posix
     filename_filter = re.compile("[\/:]")
 
-if PY3K:
-    unichr = chr
+unichr = chr
 
 def parse_cookie(coostr):
     ret = {}

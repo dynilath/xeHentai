@@ -3,7 +3,6 @@
 # Contributor:
 #      fffonion        <fffonion@gmail.com>
 
-from __future__ import absolute_import
 import os
 import re
 import sys
@@ -21,10 +20,7 @@ from .util import logger
 from .const import *
 from .const import __version__
 from .worker import *
-if PY3K:
-    from queue import Queue, Empty
-else:
-    from Queue import Queue, Empty
+from queue import Queue, Empty
 
 from . import config as default_config
 sys.path.insert(1, FILEPATH)

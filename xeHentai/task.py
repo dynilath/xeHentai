@@ -14,10 +14,7 @@ from threading import RLock
 from . import util
 from .const import *
 from .const import __version__
-if PY3K:
-    from queue import Queue, Empty
-else:
-    from Queue import Queue, Empty
+from queue import Queue, Empty
 
 
 class Task(object):

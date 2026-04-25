@@ -25,12 +25,8 @@ except AttributeError:
     # no pyopenssl support used / needed / available
     pass
 
-if PY3K:
-    from queue import Queue, Empty
-    from urllib.parse import urlparse, urlunparse
-else:
-    from Queue import Queue, Empty
-    from urlparse import urlparse, urlunparse
+from queue import Queue, Empty
+from urllib.parse import urlparse, urlunparse
 
 # pinfo = {'http':'socks5://127.0.0.1:16963', 'https':'socks5://127.0.0.1:16963'}
 
@@ -339,12 +335,10 @@ class Monitor(Thread):
         self._cleaning_up = False
 
         if os.name == "nt":
-            self.set_title = lambda s: os.system("TITLE %s" % (
-                s if PY3K else s.encode(CODEPAGE, 'replace')))
+            self.set_title = lambda s: os.system("TITLE %s" % s)
         elif os.name == 'posix':
             import sys
-            self.set_title = lambda s: sys.stdout.write("\033]2;%s\007" % (
-                s if PY3K else s.encode(CODEPAGE, 'replace')))
+            self.set_title = lambda s: sys.stdout.write("\033]2;%s\007" % s)
 
     def set_vote_ns(self, tnames):
         t = time.time()

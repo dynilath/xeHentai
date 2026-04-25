@@ -9,7 +9,6 @@ import re
 import sys
 import locale
 
-PY3K = sys.version_info[0] == 3
 IRONPYTHON = sys.platform == 'cli'
 EXEBUNDLE = getattr(sys, 'frozen', False)
 LOCALE = locale.getdefaultlocale()[0]
