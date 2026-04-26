@@ -3,6 +3,7 @@
 # Contributor:
 #      fffonion        <fffonion@gmail.com>
 
+from .exceptions import FilterException
 from .proxy import PoolException
 from .i18n import i18n
 from .const import *
@@ -274,10 +275,12 @@ class HttpWorker(Thread, HttpReq):
                 self.logger.warning("%s-%s %s" %
                                     (i18n.THREAD, self.tname, str(ex)))
                 break
+            except FilterException as ex:
+                self.f_fail((ex.code, ex.url))
             except Exception as ex:
                 self.logger.warning(i18n.THREAD_UNCAUGHT_EXCEPTION % (
                     self.tname, traceback.format_exc()))
-                self.flt(_FakeResponse(url), self.f_suc, self.f_fail)
+                self.f_fail((ERR_CONNECTION_ERROR, url))
         # notify monitor the last time
         self.logger.verbose("t-%s exit" % self.name)
         self._keepalive(self, _exit=True)

@@ -7,6 +7,7 @@ import os
 import re
 from . import util
 from .const import *
+from .exceptions import ConnectionFilterException, KeyExpiredException, QuotaExceededException
 
 SUC = 0
 FAIL = 1
@@ -127,19 +128,19 @@ def flt_pageurl(r, suc, fail):
 def flt_quota_check(func):
     def _(r, suc, fail):
         if r.status_code == 600:  # tcp layer error
-            fail((ERR_CONNECTION_ERROR, r._real_url))
+            raise ConnectionFilterException(r._real_url)
         elif r.status_code == 403:
-            fail((ERR_KEY_EXPIRED, r._real_url))
+            raise KeyExpiredException(r._real_url)
         elif r.status_code == 509 or r.content_length in [925, 28658, 144, 210, 1009] or 'hentai.org/img/509.gif' in r.url:
-            fail((ERR_QUOTA_EXCEEDED, r._real_url))
+            raise QuotaExceededException(r._real_url)
             # will not call the decorated filter
         elif r.content_length < 200 and \
                 r.headers.get('content-type') and r.headers.get('content-type').startswith('text') and \
                 re.findall("exceeded your image viewing limits", r.text):
-            fail((ERR_QUOTA_EXCEEDED, r._real_url))
+            raise QuotaExceededException(r._real_url)
             # will not call the decorated filter
         elif r.status_code == 503:
-            fail((ERR_CONNECTION_ERROR, r._real_url))
+            raise ConnectionFilterException(r._real_url)
         else:
             func(r, suc, fail)
     return _

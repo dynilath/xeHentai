@@ -230,10 +230,10 @@ class xeHentai(object):
             if task.state == TASK_STATE_GET_META:  # grab meta data
                 task.failcode = 0
                 try:
-                    r = req.request("GET", task.url,
-                                    filters.flt_metadata,
-                                    lambda x: task.update_meta(x),
-                                    lambda x: task.set_fail(x))
+                    r = req.request(method="GET", url=task.url,
+                                    _filter=filters.flt_metadata,
+                                    suc=lambda x: task.update_meta(x),
+                                    fail=lambda x: task.set_fail(x))
                 except Exception as ex:
                     self.logger.error(i18n.TASK_ERROR %
                                       (task.guid, traceback.format_exc()))
