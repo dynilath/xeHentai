@@ -10,6 +10,7 @@ import json
 import uuid
 import shutil
 import zipfile
+from typing import Any, Dict, List, Optional, Set, Tuple
 from threading import RLock
 from . import util
 from .const import *
@@ -18,21 +19,29 @@ from queue import Queue, Empty
 
 
 class Task(object):
-    def __init__(self, url, cfgdict):
-        self.url = url
+    def __init__(self, url: str, cfgdict: Dict[str, Any]):
+        # Original gallery URL.
+        self.url: str = url
         if url:
             _ = RE_INDEX.findall(url)
             if _:
                 self.gid, self.sethash = _[0]
-        self.failcode = 0
-        self.state = TASK_STATE_WAITING
-        self.guid = str(uuid.uuid4())[:8]
-        self.config = cfgdict
-        self.meta = {}
-        self.has_ori = False
-        self.reload_map = {}  # {url:reload_url}
+        # Last task failure code.
+        self.failcode: int = 0
+        # Current lifecycle state (TASK_STATE_*).
+        self.state: int = TASK_STATE_WAITING
+        # Short runtime task identifier.
+        self.guid: str = str(uuid.uuid4())[:8]
+        # Task-level merged config.
+        self.config: Dict[str, Any] = cfgdict
+        # Parsed gallery metadata payload.
+        self.meta: Dict[str, Any] = {}
+        # Whether original-quality image variants are detected.
+        self.has_ori: bool = False
+        # Maps image URL to [reload URL, resolved filename].
+        self.reload_map: Dict[str, List[str]] = {}
         # map same hash to different ids, {url:((id, fname), )}
-        self.filehash_map = {}
+        self.filehash_map: Dict[str, List[Tuple[str, Any]]] = {}
 
         # renamed map just don't work well with extension part
 
@@ -60,31 +69,38 @@ class Task(object):
         # map file name to file size
 
         # file size check grant more precision in downloaded file check
-        self._file_in_download_folder = []
+        self._file_in_download_folder: List[str] = []
 
         # map fid to file original name, which appears on gallery pages
-        self.fid_2_original_file_name_map = {}
+        self.fid_2_original_file_name_map: Dict[str, str] = {}
 
         # map fid to file name, just like the old self.renamed_map
-        self.fid_2_file_name_map = {}
+        self.fid_2_file_name_map: Dict[str, str] = {}
 
         # download range list, former method is too hard to maintain
-        self.download_range = []
+        self.download_range: List[int] = []
 
         # times of image page loading is used by ehentai for counting bandwidth limit
-        self.fid_2_file_size_map = {}  # map fid to file size text, reduce image page load
+        self.fid_2_file_size_map: Dict[str, str] = {}  # map fid to file size text, reduce image page load
 
         # and, the fid in these map will all be str
         # when int key dumps into files by python, it is somehow transformed into str
         # and an error would occur when you load it again
 
-        self.img_q = None
-        self.page_q = None
-        self.list_q = None
-        self._flist_done = set()  # store id, don't save, will generate when scan
-        self._monitor = None
-        self._cnt_lock = RLock()
-        self._f_lock = RLock()
+        # Download work queue (image URLs).
+        self.img_q: Optional[Queue] = None
+        # Single-image page queue.
+        self.page_q: Optional[Queue] = None
+        # Gallery list page queue.
+        self.list_q: Optional[Queue] = None
+        # Finished image IDs (rebuilt on scan, not persisted directly).
+        self._flist_done: Set[int] = set()
+        # Task monitor thread reference.
+        self._monitor: Any = None
+        # Lock for counters/state transitions.
+        self._cnt_lock: Any = RLock()
+        # Lock for file-system writes and renames.
+        self._f_lock: Any = RLock()
 
     def cleanup(self, before_delete=False):
         if before_delete:
