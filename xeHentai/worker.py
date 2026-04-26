@@ -276,6 +276,9 @@ class HttpWorker(Thread, HttpReq):
                                     (i18n.THREAD, self.tname, str(ex)))
                 break
             except FilterException as ex:
+                if ex.reason:
+                    self.logger.debug(f"{i18n.THREAD}-{self.tname} filter rejected: {ex.reason}")
+                # TODO: propagate ex.reason to the outside so callers can surface it to the user
                 self.f_fail((ex.code, ex.url))
             except Exception as ex:
                 self.logger.warning(i18n.THREAD_UNCAUGHT_EXCEPTION % (

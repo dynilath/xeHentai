@@ -131,14 +131,16 @@ def flt_quota_check(func):
             raise ConnectionFilterException(r._real_url)
         elif r.status_code == 403:
             raise KeyExpiredException(r._real_url)
-        elif r.status_code == 509 or r.content_length in [925, 28658, 144, 210, 1009] or 'hentai.org/img/509.gif' in r.url:
-            raise QuotaExceededException(r._real_url)
-            # will not call the decorated filter
+        elif r.status_code == 509:
+            raise QuotaExceededException(r._real_url, "HTTP 509 bandwidth limit exceeded")
+        elif r.content_length in [925, 28658, 144, 210, 1009]:
+            raise QuotaExceededException(r._real_url, f"quota page content-length fingerprint ({r.content_length} bytes)")
+        elif 'hentai.org/img/509.gif' in r.url:
+            raise QuotaExceededException(r._real_url, "509.gif detected in response URL")
         elif r.content_length < 200 and \
                 r.headers.get('content-type') and r.headers.get('content-type').startswith('text') and \
                 re.findall("exceeded your image viewing limits", r.text):
-            raise QuotaExceededException(r._real_url)
-            # will not call the decorated filter
+            raise QuotaExceededException(r._real_url, "image viewing limits exceeded (text match)")
         elif r.status_code == 503:
             raise ConnectionFilterException(r._real_url)
         else:

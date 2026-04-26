@@ -8,22 +8,26 @@ class FilterException(Exception):
     """Base exception raised by the flt_quota_check decorator layer.
 
     Attributes:
-        code (int): The error code constant from const.py (e.g. ERR_QUOTA_EXCEEDED).
-        url  (str): The real request URL that triggered the error.
+        code   (int): The error code constant from const.py (e.g. ERR_QUOTA_EXCEEDED).
+        url    (str): The real request URL that triggered the error.
+        reason (str): Human-readable description of the specific trigger condition, or None.
     """
-    def __init__(self, code, url):
+    def __init__(self, code, url, reason=None):
         Exception.__init__(self, url)
         self.code = code
         self.url = url
+        self.reason = reason
 
 
 class QuotaExceededException(FilterException):
-    """Raised when the server reports a bandwidth / image-viewing quota exceeded
-    (HTTP 509, known content-length fingerprints, 509.gif redirect, or the
-    'exceeded your image viewing limits' error page).
+    """Raised when the server reports a bandwidth / image-viewing quota exceeded.
+
+    The reason attribute describes which detection heuristic fired:
+    HTTP 509, a known quota-page content-length fingerprint, a 509.gif URL,
+    or the 'exceeded your image viewing limits' text in the response body.
     """
-    def __init__(self, url):
-        FilterException.__init__(self, ERR_QUOTA_EXCEEDED, url)
+    def __init__(self, url, reason=None):
+        FilterException.__init__(self, ERR_QUOTA_EXCEEDED, url, reason)
 
 
 class KeyExpiredException(FilterException):
