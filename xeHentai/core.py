@@ -12,6 +12,7 @@ import time
 import traceback
 from .task import Task
 from . import reuse_index
+from . import session_store
 from . import util
 from . import proxy
 from . import filters
@@ -452,61 +453,91 @@ class xeHentai(object):
                 p.join()
 
     def save_session(self):
+        errors = []
         try:
-            with open("h.next", "w") as f:
-                f.write(json.dumps({
-                    'tasks': {} if not self.cfg['save_tasks'] else
-                        {k: v.to_dict() for k, v in self._all_tasks.items()},
-                        'cookies': self.cookies}))
-            os.path.exists("h.json") and os.remove("h.json")
-            os.rename("h.next", "h.json")
-            reuse_index.save_reuse_index(self.global_reuse_index)
+            session_store.save_tasks(
+                {} if not self.cfg['save_tasks'] else
+                {k: v.to_dict() for k, v in self._all_tasks.items()})
         except Exception as ex:
+            errors.append(str(ex))
             self.logger.warning(i18n.SESSION_WRITE_EXCEPTION %
                                 traceback.format_exc())
-            return ERR_SAVE_SESSION_FAILED, str(ex)
+
+        try:
+            session_store.save_cookies(self.cookies)
+        except Exception as ex:
+            errors.append(str(ex))
+            self.logger.warning(i18n.SESSION_WRITE_EXCEPTION %
+                                traceback.format_exc())
+
+        try:
+            reuse_index.save_reuse_index(self.global_reuse_index)
+        except Exception as ex:
+            errors.append(str(ex))
+            self.logger.warning(i18n.SESSION_WRITE_EXCEPTION %
+                                traceback.format_exc())
+        if errors:
+            return ERR_SAVE_SESSION_FAILED, errors[0]
         return ERR_NO_ERROR, None
 
     def load_session(self):
-        if os.path.exists("h.json"):
-            with open("h.json") as f:
-                try:
-                    j = json.loads(f.read())
-                except Exception as ex:
-                    self.logger.warning(
-                        i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc())
-                    return ERR_SAVE_SESSION_FAILED, str(ex)
-                else:
-                    for _ in j.get('tasks', {}).values():
-                        _t = Task("", {}).from_dict(_)
-                        if 'filelist' in _t.meta:
-                            _t.scan_downloaded()
-                            # _t.meta['has_ori'] and task.config['download_ori'])
+        legacy_session = {}
+        if session_store.has_legacy_session_file():
+            try:
+                legacy_session = session_store.load_legacy_session()
+            except Exception as ex:
+                self.logger.warning(
+                    i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc())
+                return ERR_SAVE_SESSION_FAILED, str(ex)
 
-                        # page may have changed by the uploader, rescan pages (rescan from metadata in practice) instead
-                        # meta can be changed too
-                        # besides, ip address of exhentai server may have changed, rescan on reload is essential
-                        if _t.state == TASK_STATE_SCAN_PAGE or _t.state == TASK_STATE_SCAN_IMG or _t.state == TASK_STATE_DOWNLOAD:
-                            _t.page_q = Queue()
-                            _t.reload_map = {}
-                            _t.filehash_map = {}
-                            _t.fid_fname_map = {}
-                            _t.state = TASK_STATE_GET_META
-                        self._all_tasks[_['guid']] = _t
-                        self.tasks.put(_['guid'])
-                    if self._all_tasks:
-                        self.logger.info(i18n.XEH_LOAD_TASKS_CNT %
-                                         len(self._all_tasks))
-                    self.cookies.update(j.get('cookies', {}))
-                    _index = j.get('global_reuse_index', {})
-                    if isinstance(_index, dict) and _index:
-                        self.global_reuse_index = reuse_index.ensure_reuse_index(_index)
-                    if self.cookies:
-                        self.headers.update(
-                            {'Cookie': util.make_cookie(self.cookies)})
-                        self.has_login = 'ipb_member_id' in self.cookies and 'ipb_pass_hash' in self.cookies
         try:
-            self.global_reuse_index = reuse_index.load_reuse_index()
+            tasks_payload = session_store.load_tasks() if session_store.has_tasks_file() else legacy_session.get('tasks', {})
+        except Exception as ex:
+            self.logger.warning(
+                i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc())
+            return ERR_SAVE_SESSION_FAILED, str(ex)
+
+        for _ in tasks_payload.values():
+            _t = Task("", {}).from_dict(_)
+            if 'filelist' in _t.meta:
+                _t.scan_downloaded()
+                # _t.meta['has_ori'] and task.config['download_ori'])
+
+            # page may have changed by the uploader, rescan pages (rescan from metadata in practice) instead
+            # meta can be changed too
+            # besides, ip address of exhentai server may have changed, rescan on reload is essential
+            if _t.state == TASK_STATE_SCAN_PAGE or _t.state == TASK_STATE_SCAN_IMG or _t.state == TASK_STATE_DOWNLOAD:
+                _t.page_q = Queue()
+                _t.reload_map = {}
+                _t.filehash_map = {}
+                _t.fid_fname_map = {}
+                _t.state = TASK_STATE_GET_META
+            self._all_tasks[_['guid']] = _t
+            self.tasks.put(_['guid'])
+        if self._all_tasks:
+            self.logger.info(i18n.XEH_LOAD_TASKS_CNT %
+                             len(self._all_tasks))
+
+        try:
+            loaded_cookies = session_store.load_cookies() if session_store.has_cookies_file() else legacy_session.get('cookies', {})
+        except Exception as ex:
+            self.logger.warning(
+                i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc())
+            return ERR_SAVE_SESSION_FAILED, str(ex)
+
+        self.cookies.update(loaded_cookies)
+        if self.cookies:
+            self.headers.update(
+                {'Cookie': util.make_cookie(self.cookies)})
+            self.has_login = 'ipb_member_id' in self.cookies and 'ipb_pass_hash' in self.cookies
+
+        try:
+            if os.path.exists(reuse_index.REUSE_INDEX_FILE):
+                self.global_reuse_index = reuse_index.load_reuse_index()
+            else:
+                _index = legacy_session.get('global_reuse_index', {})
+                if isinstance(_index, dict) and _index:
+                    self.global_reuse_index = reuse_index.ensure_reuse_index(_index)
         except Exception:
             self.logger.warning(
                 i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc())

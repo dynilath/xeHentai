@@ -59,7 +59,7 @@ log_path = "eh.log"
 # set log level
 log_verbose = 2
 
-# save tasks to h.json
+# save tasks to h.tasks.json
 save_tasks = False
 
 # delete files when deleting a task
