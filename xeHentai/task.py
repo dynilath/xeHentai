@@ -159,20 +159,16 @@ class Task(object):
         return ("xeHentai Archiver v%s r1\n%s" % (__version__, json_zip_meta)).encode('UTF-8')
 
     @staticmethod
-    def decode_meta(comment_str):
-        _ = re.search('{.+}', comment_str)
-        if _:
-            meta_str = _[0]
+    def decode_meta(comment_str:str) -> Dict[str, Any]:
+        lbrace = comment_str.find('{')
+        rbrace = comment_str.rfind('}')
+        if lbrace == -1 or rbrace == -1 or lbrace > rbrace:
+            return {}
+        meta_str = comment_str[lbrace:rbrace+1]
+        if meta_str:
             return json.loads(meta_str)
         else:
-            # adapt to older versions
-            _ = re.findall(r'URL:(http.+\/)', comment_str)
-            if _:
-                metadata = {}
-                metadata.setdefault('url', _[0])
-                return metadata
-            else:
-                return {}
+            return {}
 
     def update_meta(self, meta):
         self.meta.update(meta)
@@ -333,20 +329,10 @@ class Task(object):
             return False
         folder_path = self.get_fpath()
 
-        is_fid_file_name_map_existed = True
-        shall_remove_all = False
-
-        will_extract_old_file = False
-
-        metadata = {}
-        truncated_img_list = []
-        good_img_list = []
-
-        # TODO: in some cases, self.meta['total'] == 0,
-        # TODO: this is obviously an error in meta scanning, yet is able to be detected
-
-        # existing of a file doesn't mean the file is correctly downloaded
-        # scan zip
+        # Quick trust check for existing zip:
+        # 1) has xeHentai archive marker in comment
+        # 2) embedded url matches current task url
+        # 3) file count matches expected total
         arc = "%s.zip" % folder_path
 
         # many of those ongoing galleries is titled like 'XXXX 1~12[ongoing]'
@@ -365,71 +351,43 @@ class Task(object):
                         break
 
         if os.path.exists(arc):
-            # if the zipfile exists, check the url written in the zipfile
             try:
                 with zipfile.ZipFile(arc, 'r') as zipfile_target:
-                    metadata = self.decode_meta(
-                        zipfile_target.comment.decode('UTF-8'))
-                    # check fidmap in the file, if there isn't one, then just renew the zip
-                    if 'fid_fname_map' not in metadata or not len(metadata['fid_fname_map']) == self.meta['total']:
-                        is_fid_file_name_map_existed = False
-                    # only remove all file when task is download ori but existing file is not
-                    if 'download_ori' in metadata and not metadata['download_ori'] and self.config['download_ori']:
-                        will_extract_old_file = True
-                    if 'rename_ori' in metadata and not metadata['rename_ori'] == self.config['rename_ori']:
-                        will_extract_old_file = True
-                    if 'url' in metadata and not metadata['url'] == self.url:
-                        will_extract_old_file = True
+                    comment_str = zipfile_target.comment.decode('UTF-8', errors='ignore')
+                    metadata = self.decode_meta(comment_str)
+                    
+                    # Verify archive marker
+                    marker_ok = comment_str.startswith('xeHentai Archiver v')
+                    
+                    # Verify URL matches current task
+                    url_ok = metadata.get('url') == self.url
+                    
+                    # Count actual files in zip (excluding directories)
+                    file_count = len([_n for _n in zipfile_target.namelist() if not _n.endswith('/')])
+                    
+                    # Verify file count in zip metadata matches actual file count
+                    zip_meta_total = metadata.get('total', 0)
+                    count_ok = file_count == zip_meta_total
 
-                    # when url matches, check every image
-                    file_name_list = zipfile_target.namelist()
-                    if is_fid_file_name_map_existed:
-                        for _fid, _file_name in metadata['fid_fname_map'].items():
-                            if _file_name in file_name_list:
-                                zip_info = zipfile_target.getinfo(_file_name)
-                                _name, _ext = os.path.splitext(_file_name)
-                                if zip_info.file_size == 0 or _ext == '.xeh':
-                                    truncated_img_list.append(_file_name)
-                                elif _ext == '.xehdone':
-                                    continue
-                                else:
-                                    good_img_list.append(_file_name)
-                    else:
-                        for in_zip_file_name in file_name_list:
-                            zip_info = zipfile_target.getinfo(in_zip_file_name)
-                            if not zip_info.is_dir():
-                                _name, _ext = os.path.splitext(
-                                    in_zip_file_name)
-                                if zip_info.file_size == 0 or _ext == '.xeh':
-                                    truncated_img_list.append(in_zip_file_name)
-                                elif _ext == '.xehdone':
-                                    continue
-                                else:
-                                    good_img_list.append(in_zip_file_name)
+                    if marker_ok and url_ok and count_ok:
+                        # All three checks pass: zip is trusted as complete
+                        self._flist_done.update(range(1, zip_meta_total + 1))
+                        if 'fid_fname_map' in metadata:
+                            self.fid_2_file_name_map = metadata['fid_fname_map']
+                        self.meta['finished'] = len(self._flist_done)
+                        return self.meta['finished'] == self.meta['total']
 
-                    if len(truncated_img_list) > 0 or not len(good_img_list) == self.meta['total'] \
-                            or not is_fid_file_name_map_existed or will_extract_old_file:
-                        # extract all image when some images is truncated
-                        # or when download is not finished
-                        zipfile_target.extractall(folder_path)
-                        zipfile_target.close()
-                        os.remove(arc)
+                    # Checks failed: do not trust zip, extract and remove it
+                    if not os.path.exists(folder_path):
+                        os.makedirs(folder_path)
+                    zipfile_target.extractall(folder_path)
+                    zipfile_target.close()
+                    os.remove(arc)
             except zipfile.BadZipFile:
                 os.remove(arc)
                 return False
 
-        # a zip file properly commented is trustworthy, so program will assume it was completed
-        if len(truncated_img_list) == 0 and len(good_img_list) == self.meta['total'] and is_fid_file_name_map_existed\
-                and not will_extract_old_file:
-            self._flist_done.update(range(1, self.meta['total'] + 1))
-            self.fid_2_file_name_map = metadata['fid_fname_map']
-        elif len(truncated_img_list) > 0:
-            for truncated_img_name in truncated_img_list:
-                img_path = os.path.join(folder_path, truncated_img_name)
-                os.remove(img_path)
-
-        if not will_extract_old_file:
-            self.meta['finished'] = len(self._flist_done)
+        self.meta['finished'] = len(self._flist_done)
         if self.meta['finished'] == self.meta['total']:
             return True
         return False
@@ -575,7 +533,7 @@ class Task(object):
         fpath = self.get_fpath()
         self._f_lock.acquire()
         if not os.path.exists(fpath):
-            os.mkdir(fpath)
+            os.makedirs(fpath)
         self._f_lock.release()
 
         if imgurl not in self.reload_map:
