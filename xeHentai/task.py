@@ -12,10 +12,53 @@ import shutil
 import zipfile
 from typing import Any, Dict, List, Optional, Set, Tuple
 from threading import RLock
+from dataclasses import dataclass, asdict
 from . import util
 from .const import *
 from .const import __version__
 from queue import Queue, Empty
+
+
+@dataclass
+class ArchiveMeta:
+    """Type-safe archive metadata with validation"""
+    gjname: str
+    gnname: str
+    tags: Any
+    total: int
+    title: str
+    rename_ori: bool
+    download_ori: bool
+    url: str
+    fid_fname_map: Dict[str, str]
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ArchiveMeta':
+        """Create ArchiveMeta from dictionary with validation"""
+        required_fields = {'gjname', 'gnname', 'tags', 'total', 'title', 
+                          'rename_ori', 'download_ori', 'url', 'fid_fname_map'}
+        missing = required_fields - set(data.keys())
+        if missing:
+            raise ValueError(f"Missing required archive metadata fields: {missing}")
+        
+        try:
+            return cls(
+                gjname=str(data['gjname']),
+                gnname=str(data['gnname']),
+                tags=data['tags'],
+                total=int(data['total']),
+                title=str(data['title']),
+                rename_ori=bool(data['rename_ori']),
+                download_ori=bool(data['download_ori']),
+                url=str(data['url']),
+                fid_fname_map=dict(data['fid_fname_map'])
+            )
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid archive metadata types: {e}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization"""
+        return asdict(self)
 
 
 class Task(object):
@@ -144,38 +187,49 @@ class Task(object):
         return True
 
     # write some metadata into zip file
-    def encode_meta(self):
-        zip_meta = {}
-        zip_meta.setdefault('gjname', self.meta['gjname'])
-        zip_meta.setdefault('gnname', self.meta['gnname'])
-        zip_meta.setdefault('tags', self.meta['tags'])
-        zip_meta.setdefault('total', self.meta['total'])
-        zip_meta.setdefault('title', self.meta['title'])
-        zip_meta.setdefault('rename_ori', self.config['rename_ori'])
-        zip_meta.setdefault('download_ori', self.config['download_ori'])
-        zip_meta.setdefault('url', self.url)
-        zip_meta.setdefault('fid_fname_map', self.fid_2_file_name_map)
-        json_zip_meta = json.dumps(zip_meta)
+    def encode_meta(self) -> bytes:
+        """Encode task metadata for zip file comment"""
+        archive_meta = ArchiveMeta(
+            gjname=self.meta['gjname'],
+            gnname=self.meta['gnname'],
+            tags=self.meta['tags'],
+            total=self.meta['total'],
+            title=self.meta['title'],
+            rename_ori=self.config['rename_ori'],
+            download_ori=self.config['download_ori'],
+            url=self.url,
+            fid_fname_map=self.fid_2_file_name_map
+        )
+        json_zip_meta = json.dumps(archive_meta.to_dict())
         return ("xeHentai Archiver v%s r1\n%s" % (__version__, json_zip_meta)).encode('UTF-8')
 
     @staticmethod
-    def decode_meta(comment_str:str) -> Dict[str, Any]:
+    def decode_meta(comment_str: str) -> Optional[ArchiveMeta]:
+        """Decode and validate metadata from zip file comment"""
         lbrace = comment_str.find('{')
         rbrace = comment_str.rfind('}')
         if lbrace == -1 or rbrace == -1 or lbrace > rbrace:
-            return {}
+            return None
+        
         meta_str = comment_str[lbrace:rbrace+1]
-        if meta_str:
-            return json.loads(meta_str)
-        else:
-            return {}
+        if not meta_str:
+            return None
+        
+        try:
+            data = json.loads(meta_str)
+            return ArchiveMeta.from_dict(data)
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+            return None
 
-    def update_meta(self, meta):
+    def update_meta(self, meta: Dict[str, Any]) -> None:
+        """Update metadata with type validation for critical fields"""
         self.meta.update(meta)
-        if self.config['jpn_title'] and self.meta['gjname']:
-            self.meta['title'] = self.meta['gjname']
+        # Validate and set title based on config
+        if self.config.get('jpn_title') and self.meta.get('gjname'):
+            self.meta['title'] = str(self.meta['gjname'])
         else:
-            self.meta['title'] = self.meta['gnname']
+            self.meta['title'] = str(self.meta.get('gnname', ''))
+
 
     # def guess_ori(self):
     #     # guess if this gallery has resampled files depending on some sample hashes
@@ -359,21 +413,20 @@ class Task(object):
                     # Verify archive marker
                     marker_ok = comment_str.startswith('xeHentai Archiver v')
                     
-                    # Verify URL matches current task
-                    url_ok = metadata.get('url') == self.url
+                    # Verify URL matches current task and metadata is valid
+                    url_ok = metadata is not None and metadata.url == self.url
                     
                     # Count actual files in zip (excluding directories)
                     file_count = len([_n for _n in zipfile_target.namelist() if not _n.endswith('/')])
                     
                     # Verify file count in zip metadata matches actual file count
-                    zip_meta_total = metadata.get('total', 0)
-                    count_ok = file_count == zip_meta_total
+                    count_ok = metadata is not None and file_count == metadata.total
 
                     if marker_ok and url_ok and count_ok:
                         # All three checks pass: zip is trusted as complete
-                        self._flist_done.update(range(1, zip_meta_total + 1))
-                        if 'fid_fname_map' in metadata:
-                            self.fid_2_file_name_map = metadata['fid_fname_map']
+                        assert metadata is not None
+                        self._flist_done.update(range(1, metadata.total + 1))
+                        self.fid_2_file_name_map = metadata.fid_fname_map
                         self.meta['finished'] = len(self._flist_done)
                         return self.meta['finished'] == self.meta['total']
 
