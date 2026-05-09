@@ -645,13 +645,24 @@ class Task(object):
         return int(fid), fname
 
     def get_fpath(self):
-        """ 
+        """
         Gets file path for the task.
         If the download is not done, this is the folder path for downloading files.
         If the download is done, this is the zip file path without extension.
+        Uses 9-digit padded gallery_id and splits into 3+3 directory structure to avoid too many files in one folder.
         """
-        gallery_id = self.gid if hasattr(self, 'gid') else 'unknown'
-        return os.path.join(self.config['dir'], f"{gallery_id} - {util.legalpath(self.meta['title'])}")
+        gallery_id = str(self.gid if hasattr(self, 'gid') else 'unknown')
+        # Only pad if gallery_id is all digits
+        if gallery_id.isdigit():
+            id_str = gallery_id.zfill(9)
+            dir1 = id_str[:3]
+            dir2 = id_str[3:6]
+            base_dir = os.path.join(self.config['dir'], dir1, dir2)
+            folder_name = f"{gallery_id} - {util.legalpath(self.meta['title'])}"
+            return os.path.join(base_dir, folder_name)
+        else:
+            # fallback for unknown/non-numeric id
+            return os.path.join(self.config['dir'], f"{gallery_id} - {util.legalpath(self.meta['title'])}")
 
     def get_fidpad(self, fid, ext='.jpg'):
         if fid in self.fid_2_file_name_map:
