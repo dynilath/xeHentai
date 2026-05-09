@@ -54,12 +54,19 @@ def flt_metadata(r, suc, fail):
     # meta['resampled'] = {}
 
     try:
-        meta['gjname'] = util.htmlescape(
+        title_japanese = util.htmlescape(
             re.findall('="gj">(.*?)</h1>', r.text)[0])
-        meta['gnname'] = util.htmlescape(
+        title_primary = util.htmlescape(
             re.findall('="gn">(.*?)</h1>', r.text)[0])
-        # don't assign title now, select gj/gn based on cfg['jpn_title']
-        # meta['title'] = meta['gjname'] if meta['gjname'] else meta['gnname']
+
+        # preferred readable naming
+        meta['title_japanese'] = title_japanese
+        meta['title_primary'] = title_primary
+
+        # backward-compatible aliases
+        meta['gjname'] = title_japanese
+        meta['gnname'] = title_primary
+        # don't assign title now, select by cfg['jpn_title']
         meta['total'] = int(re.findall(
             'Length:</td><td class="gdt2">(\\d+)\\s+page', r.text)[0])
         meta['finished'] = 0
@@ -68,6 +75,21 @@ def flt_metadata(r, suc, fail):
         # TODO: parse cookie to calc thumbnail_cnt (tr_2, ts_m)
         _ = re.findall("Showing (\\d+) \\- (\\d+) of ([\\d,]+) images", r.text)[0]
         meta['thumbnail_cnt'] = int(_[1]) - int(_[0]) + 1
+
+        meta['newer_versions'] = []
+        gnd_block = re.search(r'<div id="gnd">(.+?)</div>', r.text, re.DOTALL)
+        if gnd_block:
+            for _u, _gid, _sethash, _title, _added in re.findall(
+                    r'<a href="(https?://(?:e-|ex)hentai\.org/g/(\d+)/([^/"]+)/?)">([^<]+)</a>,\s*added\s*([^<]+)',
+                    gnd_block.group(1)):
+                meta['newer_versions'].append({
+                    'url': util.htmlescape(_u),
+                    'gid': str(_gid),
+                    'sethash': str(_sethash),
+                    'title': util.htmlescape(_title),
+                    'added': _added.strip(),
+                })
+
         suc(meta)
     except IndexError as e:
         print(r.text)

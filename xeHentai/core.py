@@ -11,6 +11,7 @@ import json
 import time
 import traceback
 from .task import Task
+from . import reuse_index
 from . import util
 from . import proxy
 from . import filters
@@ -54,8 +55,13 @@ class xeHentai(object):
             'Connection': 'keep-alive'
         }
         self.has_login = False
+        self.global_reuse_index = reuse_index.ensure_reuse_index({})
         self.load_session()
         self.rpc = None
+
+    def _update_task_reuse_index(self, task):
+        """Upsert reusable page-hash mappings from a task into global_reuse_index."""
+        self.global_reuse_index = reuse_index.record_task_reuse(self.global_reuse_index, task)
 
     def update_config(self, **cfg_dict):
         self.cfg.update({k: v for k, v in cfg_dict.items()
@@ -186,6 +192,7 @@ class xeHentai(object):
 
     def _do_task(self, task_guid):
         task = self._all_tasks[task_guid]
+        task._reuse_index = self.global_reuse_index
         if task.state == TASK_STATE_WAITING:
             task.state = TASK_STATE_GET_META
         req = self._get_httpreq(util.get_proxy_policy(task.config))
@@ -282,6 +289,7 @@ class xeHentai(object):
                 # scan zip, zip file has metadata in comment
                 # if some image is truncated or outdated, download them again
                 if task.prescan_downloaded():
+                    self._update_task_reuse_index(task)
                     task.state = TASK_STATE_SCAN_IMG
                     continue
 
@@ -301,6 +309,7 @@ class xeHentai(object):
                     break
                 # after scan will change _flist_done and shorten the download queue
                 if task.scan_downloaded(temp_fid_2_page_url_map):
+                    self._update_task_reuse_index(task)
                     task.state = TASK_STATE_SCAN_IMG
                     continue
 
@@ -374,6 +383,7 @@ class xeHentai(object):
                     self._all_threads[TASK_STATE_MAKE_ARCHIVE].append(_a)
                     _a.start()
                 # break current task loop
+                self._update_task_reuse_index(task)
                 break
 
             if task.failcode:
@@ -407,6 +417,7 @@ class xeHentai(object):
                     self.save_session()
                     cnt = 0
                     self._do_task(task_guid)
+                    self._update_task_reuse_index(task)
         self.logger.info(i18n.XEH_LOOP_FINISHED)
         self._cleanup()
 
@@ -449,6 +460,7 @@ class xeHentai(object):
                         'cookies': self.cookies}))
             os.path.exists("h.json") and os.remove("h.json")
             os.rename("h.next", "h.json")
+            reuse_index.save_reuse_index(self.global_reuse_index)
         except Exception as ex:
             self.logger.warning(i18n.SESSION_WRITE_EXCEPTION %
                                 traceback.format_exc())
@@ -465,7 +477,7 @@ class xeHentai(object):
                         i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc())
                     return ERR_SAVE_SESSION_FAILED, str(ex)
                 else:
-                    for _ in j['tasks'].values():
+                    for _ in j.get('tasks', {}).values():
                         _t = Task("", {}).from_dict(_)
                         if 'filelist' in _t.meta:
                             _t.scan_downloaded()
@@ -485,11 +497,19 @@ class xeHentai(object):
                     if self._all_tasks:
                         self.logger.info(i18n.XEH_LOAD_TASKS_CNT %
                                          len(self._all_tasks))
-                    self.cookies.update(j['cookies'])
+                    self.cookies.update(j.get('cookies', {}))
+                    _index = j.get('global_reuse_index', {})
+                    if isinstance(_index, dict) and _index:
+                        self.global_reuse_index = reuse_index.ensure_reuse_index(_index)
                     if self.cookies:
                         self.headers.update(
                             {'Cookie': util.make_cookie(self.cookies)})
                         self.has_login = 'ipb_member_id' in self.cookies and 'ipb_pass_hash' in self.cookies
+        try:
+            self.global_reuse_index = reuse_index.load_reuse_index()
+        except Exception:
+            self.logger.warning(
+                i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc())
         _1xcookie = os.path.join(
             FILEPATH, ".ehentai.cookie")  # 1.x cookie file
         if not self.has_login and os.path.exists(_1xcookie):

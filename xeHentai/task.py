@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from threading import RLock
 from dataclasses import dataclass, asdict
 from . import util
+from . import reuse_index
 from .const import *
 from .const import __version__
 from queue import Queue, Empty
@@ -22,8 +23,8 @@ from queue import Queue, Empty
 @dataclass
 class ArchiveMeta:
     """Type-safe archive metadata with validation"""
-    gjname: str
-    gnname: str
+    title_japanese: str
+    title_primary: str
     tags: Any
     total: int
     title: str
@@ -31,34 +32,47 @@ class ArchiveMeta:
     download_ori: bool
     url: str
     fid_fname_map: Dict[str, str]
+    fid_page_hash_map: Optional[Dict[str, str]] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ArchiveMeta':
         """Create ArchiveMeta from dictionary with validation"""
-        required_fields = {'gjname', 'gnname', 'tags', 'total', 'title', 
-                          'rename_ori', 'download_ori', 'url', 'fid_fname_map'}
+        required_fields = {'tags', 'total', 'title',
+                           'rename_ori', 'download_ori', 'url', 'fid_fname_map'}
         missing = required_fields - set(data.keys())
         if missing:
             raise ValueError(f"Missing required archive metadata fields: {missing}")
         
         try:
+            fid_page_hash_map = data.get('fid_page_hash_map')
+            if fid_page_hash_map is not None:
+                fid_page_hash_map = dict(fid_page_hash_map)
+
+            title_japanese = str(data.get('title_japanese', data.get('gjname', '')))
+            title_primary = str(data.get('title_primary', data.get('gnname', '')))
+
             return cls(
-                gjname=str(data['gjname']),
-                gnname=str(data['gnname']),
+                title_japanese=title_japanese,
+                title_primary=title_primary,
                 tags=data['tags'],
                 total=int(data['total']),
                 title=str(data['title']),
                 rename_ori=bool(data['rename_ori']),
                 download_ori=bool(data['download_ori']),
                 url=str(data['url']),
-                fid_fname_map=dict(data['fid_fname_map'])
+                fid_fname_map=dict(data['fid_fname_map']),
+                fid_page_hash_map=fid_page_hash_map
             )
         except (TypeError, ValueError) as e:
             raise ValueError(f"Invalid archive metadata types: {e}")
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization"""
-        return asdict(self)
+        """Convert to dictionary for JSON serialization with legacy aliases."""
+        data = asdict(self)
+        # Legacy field aliases for backward compatibility.
+        data['gjname'] = self.title_japanese
+        data['gnname'] = self.title_primary
+        return data
 
 
 class Task(object):
@@ -126,6 +140,16 @@ class Task(object):
         # times of image page loading is used by ehentai for counting bandwidth limit
         self.fid_2_file_size_map: Dict[str, str] = {}  # map fid to file size text, reduce image page load
 
+        # map fid to 10-char page hash, extracted from /s/<hash>/<gid>-<fid>
+        self.fid_2_page_hash_map: Dict[str, str] = {}
+
+        # lazy-loaded mapping: page_hash -> (archive_path, archive_member_name)
+        self._related_archive_hash_index: Dict[str, Tuple[str, str]] = {}
+        self._related_archive_hash_index_ready: bool = False
+
+        # shared, process-level reuse index injected by core
+        self._reuse_index: Optional[Dict[str, Any]] = None
+
         # and, the fid in these map will all be str
         # when int key dumps into files by python, it is somehow transformed into str
         # and an error would occur when you load it again
@@ -165,6 +189,9 @@ class Task(object):
             self._file_in_download_folder = []
             self.fid_2_file_size_map = {}
             self.fid_2_original_file_name_map = {}
+            self.fid_2_page_hash_map = {}
+            self._related_archive_hash_index = {}
+            self._related_archive_hash_index_ready = False
             self.download_range = []
             # if 'filelist' in self.meta:
             #     del self.meta['filelist']
@@ -190,15 +217,16 @@ class Task(object):
     def encode_meta(self) -> bytes:
         """Encode task metadata for zip file comment"""
         archive_meta = ArchiveMeta(
-            gjname=self.meta['gjname'],
-            gnname=self.meta['gnname'],
+            title_japanese=self.meta.get('title_japanese', self.meta.get('gjname', '')),
+            title_primary=self.meta.get('title_primary', self.meta.get('gnname', '')),
             tags=self.meta['tags'],
             total=self.meta['total'],
             title=self.meta['title'],
             rename_ori=self.config['rename_ori'],
             download_ori=self.config['download_ori'],
             url=self.url,
-            fid_fname_map=self.fid_2_file_name_map
+            fid_fname_map=self.fid_2_file_name_map,
+            fid_page_hash_map=self.fid_2_page_hash_map
         )
         json_zip_meta = json.dumps(archive_meta.to_dict())
         return ("xeHentai Archiver v%s r1\n%s" % (__version__, json_zip_meta)).encode('UTF-8')
@@ -224,11 +252,21 @@ class Task(object):
     def update_meta(self, meta: Dict[str, Any]) -> None:
         """Update metadata with type validation for critical fields"""
         self.meta.update(meta)
+
+        # normalize legacy/new naming into one canonical shape
+        if 'title_japanese' not in self.meta and 'gjname' in self.meta:
+            self.meta['title_japanese'] = self.meta.get('gjname', '')
+        if 'title_primary' not in self.meta and 'gnname' in self.meta:
+            self.meta['title_primary'] = self.meta.get('gnname', '')
+        # keep aliases for compatibility with old code paths
+        self.meta['gjname'] = str(self.meta.get('title_japanese', self.meta.get('gjname', '')))
+        self.meta['gnname'] = str(self.meta.get('title_primary', self.meta.get('gnname', '')))
+
         # Validate and set title based on config
-        if self.config.get('jpn_title') and self.meta.get('gjname'):
-            self.meta['title'] = str(self.meta['gjname'])
+        if self.config.get('jpn_title') and self.meta.get('title_japanese'):
+            self.meta['title'] = str(self.meta['title_japanese'])
         else:
-            self.meta['title'] = str(self.meta.get('gnname', ''))
+            self.meta['title'] = str(self.meta.get('title_primary', ''))
 
 
     # def guess_ori(self):
@@ -285,6 +323,13 @@ class Task(object):
         self._cnt_lock.release()
 
     def set_reload_url(self, image_url, reload_url, fname, filesize):
+        """Register image reload metadata and try local/related-archive reuse before download.
+
+        Reuse priority:
+        1) same-task existing file checks (legacy behavior)
+        2) related gallery archives discovered from #gnd, matched by page hash and verified by size
+        3) fallback to queue download
+        """
         # if same file occurs several times in a gallery
         # to be done with new rename logic
 
@@ -366,17 +411,179 @@ class Task(object):
                 # well that's definitely the file we need
                 self.set_fid_done(this_fid)
                 return
+
+            page_hash = self.fid_2_page_hash_map.get(this_fid)
+            if page_hash and self._try_reuse_from_related_archive(page_hash, real_file_name, filesize):
+                self.set_fid_done(this_fid)
+                return
+
             # otherwise add it to download queue
             self.img_q.put(image_url)
 
     def get_reload_url(self, imgurl):
+        """Return queued reload URL for an image URL, if present."""
         if not imgurl or imgurl not in self.reload_map:
             return
         return self.reload_map[imgurl][0]
 
+    def _get_gid_bucket_dir(self, gid: str) -> Optional[str]:
+        """Return the 3+3 bucket directory path for a numeric gallery id."""
+        gid = str(gid)
+        if not gid.isdigit():
+            return None
+        gid_padded = gid.zfill(9)
+        return os.path.join(self.config['dir'], gid_padded[:3], gid_padded[3:6])
+
+    def _find_archive_by_gid(self, gid: str) -> Optional[str]:
+        """Locate a gallery archive zip by gid under the current bucketed layout."""
+        bucket_dir = self._get_gid_bucket_dir(gid)
+        if not bucket_dir or not os.path.isdir(bucket_dir):
+            return None
+
+        prefix = "%s - " % gid
+        for name in os.listdir(bucket_dir):
+            if name.startswith(prefix) and name.endswith('.zip'):
+                return os.path.join(bucket_dir, name)
+        return None
+
+    def _build_related_archive_hash_index(self) -> None:
+        """Build a fallback hash index from #gnd-related archives.
+
+        This index is optional. Primary lookup should use global by_page_hash index.
+        """
+        if self._related_archive_hash_index_ready:
+            return
+
+        idx: Dict[str, Tuple[str, str]] = {}
+        for version in reversed(self.meta.get('newer_versions', [])):
+            gid = str(version.get('gid', ''))
+            if not gid or gid == str(getattr(self, 'gid', '')):
+                continue
+            arc = self._find_archive_by_gid(gid)
+            if not arc or not os.path.exists(arc):
+                continue
+
+            try:
+                with zipfile.ZipFile(arc, 'r') as zf:
+                    metadata = self.decode_meta(
+                        zf.comment.decode('UTF-8', errors='ignore'))
+                    if not metadata or not metadata.fid_page_hash_map:
+                        continue
+
+                    for src_fid, src_hash in metadata.fid_page_hash_map.items():
+                        member_name = metadata.fid_fname_map.get(str(src_fid))
+                        if not member_name:
+                            continue
+                        if src_hash not in idx:
+                            idx[src_hash] = (arc, member_name)
+            except (zipfile.BadZipFile, OSError, RuntimeError):
+                continue
+
+        self._related_archive_hash_index = idx
+        self._related_archive_hash_index_ready = True
+
+    def _iter_global_hash_candidates(self, page_hash: str):
+        """Yield valid source candidates from shared global index for a page hash."""
+        if not self._reuse_index:
+            return
+        by_hash = self._reuse_index.get('by_page_hash', {})
+        entries = by_hash.get(page_hash, [])
+        entries = sorted(entries, key=lambda x: int(x.get('updated_at', 0)), reverse=True)
+        for entry in entries:
+            source_path = entry.get('source_path')
+            if source_path and os.path.exists(source_path):
+                yield entry
+
+    def _try_copy_from_source(self, entry: Dict[str, Any], target_path: str, size_text: str) -> bool:
+        """Copy from a source entry (zip member or plain file) and verify size range."""
+        source_type = entry.get('source_type')
+        source_path = entry.get('source_path')
+        member_name = entry.get('member_name')
+
+        tmp_path = "%s.xeh" % target_path
+        try:
+            if source_type == 'zip':
+                with zipfile.ZipFile(source_path, 'r') as zf:
+                    with zf.open(member_name, 'r') as src, open(tmp_path, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+            elif source_type == 'file':
+                shutil.copyfile(source_path, tmp_path)
+            else:
+                return False
+
+            if not self.check_size_range(tmp_path, size_text):
+                os.remove(tmp_path)
+                return False
+
+            if os.path.exists(target_path):
+                os.remove(target_path)
+            os.rename(tmp_path, target_path)
+            return True
+        except (KeyError, OSError, zipfile.BadZipFile):
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            return False
+
+    def _try_reuse_from_related_archive(self, page_hash: str, target_name: str, size_text: str) -> bool:
+        """Try to reuse by hash from global index first, then #gnd fallback."""
+        target_dir = self.get_task_dir()
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
+        target_path = os.path.join(target_dir, target_name)
+
+        for entry in self._iter_global_hash_candidates(page_hash) or []:
+            if self._try_copy_from_source(entry, target_path, size_text):
+                return True
+
+        self._build_related_archive_hash_index()
+        source = self._related_archive_hash_index.get(page_hash)
+        if not source:
+            return False
+        archive_path, member_name = source
+        return self._try_copy_from_source({
+            'source_type': 'zip',
+            'source_path': archive_path,
+            'member_name': member_name,
+        }, target_path, size_text)
+
+    def _collect_prescan_archive_candidates(self, current_arc: str) -> List[Dict[str, Any]]:
+        """Collect archive candidates for prescan from the shared search index."""
+        return reuse_index.collect_prescan_candidates(
+            self._reuse_index,
+            current_arc,
+            self.meta.get('title', ''),
+            str(getattr(self, 'gid', '')),
+            self.meta.get('newer_versions', []),
+        )
+
+    def _can_extract_foreign_archive(self, metadata: Optional[ArchiveMeta], candidate: Dict[str, Any]) -> bool:
+        """Validate whether a foreign archive can seed the current task directory."""
+        if metadata is None:
+            return False
+
+        candidate_url = metadata.url or str(candidate.get('candidate_url', ''))
+        candidate_gid = reuse_index.extract_gid_from_url(candidate_url) or str(candidate.get('candidate_gid', ''))
+        if not candidate_url and not candidate_gid:
+            return False
+
+        return reuse_index.is_known_related(
+            self._reuse_index,
+            self.url,
+            str(getattr(self, 'gid', '')),
+            candidate_url,
+            candidate_gid,
+            self.meta.get('newer_versions', []),
+        )
+
     # scan folder or zip file before all worker start working
     # it is designed mainly to remove truncated file and extract those outdated zip files
     def prescan_downloaded(self):
+        """Prescan zip/folder and optionally seed current folder from related archives.
+
+        The method trusts current archive only when marker/url/count all match.
+        For related archive candidates, it extracts as baseline but never deletes
+        foreign zip files.
+        """
 
         # fpath requires title
         if not 'title' in self.meta:
@@ -389,36 +596,29 @@ class Task(object):
         # 3) file count matches expected total
         arc = "%s.zip" % folder_path
 
-        # many of those ongoing galleries is titled like 'XXXX 1~12[ongoing]'
-        matched = re.search(r'(\d+)( *[-~] *)(\d+)(.+)', arc)
-        if matched:
-            beg_serial = int(matched.group(1))
-            arc_serial = int(matched.group(3))
-            if beg_serial < arc_serial:
-                prefix = arc[0:matched.span(2)[1]]
-                suffix = matched.group(4)
-                # search from <beg_serial>~<beg_serial> to <beg_serial>~<arc_serial>
-                for i in range(beg_serial+1, arc_serial, 1):
-                    test_arc = prefix+str(i)+suffix
-                    if os.path.exists(test_arc):
-                        arc = test_arc
-                        break
+        current_arc_abs = os.path.abspath(arc)
+        for candidate in self._collect_prescan_archive_candidates(arc):
+            candidate_arc = candidate.get('archive_path')
+            if not candidate_arc:
+                continue
+            if not os.path.exists(candidate_arc):
+                continue
 
-        if os.path.exists(arc):
+            is_foreign_arc = os.path.abspath(candidate_arc) != current_arc_abs
             try:
-                with zipfile.ZipFile(arc, 'r') as zipfile_target:
+                with zipfile.ZipFile(candidate_arc, 'r') as zipfile_target:
                     comment_str = zipfile_target.comment.decode('UTF-8', errors='ignore')
                     metadata = self.decode_meta(comment_str)
-                    
+
                     # Verify archive marker
                     marker_ok = comment_str.startswith('xeHentai Archiver v')
-                    
+
                     # Verify URL matches current task and metadata is valid
                     url_ok = metadata is not None and metadata.url == self.url
-                    
+
                     # Count actual files in zip (excluding directories)
                     file_count = len([_n for _n in zipfile_target.namelist() if not _n.endswith('/')])
-                    
+
                     # Verify file count in zip metadata matches actual file count
                     count_ok = metadata is not None and file_count == metadata.total
 
@@ -427,18 +627,27 @@ class Task(object):
                         assert metadata is not None
                         self._flist_done.update(range(1, metadata.total + 1))
                         self.fid_2_file_name_map = metadata.fid_fname_map
+                        self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
                         self.meta['finished'] = len(self._flist_done)
                         return self.meta['finished'] == self.meta['total']
 
-                    # Checks failed: do not trust zip, extract and remove it
+                    # Checks failed: only validated related archives may seed baseline files.
+                    if is_foreign_arc and not self._can_extract_foreign_archive(metadata, candidate):
+                        continue
+
+                    # Extract as reusable baseline.
+                    # Only delete when this is the current task archive.
                     if not os.path.exists(folder_path):
                         os.makedirs(folder_path)
                     zipfile_target.extractall(folder_path)
                     zipfile_target.close()
-                    os.remove(arc)
+                    if not is_foreign_arc:
+                        os.remove(candidate_arc)
+                    break
             except zipfile.BadZipFile:
-                os.remove(arc)
-                return False
+                if not is_foreign_arc:
+                    os.remove(candidate_arc)
+                continue
 
         self.meta['finished'] = len(self._flist_done)
         if self.meta['finished'] == self.meta['total']:
@@ -446,6 +655,7 @@ class Task(object):
         return False
 
     def scan_downloaded(self, fid_2_page_url_map, scaled=True):
+        """Scan existing download folder and mark already-valid files as finished."""
         folder_path = self.get_task_dir()
         is_done_file = False
         _range_idx = 0
@@ -523,6 +733,7 @@ class Task(object):
         return False
 
     def queue_wrapper(self, callback_page_url_setdefault, pichash=None, img_tuble=None):
+        """Normalize per-page tuple and capture fid->page_hash for later reuse matching."""
         # if url is not finished, call callback to put into queue
         # type 1: normal file; type 2: resampled url
         # if pichash:
@@ -539,6 +750,10 @@ class Task(object):
         #    callback1(img_tuble[0])
 
         _page_url, _fid, _original_file_name = img_tuble
+
+        _match = RE_GALLERY.findall(_page_url)
+        if _match:
+            self.fid_2_page_hash_map.setdefault(_fid, _match[0][0])
 
         if self.config['download_range']:
             if not int(_fid) in self.download_range:
