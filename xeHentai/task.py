@@ -106,7 +106,7 @@ class Task(object):
         if before_delete:
             if 'delete_task_files' in self.config and self.config['delete_task_files'] and \
                     'title' in self.meta:  # maybe it's a error task and meta is empty
-                fpath = self.get_fpath()
+                fpath = self.get_task_dir()
                 # TODO: ascii can't decode? locale not enus, also check save_file
                 if os.path.exists(fpath):
                     shutil.rmtree(fpath)
@@ -258,7 +258,7 @@ class Task(object):
         # two files have same url
         if image_url in self.reload_map:
             existed_image_url, existed_file_name = self.reload_map[image_url]
-            folder_path = self.get_fpath()
+            folder_path = self.get_task_dir()
             existed_file = os.path.join(folder_path, existed_file_name)
             file_existed = False
             unexpected_file = False
@@ -301,7 +301,7 @@ class Task(object):
             # but i cant get a hash before downloading the file
             file_existed = False
             unexpected_file = False
-            folder_path = self.get_fpath()
+            folder_path = self.get_task_dir()
             target_file_path = os.path.join(folder_path, real_file_name)
             if os.path.exists(target_file_path):
                 file_existed = True
@@ -327,7 +327,7 @@ class Task(object):
         # fpath requires title
         if not 'title' in self.meta:
             return False
-        folder_path = self.get_fpath()
+        folder_path = self.get_task_dir()
 
         # Quick trust check for existing zip:
         # 1) has xeHentai archive marker in comment
@@ -393,7 +393,7 @@ class Task(object):
         return False
 
     def scan_downloaded(self, fid_2_page_url_map, scaled=True):
-        folder_path = self.get_fpath()
+        folder_path = self.get_task_dir()
         is_done_file = False
         _range_idx = 0
 
@@ -530,7 +530,7 @@ class Task(object):
 
     def save_file(self, imgurl, redirect_url, binary_iter):
         # TODO: Rlock for finished += 1
-        fpath = self.get_fpath()
+        fpath = self.get_task_dir()
         self._f_lock.acquire()
         if not os.path.exists(fpath):
             os.makedirs(fpath)
@@ -602,7 +602,7 @@ class Task(object):
         _, fid = RE_GALLERY.findall(pageurl)[0]
         return int(fid), fname
 
-    def get_fpath(self):
+    def get_task_dir(self) -> str:
         """
         Gets file path for the task.
         If the download is not done, this is the folder path for downloading files.
@@ -630,7 +630,7 @@ class Task(object):
         return _ % (fid, ext)
 
     def make_archive(self, remove=True):
-        dpath = self.get_fpath()
+        dpath = self.get_task_dir()
         arc = "%s.zip" % dpath
         if os.path.exists(arc):
             # [s]when truncated images not exist, the zip file is considered fully downloaded[\s]

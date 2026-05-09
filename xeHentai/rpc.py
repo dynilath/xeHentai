@@ -369,7 +369,7 @@ class xeHentaiRPCExtended(object):
             mime = "application/octet-stream"
         else:
             mime = mime_map[ext]
-        return t.get_fpath(), f, mime
+        return t.get_task_dir(), f, mime
     
     def _get_archive_path(self, guid):
         if guid not in self._all_tasks:
