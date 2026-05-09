@@ -135,7 +135,7 @@ class Task(object):
         self.meta = {}
 
     def migrate_exhentai(self):
-        _ = re.findall("(?:https*://[g\.]*e\-hentai\.org)(.+)", self.url)
+        _ = re.findall(r"(?:https*://[g\.]*e\-hentai\.org)(.+)", self.url)
         if not _:
             return False
         self.url = "https://exhentai.org%s" % _[0]
@@ -166,7 +166,7 @@ class Task(object):
             return json.loads(meta_str)
         else:
             # adapt to older versions
-            _ = re.findall('URL:(http.+\/)', comment_str)
+            _ = re.findall(r'URL:(http.+\/)', comment_str)
             if _:
                 metadata = {}
                 metadata.setdefault('url', _[0])
@@ -204,7 +204,7 @@ class Task(object):
     #     )
 
     def get_size_range(self, size_text):
-        _ = re.findall('(\d+(?:\.(\d+))?) *([M|K]?i?B)', size_text)
+        _ = re.findall(r'(\d+(?:\.(\d+))?) *([M|K]?i?B)', size_text)
         if _:
             _number, _decimal, _unit = _[0]
         else:
@@ -458,7 +458,7 @@ class Task(object):
         guess_fid_2_file_name_map = {}
 
         re_name_filter = re.compile(
-            '^(\d{%d})\..+$' % len(str(self.meta['total'])))
+            r'^(\d{%d})\..+$' % len(str(self.meta['total'])))
         self._file_in_download_folder = []
 
         for _file_name in os.listdir(folder_path):
@@ -582,7 +582,7 @@ class Task(object):
             return
 
         pageurl, fname = self.reload_map[imgurl]
-        _ = re.findall("/([^/\?]+)(?:\?|$)", redirect_url)
+        _ = re.findall(r"/([^/\?]+)(?:\?|$)", redirect_url)
         if _:  # change it if it's a full image
             fname = _[0]
             self.reload_map[imgurl][1] = fname
