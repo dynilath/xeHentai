@@ -61,12 +61,12 @@ def flt_metadata(r, suc, fail):
         # don't assign title now, select gj/gn based on cfg['jpn_title']
         # meta['title'] = meta['gjname'] if meta['gjname'] else meta['gnname']
         meta['total'] = int(re.findall(
-            'Length:</td><td class="gdt2">(\d+)\s+page', r.text)[0])
+            'Length:</td><td class="gdt2">(\\d+)\\s+page', r.text)[0])
         meta['finished'] = 0
-        meta['tags'] = re.findall("toggle_tagmenu\([^)']+'([^']+)'", r.text)
+        meta['tags'] = re.findall("toggle_tagmenu\\([^)']+'([^']+)'", r.text)
 
         # TODO: parse cookie to calc thumbnail_cnt (tr_2, ts_m)
-        _ = re.findall("Showing (\d+) \- (\d+) of ([\d,]+) images", r.text)[0]
+        _ = re.findall("Showing (\\d+) \\- (\\d+) of ([\\d,]+) images", r.text)[0]
         meta['thumbnail_cnt'] = int(_[1]) - int(_[0]) + 1
         suc(meta)
     except IndexError as e:
@@ -116,7 +116,7 @@ def flt_pageurl(r, suc, fail):
     #    r.text)
 
     picpage = re.findall(
-        '<a href="(%s\/.\/[a-f0-9]{10}\/\d+\-\d+)"><div title="Page (\d+): ([^"]*)"' % RESTR_SITE,
+        '<a href="(%s\\/.\\/[a-f0-9]{10}\\/\\d+\\-\\d+)"><div title="Page (\\d+): ([^"]*)"' % RESTR_SITE,
         r.text)
     # (page url, page id, original file name)
     if not picpage:
@@ -133,7 +133,7 @@ def flt_quota_check(func):
             raise KeyExpiredException(r._real_url)
         elif r.status_code == 509:
             raise QuotaExceededException(r._real_url, "HTTP 509 bandwidth limit exceeded")
-        elif r.content_length in [925, 28658, 144, 210, 1009]:
+        elif r.content_length in [925, 144, 210, 1009]:
             raise QuotaExceededException(r._real_url, f"quota page content-length fingerprint ({r.content_length} bytes)")
         elif 'hentai.org/img/509.gif' in r.url:
             raise QuotaExceededException(r._real_url, "509.gif detected in response URL")
@@ -159,7 +159,7 @@ def flt_imgurl_wrapper(ori):
         while True:
             _ = re.findall('src="([^"]+keystamp[^"]+)"', r.text)
             if not _:
-                _ = re.findall('src="([^"]+)"\s+style="', r.text)
+                _ = re.findall('src="([^"]+)"\\s+style="', r.text)
             if not _:
                 break
             picurl = util.htmlescape(_[0])
@@ -176,7 +176,7 @@ def flt_imgurl_wrapper(ori):
                     break
                 filename = _[0]
 
-            _ = re.findall('.+/(\d+)-(\d*)', r._real_url)
+            _ = re.findall('.+/(\\d+)-(\\d*)', r._real_url)
             if not _:
                 break
             index = _[0]
@@ -184,16 +184,16 @@ def flt_imgurl_wrapper(ori):
             if filename[0] == '.':
                 filename = index[1] + filename
 
-            _ = re.findall('.+\.([a-zA-Z]+)', filename)
+            _ = re.findall('.+\\.([a-zA-Z]+)', filename)
             if not _:
                 break
             fmt = _[0]
             # http://exhentai.org/fullimg.php?gid=577354&page=2&key=af594b7cf3
 
             fullurl = re.findall(
-                'class="mr".+<a href="(.+)"\s*>Download original', r.text)
+                'class="mr".+<a href="(.+)"\\s*>Download original', r.text)
             ori_file_size = re.findall(
-                '>Download original [0-9]+ x [0-9]+ ([0-9\/.]+ [a-zA-Z]{2,})<\/a>', r.text)  # like 2.20MB
+                '>Download original [0-9]+ x [0-9]+ ([0-9\\/.]+ [a-zA-Z]{2,})<\\/a>', r.text)  # like 2.20MB
             if not ori_file_size:
                 ori_file_size = [filesize]
 
@@ -201,7 +201,7 @@ def flt_imgurl_wrapper(ori):
                 fullurl = util.htmlescape(fullurl[0])
             else:
                 fullurl = picurl
-            _ = re.findall("return nl\('([a-zA-Z\d\-]+)'\)", r.text)
+            _ = re.findall("return nl\\('([a-zA-Z\\d\\-]+)'\\)", r.text)
             if not _:
                 break
             js_nl = _[0]
