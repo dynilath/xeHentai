@@ -244,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
                 code = 400
                 rt = jsonrpc_resp({"id":None}, error_code = ERR_RPC_INVALID_REQUEST)
                 break
-            cmd = re.findall("xeH\.(.+)", j['method'])
+            cmd = re.findall(r"xeH\.(.+)", j['method'])
             if not cmd:
                 code = 404
                 rt = jsonrpc_resp({"id":j['id']}, error_code = ERR_RPC_METHOD_NOT_FOUND)
