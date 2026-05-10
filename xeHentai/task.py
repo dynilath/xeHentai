@@ -306,7 +306,7 @@ class Task(object):
             fid_page_hash_map=self.fid_2_page_hash_map,
         )
         json_zip_meta = json.dumps(archive_meta.to_dict())
-        return ("xeHentai Archiver v%s r1\n%s" % (__version__, json_zip_meta)).encode('UTF-8')
+        return ("xeHentai Archiver v%s\n%s" % (__version__, json_zip_meta)).encode('UTF-8')
 
     @staticmethod
     def decode_meta(comment_str: str) -> Optional[ArchiveMeta]:
