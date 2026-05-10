@@ -13,7 +13,7 @@ from .const import RE_INDEX
 REUSE_INDEX_FILE = 'h.reuse.json'
 
 _RE_MULTI_SPACE = re.compile(r'\s+')
-_RE_TITLE_STATUS = re.compile(r'\[(?:ongoing|complete|completed|end|fin)\]', re.IGNORECASE)
+_RE_TITLE_STATUS = re.compile(r'\[(?:ongoing|wip|complete|completed|end|fin|進行中)\]', re.IGNORECASE)
 _RE_TITLE_RANGE = re.compile(r'(?<!\d)(\d+)\s*[-~]\s*(\d+)(?!\d)')
 
 
