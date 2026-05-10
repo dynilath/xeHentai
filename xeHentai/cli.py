@@ -182,8 +182,7 @@ def parse_opt():
     parser.add_argument('-v', '--verbose', action = 'count', default = _def['log_verbose'],
                         help = i18n.XEH_OPT_v)
     parser.add_argument('-h','--help', action = 'help', help = i18n.XEH_OPT_h)
-    parser.add_argument('--version', action = 'version',
-                        version = '%s v%.3f%s' % (SCRIPT_NAME, __version__, '-dev' if DEVELOPMENT else ""),
+    parser.add_argument('--version', action = 'version', version = f"{SCRIPT_NAME} {__version__} {"_dev" if DEVELOPMENT else ""}",
                         help = i18n.XEH_OPT_version)
     parser.add_argument('--max_fail', type = int, metavar = 'N',
                         default = _def['proxy_disable_threshold'], dest = 'proxy_disable_threshold')
