@@ -359,10 +359,7 @@ class xeHentaiRPCExtended(object):
             return None, None, None
         t = self._all_tasks[guid]
         fid = str(fid)
-        if fid in t.fid_2_file_name_map:
-            f = t.fid_2_file_name_map[fid]
-        else:
-            f = t.get_fidpad(fid)
+        f = t.get_fidpad(fid)
 
         ext = os.path.splitext(f)[1].lower()[1:]
         if ext not in mime_map:
@@ -398,10 +395,8 @@ class xeHentaiRPCExtended(object):
             end = int(_[0]) + 1
         rt = []
         for fid in range(start, end):
-            if fid in t.fid_2_file_name_map:
-                f = t.fid_2_file_name_map[fid]
-            else:
-                f = t.get_fidpad("%d" % fid)
+            fid_str = "%d" % fid
+            f = t.get_fidpad(fid_str)
             uri = "%s/%s" % (t.guid, fid)
             rt.append('/img/%s/%s/%s' % (hash_link(self.secret, uri), uri, f))
         return ERR_NO_ERROR, rt

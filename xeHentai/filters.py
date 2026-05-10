@@ -249,6 +249,8 @@ def download_file_wrapper(dirpath):
         if r.status_code == 404:
             return fail((ERR_HATH_NOT_FOUND, r._real_url, r.url))
         p = RE_IMGHASH.findall(r.url)
+        content_type = (r.headers.get('content-type') or '').split(';', 1)[0].strip().lower()
+        original_hash = p[-1][0] if p and p[-1] else None
         # if multiple hash-size-h-w-type is found, use the last one
         # the first is original and the last is scaled
         # _FakeReponse will be filtered in flt_quota_check
@@ -275,7 +277,7 @@ def download_file_wrapper(dirpath):
                 fail((ERR_IMAGE_BROKEN, r._real_url, r.url))
                 raise DownloadAbortedException()
 
-        suc((_yield, r._real_url, r.url))
+        suc((_yield, r._real_url, r.url, content_type, original_hash))
 
     return download_file
 

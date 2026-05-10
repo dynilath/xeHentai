@@ -106,14 +106,13 @@ class ArchiveMeta:
     rename_ori: bool
     download_ori: bool
     url: str
-    fid_fname_map: Dict[str, str]
     fid_page_hash_map: Optional[Dict[str, str]] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ArchiveMeta':
         """Create ArchiveMeta from dictionary with validation"""
         required_fields = {'tags', 'total', 'title',
-                           'rename_ori', 'download_ori', 'url', 'fid_fname_map'}
+                           'rename_ori', 'download_ori', 'url'}
         missing = required_fields - set(data.keys())
         if missing:
             raise ValueError(f"Missing required archive metadata fields: {missing}")
@@ -135,8 +134,7 @@ class ArchiveMeta:
                 rename_ori=bool(data['rename_ori']),
                 download_ori=bool(data['download_ori']),
                 url=str(data['url']),
-                fid_fname_map=dict(data['fid_fname_map']),
-                fid_page_hash_map=fid_page_hash_map
+                fid_page_hash_map=fid_page_hash_map,
             )
         except (TypeError, ValueError) as e:
             raise ValueError(f"Invalid archive metadata types: {e}")
@@ -206,8 +204,11 @@ class Task(object):
         # map fid to file original name, which appears on gallery pages
         self.fid_2_original_file_name_map: Dict[str, str] = {}
 
-        # map fid to file name, just like the old self.renamed_map
+        # map fid to resolved runtime file name
         self.fid_2_file_name_map: Dict[str, str] = {}
+
+        # map fid to file extension; file name is derived from fid padding + ext
+        self.fid_2_file_ext_map: Dict[str, str] = {}
 
         # download range list, former method is too hard to maintain
         self.download_range: List[int] = []
@@ -264,7 +265,9 @@ class Task(object):
             self._file_in_download_folder = []
             self.fid_2_file_size_map = {}
             self.fid_2_original_file_name_map = {}
+            self.fid_2_file_name_map = {}
             self.fid_2_page_hash_map = {}
+            self.fid_2_file_ext_map = {}
             self._related_archive_hash_index = {}
             self._related_archive_hash_index_ready = False
             self.download_range = []
@@ -300,8 +303,7 @@ class Task(object):
             rename_ori=self.config['rename_ori'],
             download_ori=self.config['download_ori'],
             url=self.url,
-            fid_fname_map=self.fid_2_file_name_map,
-            fid_page_hash_map=self.fid_2_page_hash_map
+            fid_page_hash_map=self.fid_2_page_hash_map,
         )
         json_zip_meta = json.dumps(archive_meta.to_dict())
         return ("xeHentai Archiver v%s r1\n%s" % (__version__, json_zip_meta)).encode('UTF-8')
@@ -383,6 +385,76 @@ class Task(object):
         self.meta.finished = len(self._flist_done)
         self._cnt_lock.release()
 
+    def _build_fid_file_name(self, fid, ext='.jpg'):
+        fid = int(fid)
+        _ = "%%0%dd%%s" % len(str(self.meta.total))
+        return _ % (fid, ext)
+
+    def _content_type_to_ext(self, content_type):
+        content_type = (content_type or '').strip().lower()
+        content_type_map = {
+            'image/jpeg': '.jpg',
+            'image/jpg': '.jpg',
+            'image/png': '.png',
+            'image/gif': '.gif',
+            'image/bmp': '.bmp',
+            'image/webp': '.webp',
+        }
+        return content_type_map.get(content_type)
+
+    def _infer_ext_from_url(self, url):
+        if not url:
+            return None
+        _ = RE_IMGHASH.findall(url)
+        if _ and _[-1] and _[-1][4]:
+            return '.%s' % _[-1][4].lower()
+        _ = re.findall(r"/([^/\?]+)(?:\?|$)", url)
+        if _:
+            ext = os.path.splitext(_[0])[1].lower()
+            if ext:
+                return ext
+        return None
+
+    def _resolve_download_ext(self, fid, content_type=None, redirect_url=None, fallback_name=None):
+        ext = self._content_type_to_ext(content_type)
+        if ext:
+            return ext
+        ext = self._infer_ext_from_url(redirect_url)
+        if ext:
+            return ext
+        if fallback_name:
+            ext = os.path.splitext(fallback_name)[1].lower()
+            if ext:
+                return ext
+        if fid in self.fid_2_file_ext_map:
+            ext = self.fid_2_file_ext_map[fid].lower()
+            if ext:
+                return ext
+        return '.jpg'
+
+    def _set_final_file_ext(self, fid, ext):
+        ext = ext or '.jpg'
+        fid = str(fid)
+        file_name = self._build_fid_file_name(fid, ext)
+        self.fid_2_file_ext_map[fid] = ext
+        self.fid_2_file_name_map[fid] = file_name
+        return file_name
+
+    def _build_fid_filename_map(self, file_names):
+        fid_name_map = {}
+        fid_ext_map = {}
+        for file_name in file_names:
+            if not file_name or file_name.endswith('/'):
+                continue
+            _ = os.path.basename(file_name)
+            name, ext = os.path.splitext(_)
+            if not name.isdigit():
+                continue
+            fid = str(int(name))
+            fid_name_map[fid] = _
+            fid_ext_map[fid] = ext or '.jpg'
+        return fid_name_map, fid_ext_map
+
     def set_reload_url(self, image_url, reload_url, fname, filesize):
         """Register image reload metadata and try local/related-archive reuse before download.
 
@@ -401,14 +473,7 @@ class Task(object):
         if self.config['download_ori']:
             ext = os.path.splitext(real_file_name)[1]
 
-        if not self.config['rename_ori']:
-            real_file_name = "%%0%dd%%s" % (
-                len(str(self.meta.total))) % (int(this_fid), ext)
-
-        if this_fid in self.fid_2_file_name_map:
-            self.fid_2_file_name_map[this_fid] = real_file_name
-        else:
-            self.fid_2_file_name_map.setdefault(this_fid, real_file_name)
+        real_file_name = self._set_final_file_ext(this_fid, ext or '.jpg')
 
         if this_fid not in self.fid_2_file_size_map:
             self.fid_2_file_size_map.setdefault(this_fid, filesize)
@@ -531,8 +596,10 @@ class Task(object):
                     if not metadata or not metadata.fid_page_hash_map:
                         continue
 
+                    member_name_map, _ = self._build_fid_filename_map(zf.namelist())
+
                     for src_fid, src_hash in metadata.fid_page_hash_map.items():
-                        member_name = metadata.fid_fname_map.get(str(src_fid))
+                        member_name = member_name_map.get(str(src_fid))
                         if not member_name:
                             continue
                         if src_hash not in idx:
@@ -686,8 +753,10 @@ class Task(object):
                     if marker_ok and url_ok and count_ok:
                         # All three checks pass: zip is trusted as complete
                         assert metadata is not None
+                        member_name_map, member_ext_map = self._build_fid_filename_map(zipfile_target.namelist())
                         self._flist_done.update(range(1, metadata.total + 1))
-                        self.fid_2_file_name_map = metadata.fid_fname_map
+                        self.fid_2_file_name_map = member_name_map
+                        self.fid_2_file_ext_map = member_ext_map
                         self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
                         self.meta.finished = len(self._flist_done)
                         return self.meta.finished == self.meta.total
@@ -752,16 +821,15 @@ class Task(object):
             else:
                 self._file_in_download_folder.append(_file_name)
 
-        if self.config['rename_ori']:
-            for _fid, _file_name in self.fid_2_original_file_name_map.items():
-                if os.path.exists(os.path.join(folder_path, _file_name)):
-                    guess_fid_2_file_name_map.setdefault(_fid, _file_name)
-        else:
-            for _file_name in self._file_in_download_folder:
-                _ = re_name_filter.findall(_file_name)
-                if _:
-                    guess_fid_2_file_name_map.setdefault(
-                        str(int(_[0])), _file_name)
+        for _file_name in self._file_in_download_folder:
+            _ = re_name_filter.findall(_file_name)
+            if _:
+                guess_fid_2_file_name_map.setdefault(
+                    str(int(_[0])), _file_name)
+
+        for _fid, _file_name in self.fid_2_original_file_name_map.items():
+            if _fid not in guess_fid_2_file_name_map and os.path.exists(os.path.join(folder_path, _file_name)):
+                guess_fid_2_file_name_map.setdefault(_fid, _file_name)
 
         for _fid, _url in fid_2_page_url_map.items():
             image_done_file = False
@@ -779,10 +847,16 @@ class Task(object):
             if not image_done_file:
                 self.page_q.put(_url)
             else:
-                if _fid not in self.fid_2_file_name_map:
-                    self.fid_2_file_name_map.setdefault(_fid, file_name)
-                else:
-                    self.fid_2_file_name_map[_fid] = file_name
+                file_ext = os.path.splitext(file_name)[1] or '.jpg'
+                final_file_name = self._build_fid_file_name(_fid, file_ext)
+                if file_name != final_file_name:
+                    src_path = os.path.join(folder_path, file_name)
+                    dst_path = os.path.join(folder_path, final_file_name)
+                    if not os.path.exists(dst_path):
+                        os.rename(src_path, dst_path)
+                    file_name = final_file_name
+                self.fid_2_file_name_map[_fid] = file_name
+                self.fid_2_file_ext_map[_fid] = os.path.splitext(file_name)[1] or '.jpg'
                 self._flist_done.add(int(_fid))
 
         self.meta.finished = len(self._flist_done)
@@ -857,7 +931,7 @@ class Task(object):
 
         callback_page_url_setdefault(_fid, _page_url)
 
-    def save_file(self, imgurl, redirect_url, binary_iter):
+    def save_file(self, imgurl, redirect_url, binary_iter, content_type=None, original_hash=None):
         # TODO: Rlock for finished += 1
         fpath = self.get_task_dir()
         self._f_lock.acquire()
@@ -869,18 +943,15 @@ class Task(object):
             return
 
         pageurl, fname = self.reload_map[imgurl]
-        _ = re.findall(r"/([^/\?]+)(?:\?|$)", redirect_url)
-        if _:  # change it if it's a full image
-            fname = _[0]
-            self.reload_map[imgurl][1] = fname
         _, fid = RE_GALLERY.findall(pageurl)[0]
+        ext = self._resolve_download_ext(fid, content_type=content_type, redirect_url=redirect_url, fallback_name=fname)
+        fname = self._set_final_file_ext(fid, ext)
+        self.reload_map[imgurl][1] = fname
 
         # if a same file exists
         # assuming that file is downloaded by other means
         # for example, another instance of xehentai
         # or user just downloaded herself, by dragging from browser
-
-        fname = self.fid_2_file_name_map[fid]
 
         fn = os.path.join(fpath, fname)
         if os.path.exists(fn):
@@ -911,8 +982,8 @@ class Task(object):
                     # if a file download is interrupted, it will appear in self.filehash_map as well
                     if int(_fid) == int(fid):
                         continue
-                    fn_rep = os.path.join(
-                        fpath, self.fid_2_file_name_map[_fid])
+                    rep_name = self._set_final_file_ext(_fid, ext)
+                    fn_rep = os.path.join(fpath, rep_name)
                     if not fn == fn_rep:
                         shutil.copyfile(fn, fn_rep)
                         self._cnt_lock.acquire()
@@ -929,7 +1000,7 @@ class Task(object):
     def get_fname(self, imgurl):
         pageurl, fname = self.reload_map[imgurl]
         _, fid = RE_GALLERY.findall(pageurl)[0]
-        return int(fid), fname
+        return int(fid), self.fid_2_file_name_map.get(fid, self.get_fidpad(fid))
 
     def get_task_dir(self) -> str:
         """
@@ -952,11 +1023,9 @@ class Task(object):
             return os.path.join(self.config['dir'], f"{gallery_id} - {util.legalpath(self.meta.title)}")
 
     def get_fidpad(self, fid, ext='.jpg'):
-        if fid in self.fid_2_file_name_map:
-            ext = os.path.splitext(self.fid_2_file_name_map[fid])[1]
-        fid = int(fid)
-        _ = "%%0%dd%%s" % (len(str(self.meta.total)))
-        return _ % (fid, ext)
+        if fid in self.fid_2_file_ext_map:
+            ext = self.fid_2_file_ext_map[fid]
+        return self._build_fid_file_name(fid, ext)
 
     def make_archive(self, remove=True):
         dpath = self.get_task_dir()
@@ -978,9 +1047,9 @@ class Task(object):
             # thus metadata can be packed with comic it self in a single file
             zipfile_target.comment = self.encode_meta()
 
-            for _i in range(1, len(self.fid_2_file_name_map)+1):
+            for _i in range(1, len(self.fid_2_file_ext_map)+1):
                 t_fid = "%d" % _i
-                _f_name = self.fid_2_file_name_map[t_fid]
+                _f_name = self.get_fidpad(t_fid)
                 full_path = os.path.join(dpath, _f_name)
                 zipfile_target.write(full_path, _f_name, zipfile.ZIP_STORED)
 

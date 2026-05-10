@@ -319,16 +319,13 @@ def record_task_reuse(index: Optional[Dict[str, Any]], task: Any) -> Dict[str, A
         'title': task.meta.title,
         'updated_at': updated_at,
         'fid_page_hash_map': dict(task.fid_2_page_hash_map),
-        'fid_fname_map': dict(task.fid_2_file_name_map),
         'fid_size_map': dict(task.fid_2_file_size_map),
     }
 
     for fid, page_hash in task.fid_2_page_hash_map.items():
         if not page_hash:
             continue
-        file_name = task.fid_2_file_name_map.get(fid)
-        if not file_name:
-            continue
+        file_name = task.fid_2_file_name_map.get(fid, task.get_fidpad(fid))
 
         entry = {
             'gid': gid,

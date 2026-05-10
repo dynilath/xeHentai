@@ -355,7 +355,7 @@ class xeHentai(object):
                     _ = self._get_httpworker(tid, task.img_q,
                                              filters.download_file_wrapper(
                                                  task.config['dir']),
-                                             lambda _x, _tid=tid: (task.save_file(_x[1], _x[2], _x[0]) and
+                                             lambda _x, _tid=tid: (task.save_file(_x[1], _x[2], _x[0], _x[3], _x[4]) and
                                                                    (self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(_tid, *task.get_fname(_x[1]))),
                                                                     mon.vote(_tid, 0))),
                                              lambda _x, _tid=tid: (
@@ -510,7 +510,8 @@ class xeHentai(object):
                 _t.page_q = Queue()
                 _t.reload_map = {}
                 _t.filehash_map = {}
-                _t.fid_fname_map = {}
+                _t.fid_2_file_name_map = {}
+                _t.fid_2_file_ext_map = {}
                 _t.state = TASK_STATE_GET_META
             self._all_tasks[_['guid']] = _t
             self.tasks.put(_['guid'])
