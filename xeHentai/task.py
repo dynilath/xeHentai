@@ -262,15 +262,16 @@ class Task(object):
             self.list_q = None
             self.reload_map = {}
 
-            self._file_in_download_folder = []
-            self.fid_2_file_size_map = {}
-            self.fid_2_original_file_name_map = {}
-            self.fid_2_file_name_map = {}
-            self.fid_2_page_hash_map = {}
-            self.fid_2_file_ext_map = {}
-            self._related_archive_hash_index = {}
-            self._related_archive_hash_index_ready = False
-            self.download_range = []
+            if self.state == TASK_STATE_FAILED:
+                self._file_in_download_folder = []
+                self.fid_2_file_size_map = {}
+                self.fid_2_original_file_name_map = {}
+                self.fid_2_file_name_map = {}
+                self.fid_2_page_hash_map = {}
+                self.fid_2_file_ext_map = {}
+                self._related_archive_hash_index = {}
+                self._related_archive_hash_index_ready = False
+                self.download_range = []
             # if 'filelist' in self.meta:
             #     del self.meta['filelist']
             # if 'resampled' in self.meta:
