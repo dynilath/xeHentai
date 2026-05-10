@@ -3,6 +3,8 @@
 # Contributor:
 #      fffonion        <fffonion@gmail.com>
 
+from xeHentai.task import Task
+
 from .exceptions import FilterException
 from .proxy import PoolException
 from .i18n import i18n
@@ -319,7 +321,7 @@ class ArchiveWorker(Thread):
 
 
 class Monitor(Thread):
-    def __init__(self, req, proxy, logger, task, exit_check=None, ignored_errors=[]):
+    def __init__(self, req, proxy, logger, task: Task, exit_check=None, ignored_errors=[]):
         Thread.__init__(self, name="monitor%s" % task.guid)
         Thread.setDaemon(self, True)
         # the count of votes per error code
@@ -368,7 +370,7 @@ class Monitor(Thread):
         # all image downloaded
         # task is finished or failed
         # monitor is exiting or worker notify its exit
-        _ = self.task.meta['finished'] == self.task.meta['total'] or \
+        _ = self.task.meta.finished == self.task.meta.total or \
             self.task.state in (TASK_STATE_FINISHED, TASK_STATE_FAILED) or \
             self._exit("mon") or _exit
         # self.logger.verbose("mon#%s %s ask, %s, %s" % (self.task.guid, tname, _,
@@ -405,7 +407,7 @@ class Monitor(Thread):
         if False and ERR_IMAGE_RESAMPLED in self.vote_result and ERR_IMAGE_RESAMPLED not in self.vote_cleared:
             self.logger.warning(i18n.TASK_START_PAGE_RESCAN % self.task.guid)
             self._rescan_pages()
-            self.task.meta['has_ori'] = True
+            self.task.meta.has_ori = True
             self.vote_cleared.add(ERR_IMAGE_RESAMPLED)
         elif ERR_QUOTA_EXCEEDED in self.vote_result and \
                 ERR_QUOTA_EXCEEDED not in self.vote_cleared and \
@@ -446,14 +448,14 @@ class Monitor(Thread):
                         self.thread_zombie),
                     i18n.QUEUE,
                     self.task.img_q.qsize() if self.task.img_q else 0,
-                    self.task.meta['finished'], self.task.meta['total'])
+                    self.task.meta.finished, self.task.meta.total)
                 self.logger.info(_)
                 self.set_title(_)
                 intv = 0
                 # if not downloading any new images in 1.5 min, exit
-                if last_finished != self.task.meta['finished']:
+                if last_finished != self.task.meta.finished:
                     last_change = time.time()
-                    last_finished = self.task.meta['finished']
+                    last_finished = self.task.meta.finished
                 else:
                     if time.time() - last_change > STUCK_INTERVAL:
                         self.logger.warning(i18n.TASK_STUCK % self.task.guid)
@@ -469,7 +471,7 @@ class Monitor(Thread):
                             CHECK_INTERVAL = 600
                         break
             time.sleep(0.5)
-        if self.task.meta['finished'] == self.task.meta['total']:
+        if self.task.meta.finished == self.task.meta.total:
             # rename is finished along with downloading process
             self.set_title(i18n.TASK_FINISHED % self.task.guid)
             self.logger.info(i18n.TASK_FINISHED % self.task.guid)

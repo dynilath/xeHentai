@@ -258,7 +258,7 @@ class xeHentai(object):
                     break
 
                 if task.config['download_range']:
-                    task_total = task.meta['total']
+                    task_total = task.meta.total
                     for dRange in task.config['download_range']:
                         task.download_range.extend(range(dRange[0],
                                                          dRange[1] + 1 if dRange[1] < task_total else task_total + 1))
@@ -296,7 +296,7 @@ class xeHentai(object):
 
                 temp_fid_2_page_url_map = {}
                 for x in range(0,
-                               int(math.ceil(1.0 * task.meta['total'] / int(task.meta['thumbnail_cnt'])))):
+                               int(math.ceil(1.0 * task.meta.total / int(task.meta.thumbnail_cnt)))):
                     r = req.request("GET",
                                     "%s/?p=%d" % (task.url, x),
                                     filters.flt_pageurl,
@@ -317,13 +317,13 @@ class xeHentai(object):
             elif task.state == TASK_STATE_SCAN_IMG:
                 # print here so that see it after we can join former threads
                 self.logger.info(i18n.TASK_TITLE % (
-                    task_guid, task.meta['title']))
+                    task_guid, task.meta.title))
 
                 # log at here is quite too early
                 # finished file counting will be cleared after page scan
                 self.logger.info(i18n.TASK_WILL_DOWNLOAD_CNT % (
-                    task_guid, task.meta['total'] - task.meta['finished'],
-                    task.meta['total']))
+                    task_guid, task.meta.total - task.meta.finished,
+                    task.meta.total))
                 # spawn thread to scan images
                 task.img_q.queue.clear()
                 for i in range(task.config['scan_thread_cnt']):
@@ -499,7 +499,7 @@ class xeHentai(object):
 
         for _ in tasks_payload.values():
             _t = Task("", {}).from_dict(_)
-            if 'filelist' in _t.meta:
+            if _t.meta.filelist:
                 _t.scan_downloaded()
                 # _t.meta['has_ori'] and task.config['download_ori'])
 

@@ -288,7 +288,7 @@ def record_task_reuse(index: Optional[Dict[str, Any]], task: Any) -> Dict[str, A
     if not gid:
         return index
 
-    newer_versions = task.meta.get('newer_versions', []) if getattr(task, 'meta', None) else []
+    newer_versions = task.meta.newer_versions if getattr(task, 'meta', None) else []
     record_version_graph(index, getattr(task, 'url', ''), gid, newer_versions)
 
     if not getattr(task, 'fid_2_page_hash_map', None) or not getattr(task, 'fid_2_file_name_map', None):
@@ -316,7 +316,7 @@ def record_task_reuse(index: Optional[Dict[str, Any]], task: Any) -> Dict[str, A
         'url': getattr(task, 'url', ''),
         'source_type': source_type,
         'source_path': source_path,
-        'title': task.meta.get('title', ''),
+        'title': task.meta.title,
         'updated_at': updated_at,
         'fid_page_hash_map': dict(task.fid_2_page_hash_map),
         'fid_fname_map': dict(task.fid_2_file_name_map),

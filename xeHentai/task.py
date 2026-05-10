@@ -12,12 +12,87 @@ import shutil
 import zipfile
 from typing import Any, Dict, List, Optional, Set, Tuple
 from threading import RLock
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from . import util
 from . import reuse_index
 from .const import *
 from .const import __version__
 from queue import Queue, Empty
+
+
+@dataclass
+class GalleryMeta:
+    title_japanese: str = ''
+    title_primary: str = ''
+    title: str = ''
+    total: int = 0
+    finished: int = 0
+    thumbnail_cnt: int = 0
+    has_ori: bool = False
+    tags: List[Any] = field(default_factory=list)
+    newer_versions: List[Dict[str, Any]] = field(default_factory=list)
+    filelist: Dict[str, Any] = field(default_factory=dict)
+    resampled: Dict[str, Any] = field(default_factory=dict)
+    sample_hash: List[str] = field(default_factory=list)
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> 'GalleryMeta':
+        meta = cls()
+        meta.update_from_dict(data or {})
+        return meta
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = {
+            'title_japanese': self.title_japanese,
+            'title_primary': self.title_primary,
+            'title': self.title,
+            'total': self.total,
+            'finished': self.finished,
+            'thumbnail_cnt': self.thumbnail_cnt,
+            'has_ori': self.has_ori,
+            'tags': list(self.tags),
+            'newer_versions': [dict(item) for item in self.newer_versions],
+            'filelist': dict(self.filelist),
+            'resampled': dict(self.resampled),
+            'sample_hash': list(self.sample_hash),
+            'gjname': self.title_japanese,
+            'gnname': self.title_primary,
+        }
+        payload.update(self.extra)
+        return payload
+
+    def update_from_dict(self, data: Dict[str, Any]) -> None:
+        self.title_japanese = str(data.get('title_japanese', data.get('gjname', self.title_japanese)) or '')
+        self.title_primary = str(data.get('title_primary', data.get('gnname', self.title_primary)) or '')
+        self.title = str(data.get('title', self.title) or '')
+        self.total = int(data.get('total', self.total) or 0)
+        self.finished = int(data.get('finished', self.finished) or 0)
+        self.thumbnail_cnt = int(data.get('thumbnail_cnt', self.thumbnail_cnt) or 0)
+        self.has_ori = bool(data.get('has_ori', self.has_ori))
+        self.tags = list(data.get('tags', self.tags) or [])
+        self.newer_versions = [dict(item) for item in (data.get('newer_versions', self.newer_versions) or [])]
+        self.filelist = dict(data.get('filelist', self.filelist) or {})
+        self.resampled = dict(data.get('resampled', self.resampled) or {})
+        self.sample_hash = list(data.get('sample_hash', self.sample_hash) or [])
+
+        known_keys = {
+            'title_japanese', 'title_primary', 'gjname', 'gnname', 'title',
+            'total', 'finished', 'thumbnail_cnt', 'has_ori', 'tags',
+            'newer_versions', 'filelist', 'resampled', 'sample_hash',
+        }
+        for key, value in data.items():
+            if key not in known_keys:
+                self.extra[key] = value
+
+    def has_title(self) -> bool:
+        return bool(self.title)
+
+    def select_display_title(self, use_japanese_title: bool) -> None:
+        if use_japanese_title and self.title_japanese:
+            self.title = self.title_japanese
+        else:
+            self.title = self.title_primary
 
 
 @dataclass
@@ -92,7 +167,7 @@ class Task(object):
         # Task-level merged config.
         self.config: Dict[str, Any] = cfgdict
         # Parsed gallery metadata payload.
-        self.meta: Dict[str, Any] = {}
+        self.meta: GalleryMeta = GalleryMeta()
         # Whether original-quality image variants are detected.
         self.has_ori: bool = False
         # Maps image URL to [reload URL, resolved filename].
@@ -172,7 +247,7 @@ class Task(object):
     def cleanup(self, before_delete=False):
         if before_delete:
             if 'delete_task_files' in self.config and self.config['delete_task_files'] and \
-                    'title' in self.meta:  # maybe it's a error task and meta is empty
+                    self.meta.has_title():  # maybe it's a error task and meta is empty
                 fpath = self.get_task_dir()
                 # TODO: ascii can't decode? locale not enus, also check save_file
                 if os.path.exists(fpath):
@@ -202,7 +277,7 @@ class Task(object):
         self.state = TASK_STATE_FAILED
         self.failcode = code
         # cleanup all we cached
-        self.meta = {}
+        self.meta = GalleryMeta()
 
     def migrate_exhentai(self):
         _ = re.findall(r"(?:https*://[g\.]*e\-hentai\.org)(.+)", self.url)
@@ -217,11 +292,11 @@ class Task(object):
     def encode_meta(self) -> bytes:
         """Encode task metadata for zip file comment"""
         archive_meta = ArchiveMeta(
-            title_japanese=self.meta.get('title_japanese', self.meta.get('gjname', '')),
-            title_primary=self.meta.get('title_primary', self.meta.get('gnname', '')),
-            tags=self.meta['tags'],
-            total=self.meta['total'],
-            title=self.meta['title'],
+            title_japanese=self.meta.title_japanese,
+            title_primary=self.meta.title_primary,
+            tags=self.meta.tags,
+            total=self.meta.total,
+            title=self.meta.title,
             rename_ori=self.config['rename_ori'],
             download_ori=self.config['download_ori'],
             url=self.url,
@@ -251,22 +326,8 @@ class Task(object):
 
     def update_meta(self, meta: Dict[str, Any]) -> None:
         """Update metadata with type validation for critical fields"""
-        self.meta.update(meta)
-
-        # normalize legacy/new naming into one canonical shape
-        if 'title_japanese' not in self.meta and 'gjname' in self.meta:
-            self.meta['title_japanese'] = self.meta.get('gjname', '')
-        if 'title_primary' not in self.meta and 'gnname' in self.meta:
-            self.meta['title_primary'] = self.meta.get('gnname', '')
-        # keep aliases for compatibility with old code paths
-        self.meta['gjname'] = str(self.meta.get('title_japanese', self.meta.get('gjname', '')))
-        self.meta['gnname'] = str(self.meta.get('title_primary', self.meta.get('gnname', '')))
-
-        # Validate and set title based on config
-        if self.config.get('jpn_title') and self.meta.get('title_japanese'):
-            self.meta['title'] = str(self.meta['title_japanese'])
-        else:
-            self.meta['title'] = str(self.meta.get('title_primary', ''))
+        self.meta.update_from_dict(meta)
+        self.meta.select_display_title(bool(self.config.get('jpn_title')))
 
 
     # def guess_ori(self):
@@ -319,7 +380,7 @@ class Task(object):
     def set_fid_done(self, fid):
         self._cnt_lock.acquire()
         self._flist_done.add(int(fid))
-        self.meta['finished'] = len(self._flist_done)
+        self.meta.finished = len(self._flist_done)
         self._cnt_lock.release()
 
     def set_reload_url(self, image_url, reload_url, fname, filesize):
@@ -342,7 +403,7 @@ class Task(object):
 
         if not self.config['rename_ori']:
             real_file_name = "%%0%dd%%s" % (
-                len(str(self.meta['total']))) % (int(this_fid), ext)
+                len(str(self.meta.total))) % (int(this_fid), ext)
 
         if this_fid in self.fid_2_file_name_map:
             self.fid_2_file_name_map[this_fid] = real_file_name
@@ -455,7 +516,7 @@ class Task(object):
             return
 
         idx: Dict[str, Tuple[str, str]] = {}
-        for version in reversed(self.meta.get('newer_versions', [])):
+        for version in reversed(self.meta.newer_versions):
             gid = str(version.get('gid', ''))
             if not gid or gid == str(getattr(self, 'gid', '')):
                 continue
@@ -551,9 +612,9 @@ class Task(object):
         return reuse_index.collect_prescan_candidates(
             self._reuse_index,
             current_arc,
-            self.meta.get('title', ''),
+            self.meta.title,
             str(getattr(self, 'gid', '')),
-            self.meta.get('newer_versions', []),
+            self.meta.newer_versions,
         )
 
     def _can_extract_foreign_archive(self, metadata: Optional[ArchiveMeta], candidate: Dict[str, Any]) -> bool:
@@ -572,7 +633,7 @@ class Task(object):
             str(getattr(self, 'gid', '')),
             candidate_url,
             candidate_gid,
-            self.meta.get('newer_versions', []),
+            self.meta.newer_versions,
         )
 
     # scan folder or zip file before all worker start working
@@ -586,7 +647,7 @@ class Task(object):
         """
 
         # fpath requires title
-        if not 'title' in self.meta:
+        if not self.meta.has_title():
             return False
         folder_path = self.get_task_dir()
 
@@ -628,8 +689,8 @@ class Task(object):
                         self._flist_done.update(range(1, metadata.total + 1))
                         self.fid_2_file_name_map = metadata.fid_fname_map
                         self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
-                        self.meta['finished'] = len(self._flist_done)
-                        return self.meta['finished'] == self.meta['total']
+                        self.meta.finished = len(self._flist_done)
+                        return self.meta.finished == self.meta.total
 
                     # Checks failed: only validated related archives may seed baseline files.
                     if is_foreign_arc and not self._can_extract_foreign_archive(metadata, candidate):
@@ -649,8 +710,8 @@ class Task(object):
                     os.remove(candidate_arc)
                 continue
 
-        self.meta['finished'] = len(self._flist_done)
-        if self.meta['finished'] == self.meta['total']:
+        self.meta.finished = len(self._flist_done)
+        if self.meta.finished == self.meta.total:
             return True
         return False
 
@@ -679,7 +740,7 @@ class Task(object):
         guess_fid_2_file_name_map = {}
 
         re_name_filter = re.compile(
-            r'^(\d{%d})\..+$' % len(str(self.meta['total'])))
+            r'^(\d{%d})\..+$' % len(str(self.meta.total)))
         self._file_in_download_folder = []
 
         for _file_name in os.listdir(folder_path):
@@ -724,11 +785,11 @@ class Task(object):
                     self.fid_2_file_name_map[_fid] = file_name
                 self._flist_done.add(int(_fid))
 
-        self.meta['finished'] = len(self._flist_done)
+        self.meta.finished = len(self._flist_done)
         if self.config['download_range']:
-            self.meta['finished'] += (self.meta['total'] -
+            self.meta.finished += (self.meta.total -
                                       len(self.download_range))
-        if self.meta['finished'] == self.meta['total']:
+        if self.meta.finished == self.meta.total:
             return True
         return False
 
@@ -843,7 +904,7 @@ class Task(object):
         try:
             os.rename(fn_tmp, fn)
             self._cnt_lock.acquire()
-            self.meta['finished'] += 1
+            self.meta.finished += 1
             self._cnt_lock.release()
             if imgurl in self.filehash_map:
                 for _fid, _ in self.filehash_map[imgurl]:
@@ -855,7 +916,7 @@ class Task(object):
                     if not fn == fn_rep:
                         shutil.copyfile(fn, fn_rep)
                         self._cnt_lock.acquire()
-                        self.meta['finished'] += 1
+                        self.meta.finished += 1
                         self._cnt_lock.release()
                 del self.filehash_map[imgurl]
         except Exception as ex:
@@ -884,17 +945,17 @@ class Task(object):
             dir1 = id_str[:3]
             dir2 = id_str[3:6]
             base_dir = os.path.join(self.config['dir'], dir1, dir2)
-            folder_name = f"{gallery_id} - {util.legalpath(self.meta['title'])}"
+            folder_name = f"{gallery_id} - {util.legalpath(self.meta.title)}"
             return os.path.join(base_dir, folder_name)
         else:
             # fallback for unknown/non-numeric id
-            return os.path.join(self.config['dir'], f"{gallery_id} - {util.legalpath(self.meta['title'])}")
+            return os.path.join(self.config['dir'], f"{gallery_id} - {util.legalpath(self.meta.title)}")
 
     def get_fidpad(self, fid, ext='.jpg'):
         if fid in self.fid_2_file_name_map:
             ext = os.path.splitext(self.fid_2_file_name_map[fid])[1]
         fid = int(fid)
-        _ = "%%0%dd%%s" % (len(str(self.meta['total'])))
+        _ = "%%0%dd%%s" % (len(str(self.meta.total)))
         return _ % (fid, ext)
 
     def make_archive(self, remove=True):
@@ -933,6 +994,9 @@ class Task(object):
         for k in self.__dict__:
             if k not in j:
                 continue
+            if k == 'meta':
+                setattr(self, k, GalleryMeta.from_dict(j[k]))
+                continue
             if k.endswith('_q') and j[k]:
                 setattr(self, k, Queue())
                 [getattr(self, k).put(e, False) for e in j[k]]
@@ -946,6 +1010,7 @@ class Task(object):
     def to_dict(self):
         d = dict({k: v for k, v in self.__dict__.items()
                   if not k.endswith('_q') and not k.startswith("_")})
+        d['meta'] = self.meta.to_dict()
         for k in ['img_q', 'page_q', 'list_q']:
             if getattr(self, k):
                 d[k] = [e for e in getattr(self, k).queue]

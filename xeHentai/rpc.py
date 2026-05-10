@@ -315,7 +315,7 @@ class xeHentaiRPCExtended(object):
             ret['threads_zombie'] = len(self._monitor.thread_zombie)
             if self._monitor.task.state > TASK_STATE_PAUSED and self._monitor.task.img_q:
                 ret['queue_pending'] = self._monitor.task.img_q.qsize()
-                ret['queue_finished'] = self._monitor.task.meta['finished']
+                ret['queue_finished'] = self._monitor.task.meta.finished
             else:
                 ret['queue_pending'] = 0
                 ret['queue_finished'] = 0
@@ -387,7 +387,7 @@ class xeHentaiRPCExtended(object):
             return ERR_TASK_NOT_FOUND, None
         t = self._all_tasks[guid]
         start = 1
-        end = t.meta['total'] + 1
+        end = t.meta.total + 1
         if request_range:
             request_range = str(request_range)
             _ = request_range.split(',')
