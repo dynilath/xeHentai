@@ -293,7 +293,7 @@ class HttpWorker(Thread, HttpReq):
 
 class ArchiveWorker(Thread):
     # this worker is not managed by monitor
-    def __init__(self, logger, task, exit_check=None):
+    def __init__(self, logger, task: Task, exit_check=None):
         Thread.__init__(self, name="archiver%s" % task.guid)
         Thread.setDaemon(self, True)
         self.logger = logger
