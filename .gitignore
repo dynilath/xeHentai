@@ -23,3 +23,7 @@ CHANGELOG.html
 .vs/xeHentai/v15/.suo
 xeHentai.pyproj
 *.sln
+
+__pycache__
+*.db
+*.zip

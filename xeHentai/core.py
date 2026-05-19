@@ -247,6 +247,22 @@ class xeHentai(object):
             self._handle_exact_match_found(task, task_guid, found_archive)
             return 'finished'
         
+        # Phase 1.5: Prescan extraction from series archives (NEW)
+        # This runs after exact match fails, to populate task dir from related archives
+        if hasattr(task, 'prescan_extract_series_files'):
+            try:
+                prescan_result = task.prescan_extract_series_files()
+                extracted_count = prescan_result.get('extracted_count', 0)
+                if extracted_count > 0:
+                    sources = prescan_result.get('sources', [])
+                    self.logger.info(i18n.PRESCAN_EXTRACTED % (task_guid, extracted_count, len(sources)))
+                    # Log source archives
+                    for src in sources[:3]:  # Log first 3 sources
+                        self.logger.debug(f"{task_guid}: Reused files from {os.path.basename(src)}")
+            except Exception as ex:
+                # Don't fail task if prescan fails, just log and continue
+                self.logger.warning(f"{task_guid}: Prescan extraction error: {str(ex)}")
+        
         # No exact match found, continue to SCAN_PAGE
         return 'continue_scan_page'
 

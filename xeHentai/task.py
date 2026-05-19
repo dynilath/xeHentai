@@ -619,13 +619,45 @@ class Task(object):
         """Yield valid source candidates from shared global index for a page hash."""
         if not self._reuse_index:
             return
-        by_hash = self._reuse_index.get('by_page_hash', {})
-        entries = by_hash.get(page_hash, [])
-        entries = sorted(entries, key=lambda x: int(x.get('updated_at', 0)), reverse=True)
-        for entry in entries:
-            source_path = entry.get('source_path')
-            if source_path and os.path.exists(source_path):
-                yield entry
+        
+        # SQLite mode
+        if self._reuse_index.get('_sqlite'):
+            import sqlite3
+            db_path = self._reuse_index.get('_db_path', 'h.reuse.db')
+            try:
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute('''
+                    SELECT gid, fid, source_type, source_path, member_name, size_text, updated_at
+                    FROM page_hashes
+                    WHERE page_hash = ?
+                    ORDER BY updated_at DESC
+                ''', (page_hash,)).fetchall()
+                conn.close()
+                
+                for row in rows:
+                    source_path = row['source_path']
+                    if source_path and os.path.exists(source_path):
+                        yield {
+                            'gid': row['gid'],
+                            'fid': row['fid'],
+                            'source_type': row['source_type'],
+                            'source_path': source_path,
+                            'member_name': row['member_name'],
+                            'size_text': row['size_text'],
+                            'updated_at': row['updated_at']
+                        }
+            except Exception:
+                pass
+        else:
+            # Legacy JSON mode
+            by_hash = self._reuse_index.get('by_page_hash', {})
+            entries = by_hash.get(page_hash, [])
+            entries = sorted(entries, key=lambda x: int(x.get('updated_at', 0)), reverse=True)
+            for entry in entries:
+                source_path = entry.get('source_path')
+                if source_path and os.path.exists(source_path):
+                    yield entry
 
     def _try_copy_from_source(self, entry: Dict[str, Any], target_path: str, size_text: str) -> bool:
         """Copy from a source entry (zip member or plain file) and verify size range."""
@@ -688,6 +720,34 @@ class Task(object):
             str(getattr(self, 'gid', '')),
             self.meta.newer_versions,
         )
+
+    def prescan_extract_series_files(self) -> Dict[str, Any]:
+        """Prescan and extract matching files from series archives before download.
+        
+        Returns:
+            Dict with 'extracted_count' and 'sources' list
+        """
+        if not self.meta or not self.meta.has_title():
+            return {'extracted_count': 0, 'sources': []}
+        
+        folder_path = self.get_task_dir()
+        current_arc = "%s.zip" % folder_path
+        
+        # Collect candidates via title matching and version graph
+        candidates = self._collect_prescan_archive_candidates(current_arc)
+        
+        if not candidates or len(candidates) <= 1:  # Only current archive
+            return {'extracted_count': 0, 'sources': []}
+        
+        # Extract matching files from candidates
+        result = reuse_index.prescan_extract_from_candidates(
+            self._reuse_index,
+            candidates,
+            self,
+            require_relation=False  # Allow series_title matches for better coverage
+        )
+        
+        return result
 
     def _can_extract_foreign_archive(self, metadata: Optional[ArchiveMeta], candidate: Dict[str, Any]) -> bool:
         """Validate whether a foreign archive can seed the current task directory."""
