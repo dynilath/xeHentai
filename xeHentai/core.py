@@ -220,7 +220,7 @@ class xeHentai(object):
             if not os.path.exists(task_folder):
                 os.makedirs(task_folder)
             shutil.move(found_archive, current_arc)
-        self.logger.info(i18n.DF_FULLY_MATCHED % (task.guid, task.meta.title, found_archive))
+        self.logger.info(i18n.DF_FULLY_MATCHED % (task.guid, found_archive))
         # Directly update zip metadata without scanning/downloading
         try:
             arc = task.make_archive(remove=False)
@@ -269,6 +269,7 @@ class xeHentai(object):
     def _stage_scan_page(self, task:Task, task_guid:str, req:HttpReq):
         """Stage: Scan gallery pages for image URLs and check archive (Phase 2)."""
         temp_fid_2_page_url_map = {}
+        self.logger.info(i18n.DF_STATE_START_SCAN_PAGE % (task_guid))
         for x in range(0,
                        int(math.ceil(1.0 * task.meta.total / int(task.meta.thumbnail_cnt)))):
             r = req.request("GET",
