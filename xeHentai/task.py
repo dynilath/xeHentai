@@ -149,6 +149,10 @@ class ArchiveMeta:
 
 
 class Task(object):
+    PRESCAN_STATUS_NONE = 0
+    PRESCAN_STATUS_COMPLETE = 1
+    PRESCAN_STATUS_COMPLETE_EXACT = 2
+
     def __init__(self, url: str, cfgdict: Dict[str, Any]):
         # Original gallery URL.
         self.url: str = url
@@ -712,11 +716,16 @@ class Task(object):
         The method trusts current archive only when marker/url/count all match.
         For related archive candidates, it extracts as baseline but never deletes
         foreign zip files.
+
+        Returns:
+            (PRESCAN_STATUS_NONE, None): no complete trusted result from prescan.
+            (PRESCAN_STATUS_COMPLETE, None): trusted complete result, but not exact gid/hash match.
+            (PRESCAN_STATUS_COMPLETE_EXACT, archive_path): trusted complete result with exact gid/hash match; archive_path is the found zip file path.
         """
 
         # fpath requires title
         if not self.meta.has_title():
-            return False
+            return self.PRESCAN_STATUS_NONE, None
         folder_path = self.get_task_dir()
 
         # Quick trust check for existing zip:
@@ -725,65 +734,110 @@ class Task(object):
         # 3) file count matches expected total
         arc = "%s.zip" % folder_path
 
+        def _check_trusted_complete(zipfile_target):
+            comment_str = zipfile_target.comment.decode('UTF-8', errors='ignore')
+            metadata = self.decode_meta(comment_str)
+
+            marker_ok = comment_str.startswith('xeHentai Archiver v')
+            url_ok = metadata is not None and metadata.url == self.url
+
+            gid_hash_ok = False
+            if metadata is not None:
+                arc_index = RE_INDEX.findall(metadata.url)
+                current_gid = str(getattr(self, 'gid', '') or '')
+                current_hash = str(getattr(self, 'sethash', '') or '')
+                if not current_gid or not current_hash:
+                    cur_index = RE_INDEX.findall(self.url)
+                    if cur_index:
+                        current_gid, current_hash = cur_index[0]
+                if arc_index and current_gid and current_hash:
+                    arc_gid, arc_hash = arc_index[0]
+                    gid_hash_ok = (arc_gid == current_gid and arc_hash == current_hash)
+
+            file_count = len([_n for _n in zipfile_target.namelist() if not _n.endswith('/')])
+            count_ok = metadata is not None and file_count == metadata.total
+
+            if marker_ok and url_ok and count_ok:
+                assert metadata is not None
+                member_name_map, member_ext_map = self._build_fid_filename_map(zipfile_target.namelist())
+                self._flist_done.update(range(1, metadata.total + 1))
+                self.fid_2_file_name_map = member_name_map
+                self.fid_2_file_ext_map = member_ext_map
+                self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
+                self.meta.finished = len(self._flist_done)
+                if self.meta.finished == self.meta.total:
+                    if gid_hash_ok:
+                        return self.PRESCAN_STATUS_COMPLETE_EXACT, metadata
+                    return self.PRESCAN_STATUS_COMPLETE, metadata
+            return self.PRESCAN_STATUS_NONE, metadata
+
         current_arc_abs = os.path.abspath(arc)
+
+        # Fast path: if current task zip is fully trusted and exact match,
+        # return immediately and do not attempt any reuse candidate handling.
+        if os.path.exists(arc):
+            try:
+                with zipfile.ZipFile(arc, 'r') as current_zip:
+                    status, _ = _check_trusted_complete(current_zip)
+                    if status == self.PRESCAN_STATUS_COMPLETE_EXACT:
+                        return status, arc
+                    if status == self.PRESCAN_STATUS_COMPLETE:
+                        return status, None
+            except zipfile.BadZipFile:
+                os.remove(arc)
+
+        # Tier 1: Direct gid-based lookup to handle directory name variations
+        # (e.g., same gid but different title versions or translations)
+        current_gid = str(getattr(self, 'gid', '') or '')
+        if current_gid and current_gid.isdigit():
+            gid_arc = self._find_archive_by_gid(current_gid)
+            if gid_arc and os.path.abspath(gid_arc) != current_arc_abs and os.path.exists(gid_arc):
+                try:
+                    with zipfile.ZipFile(gid_arc, 'r') as gid_zip:
+                        status, _ = _check_trusted_complete(gid_zip)
+                        if status == self.PRESCAN_STATUS_COMPLETE_EXACT:
+                            return status, gid_arc
+                        if status == self.PRESCAN_STATUS_COMPLETE:
+                            if not os.path.exists(folder_path):
+                                os.makedirs(folder_path)
+                            gid_zip.extractall(folder_path)
+                            self.meta.finished = len(self._flist_done)
+                            if self.meta.finished == self.meta.total:
+                                return self.PRESCAN_STATUS_COMPLETE, None
+                except zipfile.BadZipFile:
+                    pass
+
         for candidate in self._collect_prescan_archive_candidates(arc):
             candidate_arc = candidate.get('archive_path')
             if not candidate_arc:
                 continue
             if not os.path.exists(candidate_arc):
                 continue
+            if os.path.abspath(candidate_arc) == current_arc_abs:
+                continue
 
-            is_foreign_arc = os.path.abspath(candidate_arc) != current_arc_abs
+            is_foreign_arc = True
             try:
                 with zipfile.ZipFile(candidate_arc, 'r') as zipfile_target:
-                    comment_str = zipfile_target.comment.decode('UTF-8', errors='ignore')
-                    metadata = self.decode_meta(comment_str)
-
-                    # Verify archive marker
-                    marker_ok = comment_str.startswith('xeHentai Archiver v')
-
-                    # Verify URL matches current task and metadata is valid
-                    url_ok = metadata is not None and metadata.url == self.url
-
-                    # Count actual files in zip (excluding directories)
-                    file_count = len([_n for _n in zipfile_target.namelist() if not _n.endswith('/')])
-
-                    # Verify file count in zip metadata matches actual file count
-                    count_ok = metadata is not None and file_count == metadata.total
-
-                    if marker_ok and url_ok and count_ok:
-                        # All three checks pass: zip is trusted as complete
-                        assert metadata is not None
-                        member_name_map, member_ext_map = self._build_fid_filename_map(zipfile_target.namelist())
-                        self._flist_done.update(range(1, metadata.total + 1))
-                        self.fid_2_file_name_map = member_name_map
-                        self.fid_2_file_ext_map = member_ext_map
-                        self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
-                        self.meta.finished = len(self._flist_done)
-                        return self.meta.finished == self.meta.total
+                    status, metadata = _check_trusted_complete(zipfile_target)
+                    if status == self.PRESCAN_STATUS_COMPLETE:
+                        return status, None
 
                     # Checks failed: only validated related archives may seed baseline files.
                     if is_foreign_arc and not self._can_extract_foreign_archive(metadata, candidate):
                         continue
 
-                    # Extract as reusable baseline.
-                    # Only delete when this is the current task archive.
                     if not os.path.exists(folder_path):
                         os.makedirs(folder_path)
                     zipfile_target.extractall(folder_path)
-                    zipfile_target.close()
-                    if not is_foreign_arc:
-                        os.remove(candidate_arc)
                     break
             except zipfile.BadZipFile:
-                if not is_foreign_arc:
-                    os.remove(candidate_arc)
                 continue
 
         self.meta.finished = len(self._flist_done)
         if self.meta.finished == self.meta.total:
-            return True
-        return False
+            return self.PRESCAN_STATUS_COMPLETE, None
+        return self.PRESCAN_STATUS_NONE, None
 
     def scan_downloaded(self, fid_2_page_url_map, scaled=True):
         """Scan existing download folder and mark already-valid files as finished."""
@@ -1039,8 +1093,11 @@ class Task(object):
             with zipfile.ZipFile(arc, 'r') as zipfile_target:
                 if zipfile_target.comment == self.encode_meta():
                     return arc
-                else:
-                    zipfile_target.extractall(dpath)
+            # if comment is different, we need to update the comment
+            # but zipfile module does not support editing comment, we need to rewrite the zip file
+            with zipfile.ZipFile(arc, 'a') as zipfile_target:
+                zipfile_target.comment = self.encode_meta()
+            return arc
 
         with zipfile.ZipFile(arc, 'w') as zipfile_target:
             # zip comment created

@@ -9,6 +9,7 @@ import sys
 import math
 import json
 import time
+import shutil
 import traceback
 from .task import Task
 from . import reuse_index
@@ -50,7 +51,7 @@ class xeHentai(object):
         self._exit = False
         self.tasks = Queue()  # for queueing, stores gid only
         self.last_task_guid = None
-        self._all_tasks = {}  # for saving states
+        self._all_tasks: dict[str,Task] = {}  # for saving states
         self._all_threads = [[] for i in range(20)]
         self.cfg = {k: v for k, v in default_config.__dict__.items()
                     if not k.startswith("_")}
@@ -354,7 +355,29 @@ class xeHentai(object):
 
                 # scan zip, zip file has metadata in comment
                 # if some image is truncated or outdated, download them again
-                if task.prescan_downloaded():
+                prescan_status, found_archive = task.prescan_downloaded()
+                if prescan_status == Task.PRESCAN_STATUS_COMPLETE_EXACT:
+                    if not task.fid_2_page_hash_map:
+                        self.logger.info(
+                            "task #%s found fully-matched zip but missing fid_page_hash_map, fallback to SCAN_PAGE" % task.guid)
+                    else:
+                        # Relocate found archive from old directory to new task directory
+                        current_arc = "%s.zip" % task.get_task_dir()
+                        if found_archive and os.path.abspath(found_archive) != os.path.abspath(current_arc):
+                            task_folder = task.get_task_dir()
+                            if not os.path.exists(task_folder):
+                                os.makedirs(task_folder)
+                            shutil.move(found_archive, current_arc)
+                        self.logger.info(i18n.DF_FULLY_MATCHED % (task.guid, task.meta.title, found_archive))
+                        # Directly update zip metadata without scanning/downloading
+                        try:
+                            arc = task.make_archive(remove=False)
+                            self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED % (task.guid, arc))
+                        except Exception as ex:
+                            self.logger.error(i18n.TASK_ERROR % (task.guid, traceback.format_exc()))
+                        task.state = TASK_STATE_FINISHED
+                        break
+                elif prescan_status == Task.PRESCAN_STATUS_COMPLETE:
                     self._update_task_reuse_index(task)
                     task.state = TASK_STATE_SCAN_IMG
                     continue

@@ -130,3 +130,7 @@ THREAD_SWEEP_OUT = "绅士-%s 挂了, 不再理它"
 QUEUE = "队列"
 
 PROXY_DISABLE_BANNED = "禁用了一个被ban的代理，将在约%s秒后恢复"
+
+# forked i18n items
+DF_FULLY_MATCHED = "任务 #%s 标题 %s 找到完全匹配的压缩包 (相同的 gid/hash)，位于 %s"
+DF_FULLY_MATCHED_UPDATED = "任务 #%s 压缩包元数据已更新，新压缩包位于 %s"
