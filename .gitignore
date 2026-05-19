@@ -26,4 +26,6 @@ xeHentai.pyproj
 
 __pycache__
 *.db
+*.db-wal
+*.db-shm
 *.zip
