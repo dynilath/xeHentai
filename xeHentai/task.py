@@ -834,7 +834,9 @@ class Task(object):
                         self._flist_done.update(range(1, metadata.total + 1))
                         self.fid_2_file_name_map = member_name_map
                         self.fid_2_file_ext_map = member_ext_map
-                        self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
+                        # Preserve existing populated hash map from page scan; only load from archive if currently empty
+                        if not self.fid_2_page_hash_map:
+                            self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
                         self.meta.finished = len(self._flist_done)
                         return True, metadata
                 

@@ -270,6 +270,7 @@ class xeHentai(object):
         """Stage: Scan gallery pages for image URLs and check archive (Phase 2)."""
         temp_fid_2_page_url_map = {}
         self.logger.info(i18n.DF_STATE_START_SCAN_PAGE % (task_guid))
+        control_timer = time.time()
         for x in range(0,
                        int(math.ceil(1.0 * task.meta.total / int(task.meta.thumbnail_cnt)))):
             r = req.request("GET",
@@ -280,6 +281,12 @@ class xeHentai(object):
                             lambda x: task.set_fail(x))
             if task.failcode:
                 break
+            
+            # Control request rate to avoid hammering the server, especially for large galleries
+            now = time.time()
+            if now - control_timer < 1:
+                time.sleep(1 - (now - control_timer))
+            control_timer = time.time()
 
         if task.state == TASK_STATE_FAILED:
             return False
@@ -287,6 +294,8 @@ class xeHentai(object):
         # Phase 2: After scanning pages, try exact match again (now fid_page_hash_map is built from scan)
         is_exact_match, found_archive = task.exact_downloaded_exits(require_fid_page_hash_map=False)
         if is_exact_match:
+            # Ensure old archives get updated with the hash map collected during page scanning
+            # (exact_downloaded_exits preserves populated hash map from queue_wrapper calls above)
             self._handle_exact_match_found(task, task_guid, found_archive)
             return False  # Stop processing, task is complete
         
