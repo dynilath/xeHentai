@@ -49,7 +49,7 @@ class xeHentai(object):
         self.verstr = f"{__version__}{'-dev' if DEVELOPMENT else ''}"
         self.logger = logger.Logger()
         self._exit = False
-        self.tasks = Queue()  # for queueing, stores gid only
+        self.tasks: Queue[str] = Queue()  # for queueing, stores gid only
         self.last_task_guid = None
         self._all_tasks: dict[str,Task] = {}  # for saving states
         self._all_threads = [[] for i in range(20)]
@@ -167,7 +167,7 @@ class xeHentai(object):
             download_ori=task.config['download_ori'] and self.has_login,
         )
 
-    def _get_archive_build_worker(self, task):
+    def _get_archive_build_worker(self, task:Task):
         """Factory for asynchronous archive builder (v2, not wired by default)."""
         return ArchiveBuildWorker(
             logger=self.logger,
@@ -177,6 +177,236 @@ class xeHentai(object):
                 proxy_pool=self.proxy,
             ),
         )
+
+    def _stage_get_meta(self, task:Task, task_guid:str, req:HttpReq):
+        """Stage: Fetch gallery metadata from E-H site."""
+        task.failcode = 0
+        try:
+            r = req.request(method="GET", url=task.url,
+                            _filter=filters.flt_metadata,
+                            suc=lambda x: task.update_meta(x),
+                            fail=lambda x: task.set_fail(x))
+        except Exception as ex:
+            self.logger.error(i18n.TASK_ERROR %
+                              (task.guid, traceback.format_exc()))
+            task.state = TASK_STATE_FAILED
+            return False
+        
+        if task.failcode in (ERR_ONLY_VISIBLE_EXH, ERR_GALLERY_REMOVED) and self.has_login and \
+                task.migrate_exhentai():
+            self.logger.info(i18n.TASK_MIGRATE_EXH % task_guid)
+            self.tasks.put(task_guid)
+            return False
+        elif task.failcode == ERR_IP_BANNED:
+            self.logger.error(i18n.c(ERR_IP_BANNED) % r)
+            task.state = TASK_STATE_FAILED
+            return False
+
+        if task.config['download_range']:
+            task_total = task.meta.total
+            for dRange in task.config['download_range']:
+                task.download_range.extend(range(dRange[0],
+                                                 dRange[1] + 1 if dRange[1] < task_total else task_total + 1))
+        
+        task.state = TASK_STATE_SCAN_PAGE
+        return True
+
+    def _handle_exact_match_found(self, task:Task, task_guid:str, found_archive:str) -> None:
+        """Handle found exact matching archive: relocate, update zip comment, and finish task."""
+        # Relocate found archive from old directory to new task directory
+        current_arc = "%s.zip" % task.get_task_dir()
+        if found_archive and os.path.abspath(found_archive) != os.path.abspath(current_arc):
+            task_folder = task.get_task_dir()
+            if not os.path.exists(task_folder):
+                os.makedirs(task_folder)
+            shutil.move(found_archive, current_arc)
+        self.logger.info(i18n.DF_FULLY_MATCHED % (task.guid, task.meta.title, found_archive))
+        # Directly update zip metadata without scanning/downloading
+        try:
+            arc = task.make_archive(remove=False)
+            self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED % (task.guid, arc))
+        except Exception as ex:
+            self.logger.error(i18n.TASK_ERROR % (task.guid, traceback.format_exc()))
+        self._update_task_reuse_index(task)
+        task.state = TASK_STATE_FINISHED
+
+    def _stage_check_archive_phase1(self, task:Task, task_guid:str):
+        """Stage: Check if exact matching archive exists after GET_META (Phase 1).
+        
+        Phase 1: Requires fid_page_hash_map in archive metadata. If found archive has
+        fid_page_hash_map, reuse it and skip page scanning.
+        """
+        if not task.meta:
+            task.state = TASK_STATE_GET_META
+            return 'retry_meta'
+        
+        # Phase 1: Try to find exact matching archive with fid_page_hash_map
+        is_exact_match, found_archive = task.exact_downloaded_exits(require_fid_page_hash_map=True)
+        
+        if is_exact_match:
+            self._handle_exact_match_found(task, task_guid, found_archive)
+            return 'finished'
+        
+        # No exact match found, continue to SCAN_PAGE
+        return 'continue_scan_page'
+
+    def _stage_scan_page(self, task:Task, task_guid:str, req:HttpReq):
+        """Stage: Scan gallery pages for image URLs and check archive (Phase 2)."""
+        temp_fid_2_page_url_map = {}
+        for x in range(0,
+                       int(math.ceil(1.0 * task.meta.total / int(task.meta.thumbnail_cnt)))):
+            r = req.request("GET",
+                            "%s/?p=%d" % (task.url, x),
+                            filters.flt_pageurl,
+                            lambda x: task.queue_wrapper(
+                                temp_fid_2_page_url_map.setdefault, img_tuble=x),
+                            lambda x: task.set_fail(x))
+            if task.failcode:
+                break
+
+        if task.state == TASK_STATE_FAILED:
+            return False
+        
+        # Phase 2: After scanning pages, try exact match again (now fid_page_hash_map is built from scan)
+        is_exact_match, found_archive = task.exact_downloaded_exits(require_fid_page_hash_map=False)
+        if is_exact_match:
+            self._handle_exact_match_found(task, task_guid, found_archive)
+            return False  # Stop processing, task is complete
+        
+        # No exact match, check if all files are already downloaded
+        if task.scan_downloaded(temp_fid_2_page_url_map):
+            # All files found, update archive and finish
+            self.logger.info(i18n.TASK_TITLE % (task_guid, task.meta.title))
+            try:
+                arc = task.make_archive(remove=False)
+                self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED % (task.guid, arc))
+            except Exception as ex:
+                self.logger.error(i18n.TASK_ERROR % (task.guid, traceback.format_exc()))
+            self._update_task_reuse_index(task)
+            task.state = TASK_STATE_FINISHED
+            return False  # Stop processing, task is complete
+        
+        task.state = TASK_STATE_SCAN_IMG
+        return True
+
+    def _stage_scan_img(self, task:Task, task_guid:str, mon):
+        """Stage: Spawn worker threads to scan individual image pages."""
+        # print here so that see it after we can join former threads
+        self.logger.info(i18n.TASK_TITLE % (task_guid, task.meta.title))
+
+        # log at here is quite too early
+        # finished file counting will be cleared after page scan
+        self.logger.info(i18n.TASK_WILL_DOWNLOAD_CNT % (
+            task_guid, task.meta.total - task.meta.finished,
+            task.meta.total))
+        
+        # spawn thread to scan images
+        task.img_q.queue.clear()
+        for i in range(task.config['scan_thread_cnt']):
+            tid = 'scan-%d' % (i + 1)
+            _ = self._get_httpworker(tid, task.page_q,
+                                     filters.flt_imgurl_wrapper(
+                                         task.config['download_ori'] and self.has_login),
+                                     lambda x, tid=tid: (task.set_reload_url(x[0], x[1], x[2], x[3]),
+                                                         mon.vote(tid, 0)),
+                                     lambda x, tid=tid: (
+                                         mon.vote(tid, x[0])),
+                                     mon.wrk_keepalive,
+                                     util.get_proxy_policy(
+                                         task.config),
+                                     10,
+                                     False)
+            # we don't need proxy_image in the scan thread
+            # we use default timeout in the scan thread
+            self._all_threads[TASK_STATE_SCAN_IMG].append(_)
+            _.start()
+        
+        task.state = TASK_STATE_DOWNLOAD
+        return True
+
+    def _stage_download(self, task:Task, task_guid:str, mon):
+        """Stage: Spawn worker threads to download images."""
+        # spawn thread to download all urls
+        for i in range(task.config['download_thread_cnt']):
+            tid = 'down-%d' % (i + 1)
+            _ = self._get_httpworker(tid, task.img_q,
+                                     filters.download_file_wrapper(
+                                         task.config['dir']),
+                                     lambda _x, _tid=tid: (task.save_file(_x[1], _x[2], _x[0], _x[3], _x[4]) and
+                                                           (self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(_tid, *task.get_fname(_x[1]))),
+                                                            mon.vote(_tid, 0))),
+                                     lambda _x, _tid=tid: (
+                                         task.page_q.put(task.get_reload_url(
+                                             _x[1])) if 'hentai.org/img/509.gif' not in _x[1] else None,
+                                         # delete old url in reload_map
+                                         task.reload_map.pop(
+                                             _x[1]) if _x[1] in task.reload_map else None,
+                                         self.logger.debug(
+                                             i18n.XEH_DOWNLOAD_HAS_ERROR % (tid,
+                                                                            i18n.c(_x[0]) + ' (' + _x[1] + ') ')),
+                                         mon.vote(_tid, _x[0])),
+                                     mon.wrk_keepalive,
+                                     util.get_proxy_policy(
+                                         task.config),
+                                     task.config['download_timeout'],
+                                     True)
+            self._all_threads[TASK_STATE_DOWNLOAD].append(_)
+            _.start()
+        
+        # spawn archiver if we need
+        if task.config['make_archive']:
+            if self._all_threads[TASK_STATE_MAKE_ARCHIVE]:
+                self._all_threads[TASK_STATE_MAKE_ARCHIVE][0].join()
+                self._all_threads[TASK_STATE_MAKE_ARCHIVE] = []
+            _a = ArchiveWorker(self.logger, task)
+            self._all_threads[TASK_STATE_MAKE_ARCHIVE].append(_a)
+            _a.start()
+        
+        self._update_task_reuse_index(task)
+        return False  # End of coroutine
+
+    def _do_task_coroutine(self, task:Task, task_guid:str, req:HttpReq, mon_ref):
+        """Coroutine that progresses through task stages, yielding after each stage."""
+        # Stage 1: GET_META
+        if task.state <= TASK_STATE_GET_META:
+            task.state = TASK_STATE_GET_META
+            if not self._stage_get_meta(task, task_guid, req):
+                return
+            yield 'meta_complete'
+        
+        # Stage 2: CHECK_ARCHIVE Phase 1 (immediately after GET_META)
+        if task.state == TASK_STATE_SCAN_PAGE:
+            result = self._stage_check_archive_phase1(task, task_guid)
+            if result == 'finished':
+                return  # Task complete, early exit
+            elif result == 'retry_meta':
+                yield 'retry'
+                return
+            else:  # 'continue_scan_page'
+                yield 'need_scan_page'
+        
+        # Stage 3: SCAN_PAGE (Phase 2 archive check inside)
+        if task.state == TASK_STATE_SCAN_PAGE:
+            if not self._stage_scan_page(task, task_guid, req):
+                return  # Task complete or failed
+            yield 'page_scan_complete'
+        
+        # Stage 4: SCAN_IMG
+        if task.state == TASK_STATE_SCAN_IMG:
+            # Monitor should be started by _do_task before calling stages
+            if not mon_ref[0]:
+                return
+            if not self._stage_scan_img(task, task_guid, mon_ref[0]):
+                return
+            yield 'scan_img_complete'
+        
+        # Stage 5: DOWNLOAD
+        if task.state == TASK_STATE_DOWNLOAD:
+            if not mon_ref[0]:
+                return
+            self._stage_download(task, task_guid, mon_ref[0])
+            # Workers now running in background
+            return
 
     def add_task(self, url, **cfg_dict):
         url = url.strip()
@@ -258,6 +488,7 @@ class xeHentai(object):
         return ERR_NO_ERROR, ""
 
     def _do_task(self, task_guid):
+        """Execute a task using coroutine-based stages instead of manual state machine."""
         task = self._all_tasks[task_guid]
         task._reuse_index = self.global_reuse_index
         if task.state == TASK_STATE_WAITING:
@@ -267,29 +498,33 @@ class xeHentai(object):
             task.page_q = Queue()  # per image page queue
         if not task.img_q:
             task.img_q = Queue()  # (image url, savepath) queue
-        monitor_started = False
+        
+        # Monitor reference container (to pass by reference to coroutine)
+        mon_ref = [None]
+        
+        # Create the coroutine generator
+        coro = self._do_task_coroutine(task, task_guid, req, mon_ref)
+        
         while self._exit < XEH_STATE_FULL_EXIT:
-            # wait for threads from former task to stop
+            # Wait for threads from former task to stop
             if self._all_threads[task.state]:
                 self.logger.verbose("wait %d threads in state %s" % (
                     len(self._all_threads[task.state]), task.state))
                 for t in self._all_threads[task.state]:
                     t.join()
                 self._all_threads[task.state] = []
-                # check again before we bring up new threads
+                # Check again before we bring up new threads
                 continue
-            if task.state >= TASK_STATE_SCAN_IMG and not monitor_started:
-                self.logger.verbose("state %d >= %d, bring up montior" % (
+            
+            # Start monitor if we're at SCAN_IMG stage and it hasn't started yet
+            if task.state >= TASK_STATE_SCAN_IMG and not mon_ref[0]:
+                self.logger.verbose("state %d >= %d, bring up monitor" % (
                     task.state, TASK_STATE_SCAN_IMG))
-                # bring up the monitor here, ahead of workers
+                # Bring up the monitor here, ahead of workers
                 mon = Monitor(req, self.proxy, self.logger, task,
                               ignored_errors=task.config['ignored_errors'])
                 _ = ['down-%d' % (i + 1)
                      for i in range(task.config['download_thread_cnt'])]
-                # if we jumpstart from a saved session to DOQNLOAD
-                # there will be no scan_thread
-                # if task.state >= TASK_STATE_SCAN_PAGE:
-                #    _ += ['list-1']
                 if task.state >= TASK_STATE_SCAN_IMG:
                     _ += ['scan-%d' % (i + 1)
                           for i in range(task.config['scan_thread_cnt'])]
@@ -297,191 +532,27 @@ class xeHentai(object):
                 self._monitor = mon
                 task._monitor = mon
                 mon.start()
-                # put in the lowest state
+                # Put in the lowest state
                 self._all_threads[TASK_STATE_SCAN_IMG].append(mon)
-                monitor_started = True
-
-            if task.state == TASK_STATE_GET_META:  # grab meta data
-                task.failcode = 0
-                try:
-                    r = req.request(method="GET", url=task.url,
-                                    _filter=filters.flt_metadata,
-                                    suc=lambda x: task.update_meta(x),
-                                    fail=lambda x: task.set_fail(x))
-                except Exception as ex:
-                    self.logger.error(i18n.TASK_ERROR %
-                                      (task.guid, traceback.format_exc()))
-                    task.state = TASK_STATE_FAILED
-                    break
-                if task.failcode in (ERR_ONLY_VISIBLE_EXH, ERR_GALLERY_REMOVED) and self.has_login and \
-                        task.migrate_exhentai():
-                    self.logger.info(i18n.TASK_MIGRATE_EXH % task_guid)
-                    self.tasks.put(task_guid)
-                    break
-                elif task.failcode == ERR_IP_BANNED:
-                    self.logger.error(i18n.c(ERR_IP_BANNED) % r)
-                    task.state = TASK_STATE_FAILED
-                    break
-
-                if task.config['download_range']:
-                    task_total = task.meta.total
-                    for dRange in task.config['download_range']:
-                        task.download_range.extend(range(dRange[0],
-                                                         dRange[1] + 1 if dRange[1] < task_total else task_total + 1))
-
-            # elif task.state == TASK_STATE_GET_HATHDL: # download hathdl
-            #     r = req.request("GET",
-            #         "%s/hathdler.php?gid=%s&t=%s" % (task.base_url(), task.gid, task.sethash),
-            #         filters.flt_hathdl,
-            #         lambda x:(task.meta.update(x),
-            #             task.guess_ori(),
-            #             task.scan_downloaded()),
-            #                 #task.meta['has_ori'] and task.config['download_ori'])),
-            #         lambda x:task.set_fail(x),)
-            #     self.logger.info(i18n.TASK_WILL_DOWNLOAD_CNT % (
-            #         task_guid, task.meta['total'] - len(task._flist_done),
-            #         task.meta['total']))
-            elif task.state == TASK_STATE_SCAN_PAGE:
-                # if task.config['fast_scan'] and not task.has_ori:
-                #     self.logger.info(i18n.TASK_FAST_SCAN % task.guid)
-                #     for p in task.meta['filelist']:
-                #         task.queue_wrapper(task.page_q.put, pichash = p)
-                # else:
-                # scan by our own, should not be here currently
-                # start backup thread
-                if not task.meta:
-                    task.state = TASK_STATE_GET_META
-                    continue
-
-                # scan zip, zip file has metadata in comment
-                # if some image is truncated or outdated, download them again
-                prescan_status, found_archive = task.prescan_downloaded()
-                if prescan_status == Task.PRESCAN_STATUS_COMPLETE_EXACT:
-                    if not task.fid_2_page_hash_map:
-                        self.logger.info(
-                            "task #%s found fully-matched zip but missing fid_page_hash_map, fallback to SCAN_PAGE" % task.guid)
-                    else:
-                        # Relocate found archive from old directory to new task directory
-                        current_arc = "%s.zip" % task.get_task_dir()
-                        if found_archive and os.path.abspath(found_archive) != os.path.abspath(current_arc):
-                            task_folder = task.get_task_dir()
-                            if not os.path.exists(task_folder):
-                                os.makedirs(task_folder)
-                            shutil.move(found_archive, current_arc)
-                        self.logger.info(i18n.DF_FULLY_MATCHED % (task.guid, task.meta.title, found_archive))
-                        # Directly update zip metadata without scanning/downloading
-                        try:
-                            arc = task.make_archive(remove=False)
-                            self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED % (task.guid, arc))
-                        except Exception as ex:
-                            self.logger.error(i18n.TASK_ERROR % (task.guid, traceback.format_exc()))
-                        task.state = TASK_STATE_FINISHED
-                        break
-                elif prescan_status == Task.PRESCAN_STATUS_COMPLETE:
-                    self._update_task_reuse_index(task)
-                    task.state = TASK_STATE_SCAN_IMG
-                    continue
-
-                temp_fid_2_page_url_map = {}
-                for x in range(0,
-                               int(math.ceil(1.0 * task.meta.total / int(task.meta.thumbnail_cnt)))):
-                    r = req.request("GET",
-                                    "%s/?p=%d" % (task.url, x),
-                                    filters.flt_pageurl,
-                                    lambda x: task.queue_wrapper(
-                                        temp_fid_2_page_url_map.setdefault, img_tuble=x),
-                                    lambda x: task.set_fail(x))
-                    if task.failcode:
-                        break
-
-                if task.state == TASK_STATE_FAILED:
-                    break
-                # after scan will change _flist_done and shorten the download queue
-                if task.scan_downloaded(temp_fid_2_page_url_map):
-                    self._update_task_reuse_index(task)
-                    task.state = TASK_STATE_SCAN_IMG
-                    continue
-
-            elif task.state == TASK_STATE_SCAN_IMG:
-                # print here so that see it after we can join former threads
-                self.logger.info(i18n.TASK_TITLE % (
-                    task_guid, task.meta.title))
-
-                # log at here is quite too early
-                # finished file counting will be cleared after page scan
-                self.logger.info(i18n.TASK_WILL_DOWNLOAD_CNT % (
-                    task_guid, task.meta.total - task.meta.finished,
-                    task.meta.total))
-                # spawn thread to scan images
-                task.img_q.queue.clear()
-                for i in range(task.config['scan_thread_cnt']):
-                    tid = 'scan-%d' % (i + 1)
-                    _ = self._get_httpworker(tid, task.page_q,
-                                             filters.flt_imgurl_wrapper(
-                                                 task.config['download_ori'] and self.has_login),
-                                             lambda x, tid=tid: (task.set_reload_url(x[0], x[1], x[2], x[3]),
-                                                                 mon.vote(tid, 0)),
-                                             lambda x, tid=tid: (
-                                                 mon.vote(tid, x[0])),
-                                             mon.wrk_keepalive,
-                                             util.get_proxy_policy(
-                                                 task.config),
-                                             10,
-                                             False)
-                    # we don't need proxy_image in the scan thread
-                    # we use default timeout in the scan thread
-                    # _._exit = lambda t: t._finish_queue()
-                    self._all_threads[TASK_STATE_SCAN_IMG].append(_)
-                    _.start()
-                task.state = TASK_STATE_DOWNLOAD - 1
-            elif task.state == TASK_STATE_SCAN_ARCHIVE:
-                task.state = TASK_STATE_DOWNLOAD - 1
-            elif task.state == TASK_STATE_DOWNLOAD:
-                # spawn thread to download all urls
-                for i in range(task.config['download_thread_cnt']):
-                    tid = 'down-%d' % (i + 1)
-                    _ = self._get_httpworker(tid, task.img_q,
-                                             filters.download_file_wrapper(
-                                                 task.config['dir']),
-                                             lambda _x, _tid=tid: (task.save_file(_x[1], _x[2], _x[0], _x[3], _x[4]) and
-                                                                   (self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(_tid, *task.get_fname(_x[1]))),
-                                                                    mon.vote(_tid, 0))),
-                                             lambda _x, _tid=tid: (
-                                                 task.page_q.put(task.get_reload_url(
-                                                     _x[1])) if 'hentai.org/img/509.gif' not in _x[1] else None,
-                                                 # delete old url in reload_map
-                                                 task.reload_map.pop(
-                                                     _x[1]) if _x[1] in task.reload_map else None,
-                                                 self.logger.debug(
-                                                     i18n.XEH_DOWNLOAD_HAS_ERROR % (tid,
-                                                                                    i18n.c(_x[0]) + ' (' + _x[1] + ') ')),
-                                                 mon.vote(_tid, _x[0])),
-                                             mon.wrk_keepalive,
-                                             util.get_proxy_policy(
-                                                 task.config),
-                                             task.config['download_timeout'],
-                                             True)
-                    self._all_threads[TASK_STATE_DOWNLOAD].append(_)
-                    _.start()
-                # spawn archiver if we need
-                if task.config['make_archive']:
-                    if self._all_threads[TASK_STATE_MAKE_ARCHIVE]:
-                        self._all_threads[TASK_STATE_MAKE_ARCHIVE][0].join()
-                        self._all_threads[TASK_STATE_MAKE_ARCHIVE] = []
-                    _a = ArchiveWorker(self.logger, task)
-                    self._all_threads[TASK_STATE_MAKE_ARCHIVE].append(_a)
-                    _a.start()
-                # break current task loop
-                self._update_task_reuse_index(task)
+                mon_ref[0] = mon
+            
+            # Drive the coroutine forward
+            try:
+                stage_result = next(coro)
+                self.logger.verbose("Stage completed: %s" % stage_result)
+            except StopIteration:
+                # Coroutine completed
                 break
-
+            
+            # Check for errors
             if task.failcode:
                 self.logger.error(i18n.TASK_ERROR %
                                   (task_guid, i18n.c(task.failcode)))
-                # wait all threads to finish
                 break
-            else:
-                task.state += 1
+            
+            # Check if task reached terminal state
+            if task.state in (TASK_STATE_FINISHED, TASK_STATE_FAILED):
+                break
 
     def _task_loop(self):
         task_guid = None
