@@ -764,6 +764,11 @@ class Task(object):
                             if not metadata.fid_page_hash_map:
                                 return False, None
                         
+                        # Validate fid_page_hash_map count matches total if present
+                        if metadata.fid_page_hash_map:
+                            if len(metadata.fid_page_hash_map) != metadata.total:
+                                return False, None
+                        
                         # Load metadata from the exact match
                         member_name_map, member_ext_map = self._build_fid_filename_map(zipfile_target.namelist())
                         self._flist_done.update(range(1, metadata.total + 1))
