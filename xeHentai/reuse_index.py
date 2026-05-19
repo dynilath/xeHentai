@@ -6,12 +6,10 @@ import re
 import time
 import json
 import sqlite3
-from collections import deque
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .const import RE_INDEX
 
-REUSE_INDEX_FILE = 'h.reuse.json'
 REUSE_INDEX_DB = 'h.reuse.db'
 MAX_PRESCAN_CANDIDATES = 20  # Limit candidates to improve performance
 
@@ -89,103 +87,7 @@ def _init_database(db_path: str = REUSE_INDEX_DB) -> None:
         conn.close()
 
 
-def _migrate_json_to_sqlite(json_path: str = REUSE_INDEX_FILE, db_path: str = REUSE_INDEX_DB) -> None:
-    """Migrate existing JSON index to SQLite database."""
-    if not os.path.exists(json_path):
-        return
-    
-    print(f"Migrating {json_path} to SQLite database {db_path}...")
-    
-    # Initialize database schema first
-    _init_database(db_path)
-    
-    # Load JSON data
-    with open(json_path) as f:
-        index = json.loads(f.read())
-    
-    conn = _get_db_connection(db_path)
-    try:
-        # Migrate galleries (by_gid)
-        by_gid = index.get('by_gid', {})
-        for gid, entry in by_gid.items():
-            conn.execute('''
-                INSERT OR REPLACE INTO galleries 
-                (gid, url, source_type, source_path, title, updated_at, fid_page_hash_map, fid_size_map)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                gid,
-                entry.get('url', ''),
-                entry.get('source_type', ''),
-                entry.get('source_path', ''),
-                entry.get('title', ''),
-                entry.get('updated_at', 0),
-                json.dumps(entry.get('fid_page_hash_map', {})),
-                json.dumps(entry.get('fid_size_map', {}))
-            ))
-        
-        # Migrate page hashes (by_page_hash)
-        by_hash = index.get('by_page_hash', {})
-        for page_hash, entries in by_hash.items():
-            for entry in entries:
-                conn.execute('''
-                    INSERT OR REPLACE INTO page_hashes
-                    (page_hash, gid, fid, source_type, source_path, member_name, size_text, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    page_hash,
-                    entry.get('gid', ''),
-                    entry.get('fid', ''),
-                    entry.get('source_type', ''),
-                    entry.get('source_path', ''),
-                    entry.get('member_name'),
-                    entry.get('size_text', ''),
-                    entry.get('updated_at', 0)
-                ))
-        
-        # Migrate title indexes
-        for index_type in ('exact', 'series'):
-            key = f'by_title_{index_type}'
-            title_index = index.get(key, {})
-            for normalized_title, entries in title_index.items():
-                for entry in entries:
-                    conn.execute('''
-                        INSERT OR REPLACE INTO title_index
-                        (normalized_title, index_type, gid, url, source_path, title, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        normalized_title,
-                        index_type,
-                        entry.get('gid', ''),
-                        entry.get('url', ''),
-                        entry.get('source_path', ''),
-                        entry.get('title', ''),
-                        entry.get('updated_at', 0)
-                    ))
-        
-        # Migrate version graph
-        version_graph = index.get('version_graph', {})
-        adjacency = version_graph.get('adjacency', {})
-        for node_from, nodes_to in adjacency.items():
-            for node_to in nodes_to:
-                # Store bidirectional edges only once (canonicalized)
-                if node_from < node_to:
-                    conn.execute('''
-                        INSERT OR IGNORE INTO version_graph (node_from, node_to)
-                        VALUES (?, ?)
-                    ''', (node_from, node_to))
-        
-        conn.commit()
-        print(f"Migration complete: {len(by_gid)} galleries, {sum(len(v) for v in by_hash.values())} page hashes")
-        
-        # Backup JSON file
-        backup_path = f"{json_path}.backup"
-        if not os.path.exists(backup_path):
-            import shutil
-            shutil.copy2(json_path, backup_path)
-            print(f"JSON backup created at {backup_path}")
-        
-    finally:
-        conn.close()
+
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -233,42 +135,37 @@ def extract_gid_from_url(url: str) -> str:
 
 
 def ensure_reuse_index(index: Optional[Dict[str, Any]] = None, rebuild_missing_titles: bool = True) -> Dict[str, Any]:
+    """Ensure index is valid SQLite index marker dict.
+    
+    For SQLite-only mode, just validates or returns a new SQLite marker dict.
+    """
     if not isinstance(index, dict):
         index = {}
-
-    if not isinstance(index.get('by_gid'), dict):
-        index['by_gid'] = {}
-    if not isinstance(index.get('by_page_hash'), dict):
-        index['by_page_hash'] = {}
-    if not isinstance(index.get('by_title_exact'), dict):
-        index['by_title_exact'] = {}
-    if not isinstance(index.get('by_title_series'), dict):
-        index['by_title_series'] = {}
-    version_graph = index.get('version_graph')
-    if not isinstance(version_graph, dict):
-        version_graph = {}
-        index['version_graph'] = version_graph
-    if not isinstance(version_graph.get('adjacency'), dict):
-        version_graph['adjacency'] = {}
-
-    if rebuild_missing_titles and not index['by_title_exact'] and not index['by_title_series'] and index['by_gid']:
-        rebuild_title_indexes(index)
-    return index
+    
+    # If already SQLite mode, return as-is
+    if index.get('_sqlite'):
+        return index
+    
+    # Return new SQLite marker dict
+    return {
+        '_sqlite': True,
+        '_db_path': REUSE_INDEX_DB,
+        'by_gid': {},
+        'by_page_hash': {},
+        'by_title_exact': {},
+        'by_title_series': {},
+        'version_graph': {'adjacency': {}}
+    }
 
 
-def load_reuse_index(path: str = REUSE_INDEX_FILE, db_path: str = REUSE_INDEX_DB) -> Dict[str, Any]:
-    """Load reuse index from SQLite database, migrating from JSON if needed.
+def load_reuse_index(db_path: str = REUSE_INDEX_DB) -> Dict[str, Any]:
+    """Load reuse index from SQLite database.
     
     Note: Returns a database path reference rather than loading entire index into memory.
     """
-    # Check if SQLite DB exists
+    # Initialize database if it doesn't exist
     if not os.path.exists(db_path):
-        # Initialize new database
         _init_database(db_path)
-        
-        # Migrate from JSON if it exists
-        if os.path.exists(path):
-            _migrate_json_to_sqlite(path, db_path)
     
     # Return a marker dict indicating SQLite mode
     return {
@@ -282,82 +179,16 @@ def load_reuse_index(path: str = REUSE_INDEX_FILE, db_path: str = REUSE_INDEX_DB
     }
 
 
-def _needs_migration(index: Dict[str, Any]) -> bool:
-    """Check if index needs migration by detecting GID prefix in title keys."""
-    # Check a sample of title keys for GID prefix pattern
-    for idx_name in ('by_title_exact', 'by_title_series'):
-        title_index = index.get(idx_name, {})
-        if not isinstance(title_index, dict):
-            continue
-        # Check first few keys
-        for i, key in enumerate(title_index.keys()):
-            if i >= 5:  # Sample first 5 keys
-                break
-            # If key starts with digits followed by ' - ', needs migration
-            if _RE_TITLE_GID_PREFIX.match(key):
-                return True
-    return False
 
 
-def migrate_title_indexes(index: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Rebuild title indexes with new normalization (strips GID prefix).
-    
-    This migration function re-normalizes all existing titles in the index
-    to enable cross-gallery series matching.
-    """
-    index = ensure_reuse_index(index, rebuild_missing_titles=False)
-    
-    # Force rebuild with new normalization
-    return rebuild_title_indexes(index)
+
+def save_reuse_index(index: Optional[Dict[str, Any]]) -> None:
+    """Save reuse index. For SQLite mode, this is a no-op since data is already persisted."""
+    # SQLite mode - data is persisted to database immediately, no save needed
+    pass
 
 
-def save_reuse_index(index: Optional[Dict[str, Any]], path: str = REUSE_INDEX_FILE) -> None:
-    """Save reuse index. For SQLite mode, this is a no-op since data is already persisted.
-    
-    For backward compatibility with JSON mode (if _sqlite flag not set).
-    """
-    if not index:
-        return
-    
-    # SQLite mode - data already persisted
-    if index.get('_sqlite'):
-        return
-    
-    # Legacy JSON mode
-    index = ensure_reuse_index(index)
-    tmp_path = '%s.next' % path
-    with open(tmp_path, 'w') as f:
-        f.write(json.dumps(index))
-    os.path.exists(path) and os.remove(path)
-    os.rename(tmp_path, path)
 
-
-def _sorted_zip_candidates(entries: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    valid = []
-    for entry in entries or []:
-        if not isinstance(entry, dict):
-            continue
-        source_path = entry.get('source_path')
-        if source_path and source_path.endswith('.zip'):
-            valid.append(entry)
-    valid.sort(key=lambda item: int(item.get('updated_at', 0)), reverse=True)
-    return valid
-
-
-def _candidate_from_gid_entry(entry: Dict[str, Any], match_reason: str) -> Optional[Dict[str, Any]]:
-    if entry.get('source_type') != 'zip':
-        return None
-    source_path = entry.get('source_path')
-    if not source_path:
-        return None
-    return {
-        'archive_path': source_path,
-        'candidate_gid': str(entry.get('gid', '')),
-        'candidate_url': str(entry.get('url', '')),
-        'match_reason': match_reason,
-        'title': str(entry.get('title', '')),
-        'updated_at': int(entry.get('updated_at', 0)),
-    }
 
 
 def collect_prescan_candidates(index: Optional[Dict[str, Any]], current_arc: str,
@@ -382,115 +213,83 @@ def collect_prescan_candidates(index: Optional[Dict[str, Any]], current_arc: str
     exact_key = normalize_title_exact(current_title)
     series_key = normalize_title_series(current_title)
     
-    # SQLite mode
-    if index.get('_sqlite'):
-        db_path = index.get('_db_path', REUSE_INDEX_DB)
-        conn = _get_db_connection(db_path)
-        try:
-            # Query exact title matches
-            rows = conn.execute('''
-                SELECT gid, url, source_path, title, updated_at
-                FROM title_index
-                WHERE normalized_title = ? AND index_type = 'exact'
-                ORDER BY updated_at DESC
-                LIMIT ?
-            ''', (exact_key, MAX_PRESCAN_CANDIDATES)).fetchall()
-            
-            for row in rows:
-                source_path = row['source_path']
-                if source_path and source_path.endswith('.zip') and os.path.exists(source_path):
-                    candidates.append({
-                        'archive_path': source_path,
-                        'candidate_gid': row['gid'],
-                        'candidate_url': row['url'],
-                        'match_reason': 'exact_title',
-                        'title': row['title'],
-                        'updated_at': row['updated_at']
-                    })
-            
-            # Query series title matches (avoid duplicates)
-            existing_gids = {c.get('candidate_gid') for c in candidates}
-            rows = conn.execute('''
-                SELECT gid, url, source_path, title, updated_at
-                FROM title_index
-                WHERE normalized_title = ? AND index_type = 'series'
-                ORDER BY updated_at DESC
-                LIMIT ?
-            ''', (series_key, MAX_PRESCAN_CANDIDATES)).fetchall()
-            
-            for row in rows:
-                if row['gid'] in existing_gids:
-                    continue
-                source_path = row['source_path']
-                if source_path and source_path.endswith('.zip') and os.path.exists(source_path):
-                    candidates.append({
-                        'archive_path': source_path,
-                        'candidate_gid': row['gid'],
-                        'candidate_url': row['url'],
-                        'match_reason': 'series_title',
-                        'title': row['title'],
-                        'updated_at': row['updated_at']
-                    })
-                    existing_gids.add(row['gid'])
-            
-            # Query from version graph (newer_versions)
-            for version in reversed(newer_versions or []):
-                if len(candidates) >= MAX_PRESCAN_CANDIDATES:
-                    break
-                gid = str(version.get('gid', ''))
-                if not gid or gid == str(current_gid or '') or gid in existing_gids:
-                    continue
-                
-                row = conn.execute('''
-                    SELECT gid, url, source_type, source_path, title, updated_at
-                    FROM galleries WHERE gid = ?
-                ''', (gid,)).fetchone()
-                
-                if row and row['source_type'] == 'zip':
-                    source_path = row['source_path']
-                    if source_path and os.path.exists(source_path):
-                        candidates.append({
-                            'archive_path': source_path,
-                            'candidate_gid': gid,
-                            'candidate_url': row['url'] or version.get('url', ''),
-                            'match_reason': 'gnd_gid',
-                            'title': row['title'],
-                            'updated_at': row['updated_at']
-                        })
-                        existing_gids.add(gid)
-        finally:
-            conn.close()
-    else:
-        # Legacy JSON mode
-        index = ensure_reuse_index(index)
+    # Query SQLite database
+    db_path = index.get('_db_path', REUSE_INDEX_DB)
+    conn = _get_db_connection(db_path)
+    try:
+        # Query exact title matches
+        rows = conn.execute('''
+            SELECT gid, url, source_path, title, updated_at
+            FROM title_index
+            WHERE normalized_title = ? AND index_type = 'exact'
+            ORDER BY updated_at DESC
+            LIMIT ?
+        ''', (exact_key, MAX_PRESCAN_CANDIDATES)).fetchall()
         
-        exact_matches = _sorted_zip_candidates(index['by_title_exact'].get(exact_key, []))[:MAX_PRESCAN_CANDIDATES]
-        for entry in exact_matches:
-            candidates.append(dict(entry, match_reason='exact_title'))
+        for row in rows:
+            source_path = row['source_path']
+            if source_path and source_path.endswith('.zip') and os.path.exists(source_path):
+                candidates.append({
+                    'archive_path': source_path,
+                    'candidate_gid': row['gid'],
+                    'candidate_url': row['url'],
+                    'match_reason': 'exact_title',
+                    'title': row['title'],
+                    'updated_at': row['updated_at']
+                })
         
-        series_matches = _sorted_zip_candidates(index['by_title_series'].get(series_key, []))[:MAX_PRESCAN_CANDIDATES]
+        # Query series title matches (avoid duplicates)
         existing_gids = {c.get('candidate_gid') for c in candidates}
-        for entry in series_matches:
-            if entry.get('gid') not in existing_gids:
-                candidates.append(dict(entry, match_reason='series_title'))
+        rows = conn.execute('''
+            SELECT gid, url, source_path, title, updated_at
+            FROM title_index
+            WHERE normalized_title = ? AND index_type = 'series'
+            ORDER BY updated_at DESC
+            LIMIT ?
+        ''', (series_key, MAX_PRESCAN_CANDIDATES)).fetchall()
         
-        by_gid = index.get('by_gid', {})
+        for row in rows:
+            if row['gid'] in existing_gids:
+                continue
+            source_path = row['source_path']
+            if source_path and source_path.endswith('.zip') and os.path.exists(source_path):
+                candidates.append({
+                    'archive_path': source_path,
+                    'candidate_gid': row['gid'],
+                    'candidate_url': row['url'],
+                    'match_reason': 'series_title',
+                    'title': row['title'],
+                    'updated_at': row['updated_at']
+                })
+                existing_gids.add(row['gid'])
+        
+        # Query from version graph (newer_versions)
         for version in reversed(newer_versions or []):
             if len(candidates) >= MAX_PRESCAN_CANDIDATES:
                 break
             gid = str(version.get('gid', ''))
-            if not gid or gid == str(current_gid or ''):
+            if not gid or gid == str(current_gid or '') or gid in existing_gids:
                 continue
-            gid_entry = by_gid.get(gid)
-            if not isinstance(gid_entry, dict):
-                continue
-            candidate = _candidate_from_gid_entry(dict(gid_entry, gid=gid), 'gnd_gid')
-            if candidate is None:
-                continue
-            if not candidate.get('candidate_url'):
-                candidate['candidate_url'] = str(version.get('url', ''))
-            if gid not in existing_gids:
-                candidates.append(candidate)
+            
+            row = conn.execute('''
+                SELECT gid, url, source_type, source_path, title, updated_at
+                FROM galleries WHERE gid = ?
+            ''', (gid,)).fetchone()
+            
+            if row and row['source_type'] == 'zip':
+                source_path = row['source_path']
+                if source_path and os.path.exists(source_path):
+                    candidates.append({
+                        'archive_path': source_path,
+                        'candidate_gid': gid,
+                        'candidate_url': row['url'] or version.get('url', ''),
+                        'match_reason': 'gnd_gid',
+                        'title': row['title'],
+                        'updated_at': row['updated_at']
+                    })
+                    existing_gids.add(gid)
+    finally:
+        conn.close()
     
     # Deduplicate by archive path
     uniq = []
@@ -528,8 +327,6 @@ def prescan_extract_from_candidates(
         Dict with 'extracted_count', 'sources' (list of source archives used)
     """
     import zipfile
-    
-    index = ensure_reuse_index(index)
     extracted_count = 0
     sources_used = []
     
@@ -677,15 +474,7 @@ def prescan_extract_from_candidates(
     }
 
 
-def _link_nodes(adjacency: Dict[str, List[str]], left: Optional[str], right: Optional[str]) -> None:
-    if not left or not right:
-        return
-    adjacency.setdefault(left, [])
-    adjacency.setdefault(right, [])
-    if right not in adjacency[left]:
-        adjacency[left].append(right)
-    if left not in adjacency[right]:
-        adjacency[right].append(left)
+
 
 
 def record_version_graph(index: Optional[Dict[str, Any]], current_url: str,
@@ -697,73 +486,42 @@ def record_version_graph(index: Optional[Dict[str, Any]], current_url: str,
     current_gid_node = _node_gid(current_gid)
     current_url_node = _node_url(current_url)
     
-    # SQLite mode
-    if index.get('_sqlite'):
-        db_path = index.get('_db_path', REUSE_INDEX_DB)
-        conn = _get_db_connection(db_path)
-        try:
-            # Helper to insert edges
-            def insert_edge(left, right):
-                if not left or not right or left == right:
-                    return
-                # Store canonicalized (smaller < larger)
-                node_a, node_b = (left, right) if left < right else (right, left)
-                conn.execute('''
-                    INSERT OR IGNORE INTO version_graph (node_from, node_to)
-                    VALUES (?, ?)
-                ''', (node_a, node_b))
+    # Store in SQLite database
+    db_path = index.get('_db_path', REUSE_INDEX_DB)
+    conn = _get_db_connection(db_path)
+    try:
+        # Helper to insert edges
+        def insert_edge(left, right):
+            if not left or not right or left == right:
+                return
+            # Store canonicalized (smaller < larger)
+            node_a, node_b = (left, right) if left < right else (right, left)
+            conn.execute('''
+                INSERT OR IGNORE INTO version_graph (node_from, node_to)
+                VALUES (?, ?)
+            ''', (node_a, node_b))
+        
+        insert_edge(current_gid_node, current_url_node)
+        
+        for version in newer_versions or []:
+            version_gid = str(version.get('gid', ''))
+            version_url = str(version.get('url', ''))
+            version_gid_node = _node_gid(version_gid)
+            version_url_node = _node_url(version_url)
             
-            insert_edge(current_gid_node, current_url_node)
-            
-            for version in newer_versions or []:
-                version_gid = str(version.get('gid', ''))
-                version_url = str(version.get('url', ''))
-                version_gid_node = _node_gid(version_gid)
-                version_url_node = _node_url(version_url)
-                
-                insert_edge(version_gid_node, version_url_node)
-                insert_edge(current_gid_node, version_gid_node)
-                insert_edge(current_url_node, version_url_node)
-                insert_edge(current_gid_node, version_url_node)
-                insert_edge(current_url_node, version_gid_node)
-            
-            conn.commit()
-        finally:
-            conn.close()
-        return index
-    
-    # Legacy JSON mode
-    index = ensure_reuse_index(index)
-    adjacency = index['version_graph']['adjacency']
-    
-    _link_nodes(adjacency, current_gid_node, current_url_node)
-    
-    for version in newer_versions or []:
-        version_gid = str(version.get('gid', ''))
-        version_url = str(version.get('url', ''))
-        version_gid_node = _node_gid(version_gid)
-        version_url_node = _node_url(version_url)
-        _link_nodes(adjacency, version_gid_node, version_url_node)
-        _link_nodes(adjacency, current_gid_node, version_gid_node)
-        _link_nodes(adjacency, current_url_node, version_url_node)
-        _link_nodes(adjacency, current_gid_node, version_url_node)
-        _link_nodes(adjacency, current_url_node, version_gid_node)
+            insert_edge(version_gid_node, version_url_node)
+            insert_edge(current_gid_node, version_gid_node)
+            insert_edge(current_url_node, version_url_node)
+            insert_edge(current_gid_node, version_url_node)
+            insert_edge(current_url_node, version_gid_node)
+        
+        conn.commit()
+    finally:
+        conn.close()
     return index
 
 
-def _has_relation_path(adjacency: Dict[str, List[str]], starts: List[str], targets: Set[str]) -> bool:
-    queue = deque(node for node in starts if node in adjacency)
-    visited = set(queue)
-    while queue:
-        node = queue.popleft()
-        if node in targets:
-            return True
-        for nxt in adjacency.get(node, []):
-            if nxt in visited:
-                continue
-            visited.add(nxt)
-            queue.append(nxt)
-    return False
+
 
 
 def is_known_related(index: Optional[Dict[str, Any]], current_url: str, current_gid: str,
@@ -787,84 +545,38 @@ def is_known_related(index: Optional[Dict[str, Any]], current_url: str, current_
     if not starts or not targets:
         return False
     
-    # SQLite mode
-    if index.get('_sqlite'):
-        db_path = index.get('_db_path', REUSE_INDEX_DB)
-        conn = _get_db_connection(db_path)
-        try:
-            # BFS to find path
-            visited = set(starts)
-            queue = list(starts)
+    # Query SQLite database for path using BFS
+    db_path = index.get('_db_path', REUSE_INDEX_DB)
+    conn = _get_db_connection(db_path)
+    try:
+        # BFS to find path
+        visited = set(starts)
+        queue = list(starts)
+        
+        while queue:
+            node = queue.pop(0)
+            if node in targets:
+                return True
             
-            while queue:
-                node = queue.pop(0)
-                if node in targets:
-                    return True
-                
-                # Query neighbors (both directions due to canonicalization)
-                rows = conn.execute('''
-                    SELECT node_to FROM version_graph WHERE node_from = ?
-                    UNION
-                    SELECT node_from FROM version_graph WHERE node_to = ?
-                ''', (node, node)).fetchall()
-                
-                for row in rows:
-                    neighbor = row[0]
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        queue.append(neighbor)
+            # Query neighbors (both directions due to canonicalization)
+            rows = conn.execute('''
+                SELECT node_to FROM version_graph WHERE node_from = ?
+                UNION
+                SELECT node_from FROM version_graph WHERE node_to = ?
+            ''', (node, node)).fetchall()
             
-            return False
-        finally:
-            conn.close()
-    
-    # Legacy JSON mode
-    index = ensure_reuse_index(index)
-    adjacency = index['version_graph']['adjacency']
-    return _has_relation_path(adjacency, starts, targets)
+            for row in rows:
+                neighbor = row[0]
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        
+        return False
+    finally:
+        conn.close()
 
 
-def rebuild_title_indexes(index: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    index = ensure_reuse_index(index, rebuild_missing_titles=False)
-    by_title_exact = {}
-    by_title_series = {}
 
-    for gid, entry in index.get('by_gid', {}).items():
-        if not isinstance(entry, dict) or entry.get('source_type') != 'zip':
-            continue
-        source_path = entry.get('source_path')
-        if not source_path:
-            continue
-        candidate = {
-            'gid': str(gid),
-            'url': str(entry.get('url', '')),
-            'source_path': source_path,
-            'title': str(entry.get('title', '')),
-            'updated_at': int(entry.get('updated_at', 0)),
-        }
-        exact_key = normalize_title_exact(candidate['title'])
-        series_key = normalize_title_series(candidate['title'])
-        if exact_key:
-            by_title_exact.setdefault(exact_key, []).append(dict(candidate))
-        if series_key:
-            by_title_series.setdefault(series_key, []).append(dict(candidate))
-
-    for bucket in (by_title_exact, by_title_series):
-        for key in list(bucket.keys()):
-            entries = _sorted_zip_candidates(bucket[key])
-            deduped = []
-            seen = set()
-            for entry in entries:
-                dedup_key = (entry.get('gid'), entry.get('source_path'))
-                if dedup_key in seen:
-                    continue
-                seen.add(dedup_key)
-                deduped.append(entry)
-            bucket[key] = deduped
-
-    index['by_title_exact'] = by_title_exact
-    index['by_title_series'] = by_title_series
-    return index
 
 
 def record_task_reuse(index: Optional[Dict[str, Any]], task: Any) -> Dict[str, Any]:
@@ -897,120 +609,74 @@ def record_task_reuse(index: Optional[Dict[str, Any]], task: Any) -> Dict[str, A
 
     updated_at = int(time.time())
     
-    # SQLite mode
-    if index.get('_sqlite'):
-        db_path = index.get('_db_path', REUSE_INDEX_DB)
-        conn = _get_db_connection(db_path)
-        try:
-            # Insert/update gallery
+    # Store in SQLite database
+    db_path = index.get('_db_path', REUSE_INDEX_DB)
+    conn = _get_db_connection(db_path)
+    try:
+        # Insert/update gallery
+        conn.execute('''
+            INSERT OR REPLACE INTO galleries
+            (gid, url, source_type, source_path, title, updated_at, fid_page_hash_map, fid_size_map)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            gid,
+            getattr(task, 'url', ''),
+            source_type,
+            source_path,
+            task.meta.title if hasattr(task, 'meta') else '',
+            updated_at,
+            json.dumps(dict(task.fid_2_page_hash_map)),
+            json.dumps(dict(task.fid_2_file_size_map) if hasattr(task, 'fid_2_file_size_map') else {})
+        ))
+        
+        # Insert/update page hashes
+        for fid, page_hash in task.fid_2_page_hash_map.items():
+            if not page_hash:
+                continue
+            file_name = task.fid_2_file_name_map.get(fid, task.get_fidpad(fid) if hasattr(task, 'get_fidpad') else str(fid))
+            size_text = task.fid_2_file_size_map.get(fid) if hasattr(task, 'fid_2_file_size_map') else ''
+            
             conn.execute('''
-                INSERT OR REPLACE INTO galleries
-                (gid, url, source_type, source_path, title, updated_at, fid_page_hash_map, fid_size_map)
+                INSERT OR REPLACE INTO page_hashes
+                (page_hash, gid, fid, source_type, source_path, member_name, size_text, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
+                page_hash,
                 gid,
-                getattr(task, 'url', ''),
-                source_type,
-                source_path,
-                task.meta.title if hasattr(task, 'meta') else '',
-                updated_at,
-                json.dumps(dict(task.fid_2_page_hash_map)),
-                json.dumps(dict(task.fid_2_file_size_map) if hasattr(task, 'fid_2_file_size_map') else {})
+                str(fid),
+                'zip' if source_type == 'zip' else 'file',
+                source_path if source_type == 'zip' else os.path.join(source_path, file_name),
+                file_name if source_type == 'zip' else None,
+                size_text,
+                updated_at
             ))
+        
+        # Rebuild title indexes for this task
+        title = task.meta.title if hasattr(task, 'meta') else ''
+        if title and source_type == 'zip':
+            exact_key = normalize_title_exact(title)
+            series_key = normalize_title_series(title)
             
-            # Insert/update page hashes
-            for fid, page_hash in task.fid_2_page_hash_map.items():
-                if not page_hash:
-                    continue
-                file_name = task.fid_2_file_name_map.get(fid, task.get_fidpad(fid) if hasattr(task, 'get_fidpad') else str(fid))
-                size_text = task.fid_2_file_size_map.get(fid) if hasattr(task, 'fid_2_file_size_map') else ''
-                
+            # Delete old entries for this gid
+            conn.execute('DELETE FROM title_index WHERE gid = ?', (gid,))
+            
+            # Insert exact match
+            if exact_key:
                 conn.execute('''
-                    INSERT OR REPLACE INTO page_hashes
-                    (page_hash, gid, fid, source_type, source_path, member_name, size_text, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    page_hash,
-                    gid,
-                    str(fid),
-                    'zip' if source_type == 'zip' else 'file',
-                    source_path if source_type == 'zip' else os.path.join(source_path, file_name),
-                    file_name if source_type == 'zip' else None,
-                    size_text,
-                    updated_at
-                ))
+                    INSERT OR REPLACE INTO title_index
+                    (normalized_title, index_type, gid, url, source_path, title, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (exact_key, 'exact', gid, getattr(task, 'url', ''), source_path, title, updated_at))
             
-            # Rebuild title indexes for this task
-            title = task.meta.title if hasattr(task, 'meta') else ''
-            if title and source_type == 'zip':
-                exact_key = normalize_title_exact(title)
-                series_key = normalize_title_series(title)
-                
-                # Delete old entries for this gid
-                conn.execute('DELETE FROM title_index WHERE gid = ?', (gid,))
-                
-                # Insert exact match
-                if exact_key:
-                    conn.execute('''
-                        INSERT OR REPLACE INTO title_index
-                        (normalized_title, index_type, gid, url, source_path, title, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (exact_key, 'exact', gid, getattr(task, 'url', ''), source_path, title, updated_at))
-                
-                # Insert series match
-                if series_key:
-                    conn.execute('''
-                        INSERT OR REPLACE INTO title_index
-                        (normalized_title, index_type, gid, url, source_path, title, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (series_key, 'series', gid, getattr(task, 'url', ''), source_path, title, updated_at))
-            
-            conn.commit()
-        finally:
-            conn.close()
-        return index
-    
-    # Legacy JSON mode
-    index = ensure_reuse_index(index)
-    by_gid = index.setdefault('by_gid', {})
-    by_hash = index.setdefault('by_page_hash', {})
-
-    by_gid[gid] = {
-        'gid': gid,
-        'url': getattr(task, 'url', ''),
-        'source_type': source_type,
-        'source_path': source_path,
-        'title': task.meta.title,
-        'updated_at': updated_at,
-        'fid_page_hash_map': dict(task.fid_2_page_hash_map),
-        'fid_size_map': dict(task.fid_2_file_size_map),
-    }
-
-    for fid, page_hash in task.fid_2_page_hash_map.items():
-        if not page_hash:
-            continue
-        file_name = task.fid_2_file_name_map.get(fid, task.get_fidpad(fid))
-
-        entry = {
-            'gid': gid,
-            'fid': str(fid),
-            'source_type': 'zip' if source_type == 'zip' else 'file',
-            'source_path': source_path if source_type == 'zip' else os.path.join(source_path, file_name),
-            'member_name': file_name if source_type == 'zip' else None,
-            'size_text': task.fid_2_file_size_map.get(fid),
-            'updated_at': updated_at,
-        }
-
-        entries = by_hash.setdefault(page_hash, [])
-        dedup_key = (entry['gid'], entry['fid'], entry['source_path'])
-        replaced = False
-        for idx, existed in enumerate(entries):
-            if (existed.get('gid'), existed.get('fid'), existed.get('source_path')) == dedup_key:
-                entries[idx] = entry
-                replaced = True
-                break
-        if not replaced:
-            entries.append(entry)
-
-    rebuild_title_indexes(index)
+            # Insert series match
+            if series_key:
+                conn.execute('''
+                    INSERT OR REPLACE INTO title_index
+                    (normalized_title, index_type, gid, url, source_path, title, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (series_key, 'series', gid, getattr(task, 'url', ''), source_path, title, updated_at))
+        
+        conn.commit()
+    finally:
+        conn.close()
     return index

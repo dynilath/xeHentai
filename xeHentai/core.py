@@ -709,12 +709,8 @@ class xeHentai(object):
             self.has_login = 'ipb_member_id' in self.cookies and 'ipb_pass_hash' in self.cookies
 
         try:
-            if os.path.exists(reuse_index.REUSE_INDEX_FILE):
-                self.global_reuse_index = reuse_index.load_reuse_index()
-            else:
-                _index = legacy_session.get('global_reuse_index', {})
-                if isinstance(_index, dict) and _index:
-                    self.global_reuse_index = reuse_index.ensure_reuse_index(_index)
+            # Load SQLite database
+            self.global_reuse_index = reuse_index.load_reuse_index()
         except Exception:
             self.logger.warning(
                 i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc())
