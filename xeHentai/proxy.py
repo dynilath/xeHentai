@@ -17,7 +17,9 @@ SUCCESS_THREHOLD = 16
 
 
 class PoolException(Exception):
-    pass
+    def __init__(self, message, retry_after=None):
+        Exception.__init__(self, message)
+        self.retry_after = retry_after
 
 
 class ProxyControl(object):
@@ -73,26 +75,54 @@ class Pool(object):
         self.GOOD_THRESHOLD = 16
         self.logger = logger
 
-    def proxied_request(self, session):
-        l_of_proxy = [i for i in self.proxies.values() if not i.is_disabled()]
+    def _enabled_proxies(self):
+        return [i for i in self.proxies.values() if not i.is_disabled()]
+
+    def _ready_proxies(self):
+        now = time.time()
+        return [i for i in self._enabled_proxies() if i.cooldown <= now]
+
+    def next_available_after(self):
+        enabled = self._enabled_proxies()
+        if not enabled:
+            return None
+        now = time.time()
+        return max(0.0, min([i.cooldown for i in enabled]) - now)
+
+    def wait_until_available(self, check_interval=1.0, exit_check=None):
+        while True:
+            if exit_check and exit_check():
+                return False
+            if self.has_available_proxies():
+                return True
+            wait_for = self.next_available_after()
+            if wait_for is None:
+                time.sleep(check_interval)
+                continue
+            # Use short waits so callers can stop promptly.
+            time.sleep(min(check_interval, max(wait_for, 0.0)))
+
+    def proxied_request(self, session, wait=True):
+        l_of_proxy = self._enabled_proxies()
         if not l_of_proxy:
             raise PoolException("try to use proxy but no proxies avaliable")
 
         while True:
-            timeout = min([i.cooldown for i in l_of_proxy])
-            if timeout > time.time():
-                self.logger.info("Proxy pool depleted, wait for %s" %
-                                 (timeout - time.time()))
-                time.sleep(timeout - time.time())
-            else:
-                break
+            ready = self._ready_proxies()
+            if ready:
+                t_proxy = random.choice(ready)
+                return t_proxy.handle(session), t_proxy
 
-        t_proxy = random.choice(l_of_proxy)
+            wait_for = self.next_available_after()
+            wait_for = 0 if wait_for is None else max(wait_for, 0.0)
+            if not wait:
+                raise PoolException("proxy pool depleted", retry_after=wait_for)
 
-        return t_proxy.handle(session), t_proxy
+            self.logger.info("Proxy pool depleted, wait for %s" % wait_for)
+            time.sleep(wait_for if wait_for > 0 else 0.5)
 
     def has_available_proxies(self):
-        return len([i for i in self.proxies.keys() if i not in self.disabled]) == 0
+        return len(self._ready_proxies()) > 0
 
     def not_good(self, addr):
         def n(weight=1):
@@ -140,9 +170,9 @@ class Pool(object):
         return _
 
     def add_proxy(self, addr):
-        if re.match("socks[45][ah]*://([^:^/]+)(\:\d{1,5})*/*$", addr):
+        if re.match(r"socks[45][ah]*://([^:^/]+)(\:\d{1,5})*/*$", addr):
             p = socks_proxy(addr, self.trace_proxy)
-        elif re.match("https*://([^:^/]+)(\:\d{1,5})*/*$", addr):
+        elif re.match(r"https*://([^:^/]+)(\:\d{1,5})*/*$", addr):
             p = http_proxy(addr, self.trace_proxy)
         else:
             raise ValueError("%s is not an acceptable proxy address" % addr)

@@ -83,7 +83,7 @@ reg_509gif = re.compile(
 
 
 class HttpReq(object):
-    def __init__(self, headers={}, proxy=None, proxy_policy=None, retry=2, timeout=10, logger=None, tname="main"):
+    def __init__(self, headers={}, proxy=None, proxy_policy=None, retry=2, timeout=10, logger=None, tname="main", proxy_wait=True):
         self.session = requests.Session()
         self.session.headers = headers
         # for u in ('forums.e-hentai.org', 'e-hentai.org', 'exhentai.org'):
@@ -96,6 +96,7 @@ class HttpReq(object):
         self.proxy_policy = proxy_policy
         self.logger = logger
         self.tname = tname
+        self.proxy_wait = proxy_wait
 
     def request(self, method, url, _filter, suc, fail, data=None, stream_cb=None):
         retry = 0
@@ -109,7 +110,7 @@ class HttpReq(object):
                 if url and self.proxy and self.proxy_policy and self.proxy_policy.match(url):
                     do_proxy = True
                     f, __proxy_control = self.proxy.proxied_request(
-                        self.session)
+                        self.session, wait=self.proxy_wait)
                 else:
                     f = self.session.request
                 r = f(method, url,

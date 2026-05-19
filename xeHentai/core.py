@@ -22,6 +22,16 @@ from .util import logger
 from .const import *
 from .const import __version__
 from .worker import *
+from .async_woker import (
+    ArchiveBuildWorker,
+    GalleryCrawlerWorker,
+    KeepAliveFn,
+    ManagedWorker,
+    ProxyExhaustionGate,
+    SinglePageDownloadWorker,
+    VoteFn,
+    WorkerRuntime,
+)
 from queue import Queue, Empty
 
 from . import config as default_config
@@ -59,6 +69,7 @@ class xeHentai(object):
         self.global_reuse_index = reuse_index.ensure_reuse_index({})
         self.load_session()
         self.rpc = None
+        self._v2_proxy_gate = ProxyExhaustionGate()
 
     def _update_task_reuse_index(self, task):
         """Upsert reusable page-hash mappings from a task into global_reuse_index."""
@@ -111,6 +122,60 @@ class xeHentai(object):
         return HttpWorker(tid, task_q, flt, suc, fail,
                           headers=self.headers, proxy=self.proxy, logger=self.logger,
                           keep_alive=keep_alive, proxy_policy=proxy_policy, timeout=timeout, stream_mode=stream_mode)
+
+    def _get_gallery_crawler_worker(self, tid, mode, task, task_q, keep_alive, vote, proxy_policy, timeout=10):
+        """Factory for new gallery metadata/page crawler worker (v2, not wired by default)."""
+        runtime = WorkerRuntime(
+            keep_alive=lambda wrk, _exit=False: keep_alive(wrk, _exit=_exit),
+            vote=lambda tname, code: vote(tname, code),
+            proxy_gate=self._v2_proxy_gate,
+            proxy_pool=self.proxy,
+        )
+        return GalleryCrawlerWorker(
+            tname=tid,
+            mode=mode,
+            task=task,
+            task_queue=task_q,
+            logger=self.logger,
+            headers=self.headers,
+            proxy=self.proxy,
+            proxy_policy=proxy_policy,
+            runtime=runtime,
+            timeout=timeout,
+        )
+
+    def _get_single_page_download_worker(self, tid, task, page_q, keep_alive, vote, proxy_policy, timeout=10):
+        """Factory for new single-page immediate downloader worker (v2, not wired by default)."""
+        runtime = WorkerRuntime(
+            keep_alive=lambda wrk, _exit=False: keep_alive(wrk, _exit=_exit),
+            vote=lambda tname, code: vote(tname, code),
+            proxy_gate=self._v2_proxy_gate,
+            proxy_pool=self.proxy,
+        )
+        return SinglePageDownloadWorker(
+            tname=tid,
+            task=task,
+            page_queue=page_q,
+            logger=self.logger,
+            headers=self.headers,
+            proxy=self.proxy,
+            proxy_policy=proxy_policy,
+            runtime=runtime,
+            timeout=timeout,
+            download_timeout=task.config['download_timeout'],
+            download_ori=task.config['download_ori'] and self.has_login,
+        )
+
+    def _get_archive_build_worker(self, task):
+        """Factory for asynchronous archive builder (v2, not wired by default)."""
+        return ArchiveBuildWorker(
+            logger=self.logger,
+            task=task,
+            runtime=WorkerRuntime(
+                proxy_gate=self._v2_proxy_gate,
+                proxy_pool=self.proxy,
+            ),
+        )
 
     def add_task(self, url, **cfg_dict):
         url = url.strip()
