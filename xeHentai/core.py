@@ -168,6 +168,7 @@ class xeHentai(HostInterface):
             t.set_fail(ERR_CANT_DOWNLOAD_EXH)
         else:
             self.tasks.put(t.guid)
+            self.save_session()
             return 0, t.guid
         self.logger.error(i18n.TASK_ERROR % (t.guid, i18n.c(t.failcode)))
         return t.failcode, None
