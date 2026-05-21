@@ -6,9 +6,9 @@
 import re
 import time
 import random
+from typing import Callable, Dict
 from collections import deque
 from requests.exceptions import ConnectTimeout, ConnectionError, ProxyError, InvalidSchema
-from requests.packages.urllib3.exceptions import ProxySchemeUnknown
 from . import util
 from .const import *
 
@@ -21,9 +21,8 @@ class PoolException(Exception):
         Exception.__init__(self, message)
         self.retry_after = retry_after
 
-
 class ProxyControl(object):
-    def __init__(self, handle):
+    def __init__(self, handle: Callable[[requests.Session], Callable[..., requests.Response]]):
         self.handle = handle
         self.good_calls = deque()
         self.bad_calls = deque()
@@ -69,7 +68,7 @@ class ProxyControl(object):
 class Pool(object):
     # TODO: refactor, a single proxy should have a health and a cooldown
     def __init__(self, logger):
-        self.proxies = {}  # Dict[str, ProxyItem]
+        self.proxies: Dict[str, ProxyControl] = {}
         self.errors = {}
         self.MAX_FAIL = 16
         self.GOOD_THRESHOLD = 16
@@ -102,7 +101,7 @@ class Pool(object):
             # Use short waits so callers can stop promptly.
             time.sleep(min(check_interval, max(wait_for, 0.0)))
 
-    def proxied_request(self, session, wait=True):
+    def proxied_request(self, session: requests.Session, wait=True):
         l_of_proxy = self._enabled_proxies()
         if not l_of_proxy:
             raise PoolException("try to use proxy but no proxies avaliable")
@@ -193,8 +192,8 @@ def socks_proxy(addr, trace_proxy):
         'https': addr
     }
 
-    def handle(session):
-        @trace_proxy(addr, exceptions=[ProxySchemeUnknown, InvalidSchema])
+    def handle(session: requests.Session):
+        @trace_proxy(addr, exceptions=[InvalidSchema])
         def f(*args, **kwargs):
             kwargs.update({'proxies': proxy_info})
             return session.request(*args, **kwargs)
@@ -208,7 +207,7 @@ def http_proxy(addr, trace_proxy):
         'https': addr
     }
 
-    def handle(session):
+    def handle(session: requests.Session):
         @trace_proxy(addr)
         def f(*args, **kwargs):
             kwargs.update({'proxies': proxy_info})

@@ -5,9 +5,12 @@
 
 import os
 import re
+
+import requests
 from . import util
 from .const import *
-from .exceptions import ConnectionFilterException, KeyExpiredException, QuotaExceededException
+from .exceptions import ConnectionFilterException, ImagePageInfoParseException, KeyExpiredException, QuotaExceededException
+from typing import Callable, Any
 
 SUC = 0
 FAIL = 1
@@ -137,7 +140,10 @@ def flt_pageurl(r, suc, fail):
     #    '<a href="(%s/./[a-f0-9]{10}/\d+\-\d+)"><img alt="\d+" title="Page' % RESTR_SITE,
     #    r.text)
 
-    picpage = re.findall(
+    # result[0]: page url; 
+    # result[1]: page id; 
+    # result[2]: original file name (may be empty)
+    picpage: list[tuple[str, str, str]] = re.findall(
         '<a href="(%s\\/.\\/[a-f0-9]{10}\\/\\d+\\-\\d+)"><div title="Page (\\d+): ([^"]*)"' % RESTR_SITE,
         r.text)
     # (page url, page id, original file name)
@@ -147,8 +153,8 @@ def flt_pageurl(r, suc, fail):
         suc(p)
 
 
-def flt_quota_check(func):
-    def _(r, suc, fail):
+def flt_quota_check(func:Callable[[requests.Response, Callable[...,None], Callable[...,None]], None]):
+    def _(r: requests.Response, suc:Callable[...,None], fail:Callable[...,None]) -> None:
         if r.status_code == 600:  # tcp layer error
             raise ConnectionFilterException(r._real_url)
         elif r.status_code == 403:
@@ -170,73 +176,71 @@ def flt_quota_check(func):
     return _
 
 
-def flt_imgurl_wrapper(ori):
+def flt_imgurl_wrapper(ori:bool):
     @flt_quota_check
-    def flt_imgurl(r, suc, fail, ori=ori):
+    def flt_imgurl(r: requests.Response, suc:Callable[...,None], fail:Callable[...,None], ori=ori):
         # input per image page response
         # add (image url, reload url, filename) to queue if suc
         # return (errorcode, page_url) if fail
         if re.match('Invalid page', r.text):
             return fail((ERR_IMAGE_RESAMPLED, r._real_url))
-        while True:
-            _ = re.findall('src="([^"]+keystamp[^"]+)"', r.text)
+        
+        _ = re.findall(r'src="([^"]+keystamp[^"]+)"', r.text)
+        if not _:
+            _ = re.findall(r'src="([^"]+)"\s+style="', r.text)
+        if not _:
+            raise ImagePageInfoParseException(r._real_url, "can't find image url in page")
+        picurl = util.htmlescape(_[0])
+        
+        
+        
+        _ = re.findall(
+            r'<\/a><\/div><div>(.*?) :: ?\d+ x \d+ ?(?::: ([0-9\/.]+ [M|K]?i?B))?<\/div>', r.text)
+        if not _:
+            raise ImagePageInfoParseException(r._real_url, "can't find filename and filesize in page")  
+        filename, filesize = _[0]
+        filesize = filesize or None
+            
+        if 'image.php' in filename:
+            _ = re.findall(r'n=(.+)', picurl)
             if not _:
-                _ = re.findall('src="([^"]+)"\\s+style="', r.text)
-            if not _:
-                break
-            picurl = util.htmlescape(_[0])
-
-            _ = re.findall(
-                '</a></div><div>(.*?) ::.*?:: ([0-9/.]+ [M|K]?i?B)</di', r.text)
-            if not _:
-                break
-            filename, filesize = _[0]
-
-            if 'image.php' in filename:
-                _ = re.findall('n=(.+)', picurl)
-                if not _:
-                    break
-                filename = _[0]
-
-            _ = re.findall('.+/(\\d+)-(\\d*)', r._real_url)
-            if not _:
-                break
-            index = _[0]
-
-            if filename[0] == '.':
-                filename = index[1] + filename
-
-            _ = re.findall('.+\\.([a-zA-Z]+)', filename)
-            if not _:
-                break
-            fmt = _[0]
-            # http://exhentai.org/fullimg.php?gid=577354&page=2&key=af594b7cf3
-
-            fullurl = re.findall(
-                'class="mr".+<a href="(.+)"\\s*>Download original', r.text)
-            ori_file_size = re.findall(
-                '>Download original [0-9]+ x [0-9]+ ([0-9\\/.]+ [a-zA-Z]{2,})<\\/a>', r.text)  # like 2.20MB
-            if not ori_file_size:
-                ori_file_size = [filesize]
-
-            if fullurl:
-                fullurl = util.htmlescape(fullurl[0])
-            else:
-                fullurl = picurl
-            _ = re.findall("return nl\\('([a-zA-Z\\d\\-]+)'\\)", r.text)
-            if not _:
-                break
-            js_nl = _[0]
-            reload_url = "%s%snl=%s" % (
-                r._real_url, "&" if "?" in r._real_url else "?", js_nl)
-            if ori:
-                # we will parse the 302 url to get original filename
-                return suc((fullurl, reload_url, filename, ori_file_size[0]))
-            else:
-                return suc((picurl, reload_url, filename, filesize))
-
-        return fail((ERR_SCAN_REGEX_FAILED, r._real_url))
-
+                raise ImagePageInfoParseException(r._real_url, "filename in image.php format but can't find n= in url")
+            filename = _[0]
+            
+        _ = re.findall(r'.+\/(\d+)-(\d*)', r._real_url)
+        if not _:
+            raise ImagePageInfoParseException(r._real_url, "can't parse page id from url")
+        index = _[0]
+        
+        # file base name is empty, use page id as file name to avoid error
+        if filename[0] == '.':
+            filename = index[1] + filename
+        
+        # full url example :
+        # http://exhentai.org/fullimg.php?gid=577354&page=2&key=af594b7cf3
+        
+        
+        fullurl = re.findall(
+            r'class="mr".+<a href="(.+)"\s*>Download original', r.text)
+        _ = re.findall(
+            r'>Download original \d+ x \d+ ([\d.]+ [a-zA-Z]{2,})<\/a>', r.text)  # like 2.20MB
+        ori_file_size = _[0] if _ else None
+        
+        if fullurl:
+            fullurl = util.htmlescape(fullurl[0])
+        else:
+            fullurl = picurl
+        _ = re.findall(r"return nl\('([a-zA-Z\d\-]+)'\)", r.text)
+        if not _:
+            raise ImagePageInfoParseException(r._real_url, "can't find js nl value in page")
+        js_nl = _[0]
+        reload_url = "%s%snl=%s" % (
+            r._real_url, "&" if "?" in r._real_url else "?", js_nl)
+        if ori:
+            # we will parse the 302 url to get original filename
+            return suc((fullurl, reload_url, filename, ori_file_size))
+        else:
+            return suc((picurl, reload_url, filename, filesize))
     return flt_imgurl
 
 

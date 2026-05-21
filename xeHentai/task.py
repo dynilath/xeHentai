@@ -360,6 +360,8 @@ class Task(object):
     #     )
 
     def get_size_range(self, size_text):
+        if not size_text:
+            return 0, 0
         _ = re.findall(r'(\d+(?:\.(\d+))?) *([M|K]?i?B)', size_text)
         if _:
             _number, _decimal, _unit = _[0]
@@ -380,6 +382,8 @@ class Task(object):
         return (number - uncertain) * unit, (number + uncertain) * unit
 
     def check_size_range(self, test_file_path, file_size_text):
+        if not file_size_text:
+            return True
         size_bottom, size_top = self.get_size_range(file_size_text)
         existed_file_size = os.stat(test_file_path).st_size
         return size_bottom <= existed_file_size < size_top
@@ -480,10 +484,11 @@ class Task(object):
 
         real_file_name = self._set_final_file_ext(this_fid, ext or '.jpg')
 
-        if this_fid not in self.fid_2_file_size_map:
-            self.fid_2_file_size_map.setdefault(this_fid, filesize)
-        else:
-            self.fid_2_file_size_map[this_fid] = filesize
+        if filesize:
+            if this_fid not in self.fid_2_file_size_map:
+                self.fid_2_file_size_map.setdefault(this_fid, filesize)
+            else:
+                self.fid_2_file_size_map[this_fid] = filesize
 
         # two files have same url
         if image_url in self.reload_map:
@@ -497,8 +502,9 @@ class Task(object):
                 file_existed = True
                 unexpected_file = not self.check_size_range(
                     existed_file, filesize)
-                print('>> file existed, expected size: %s, %s' %
-                      (filesize, 'unexpected' if unexpected_file else 'expected'))
+                if filesize:
+                    print('>> file existed, expected size: %s, %s' %
+                          (filesize, 'unexpected' if unexpected_file else 'expected'))
 
             if file_existed and not unexpected_file:
                 new_file = os.path.join(folder_path, real_file_name)
@@ -927,10 +933,14 @@ class Task(object):
                     and _fid in guess_fid_2_file_name_map:
                 size_text = self.fid_2_file_size_map[_fid]
                 guess_file_name = guess_fid_2_file_name_map[_fid]
-                bottom, top = self.get_size_range(size_text)
-                size = os.stat(os.path.join(
-                    folder_path, guess_file_name)).st_size
-                if bottom <= size < top:
+                if size_text:
+                    bottom, top = self.get_size_range(size_text)
+                    size = os.stat(os.path.join(
+                        folder_path, guess_file_name)).st_size
+                    if bottom <= size < top:
+                        file_name = guess_file_name
+                        image_done_file = True
+                else:
                     file_name = guess_file_name
                     image_done_file = True
 

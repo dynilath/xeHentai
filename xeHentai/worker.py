@@ -6,7 +6,7 @@
 from xeHentai.task import Task
 
 from .exceptions import FilterException
-from .proxy import PoolException
+from .proxy import PoolException, Pool
 from .i18n import i18n
 from .const import *
 from . import util
@@ -83,7 +83,7 @@ reg_509gif = re.compile(
 
 
 class HttpReq(object):
-    def __init__(self, headers={}, proxy=None, proxy_policy=None, retry=2, timeout=10, logger=None, tname="main", proxy_wait=True):
+    def __init__(self, headers={}, proxy:Pool=None, proxy_policy=None, retry=2, timeout=10, logger=None, tname="main", proxy_wait=True):
         self.session = requests.Session()
         self.session.headers = headers
         # for u in ('forums.e-hentai.org', 'e-hentai.org', 'exhentai.org'):
@@ -113,7 +113,7 @@ class HttpReq(object):
                         self.session, wait=self.proxy_wait)
                 else:
                     f = self.session.request
-                r = f(method, url,
+                r: requests.Response = f(method, url,
                       allow_redirects=False,
                       data=data,
                       timeout=self.timeout,

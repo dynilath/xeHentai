@@ -45,3 +45,10 @@ class ConnectionFilterException(FilterException):
     """
     def __init__(self, url):
         FilterException.__init__(self, ERR_CONNECTION_ERROR, url)
+        
+class ImagePageInfoParseException(Exception):
+    """Raised when the page info parsing fails, e.g. due to site structure change."""
+    def __init__(self, url, reason=None):
+        Exception.__init__(self, url)
+        self.url = url
+        self.reason = reason

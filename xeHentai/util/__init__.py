@@ -12,9 +12,9 @@ import random
 from ..const import *
 
 if os.name == 'nt':
-    filename_filter = re.compile("[|:?\\/*'\"<>]")
+    filename_filter = re.compile(r"[|:?\\/*'\"<>]")
 else:# assume posix
-    filename_filter = re.compile("[\/:]")
+    filename_filter = re.compile(r"[\/:]")
 
 unichr = chr
 
@@ -51,13 +51,13 @@ def get_proxy_policy(cfg):
 
 def parse_human_time(s):
     rt = 0
-    day = re.findall('(\d+)\sdays*', s)
+    day = re.findall(r'(\d+)\sdays*', s)
     if day:
         rt += 86400 * int(day[0])
-    hour = re.findall('(\d+)\shours*', s)
+    hour = re.findall(r'(\d+)\shours*', s)
     if hour:
         rt += 3600 * int(hour[0])
-    minute = re.findall('(\d+)\sminutes*', s)
+    minute = re.findall(r'(\d+)\sminutes*', s)
     if minute:
         rt += 60 * int(minute[0])
     else:
@@ -74,7 +74,7 @@ def htmlescape(s):
                 return unichr(int(match.group(2)))
             else:
                 return dict.get(match.group(2), '?')
-    htmlre = re.compile("&(#?)(\d{1,5}|\w{1,8}|[a-z]+);")
+    htmlre = re.compile(r"&(#?)(\d{1,5}|\w{1,8}|[a-z]+);")
     return htmlre.sub(replc, s)
 
 def legalpath(s):
