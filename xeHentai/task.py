@@ -154,6 +154,18 @@ class DumplicatedFileInfo:
     file_name: str
     existed_file_name: str
 
+    def to_dict(self) -> Dict[str, str]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'DumplicatedFileInfo':
+        return cls(
+            fid=str(data.get('fid', '')),
+            existed_fid=str(data.get('existed_fid', '')),
+            file_name=str(data.get('file_name', '')),
+            existed_file_name=str(data.get('existed_file_name', '')),
+        )
+
 class Task(object):
     PRESCAN_STATUS_NONE = 0
     PRESCAN_STATUS_COMPLETE = 1
@@ -1169,6 +1181,19 @@ class Task(object):
             if k == 'meta':
                 setattr(self, k, GalleryMeta.from_dict(j[k]))
                 continue
+            if k == 'dumplicated_file_map':
+                raw_map = j[k] if isinstance(j[k], dict) else {}
+                restored_map = {
+                    str(file_hash): [
+                        DumplicatedFileInfo.from_dict(info)
+                        for info in infos
+                        if isinstance(info, dict)
+                    ]
+                    for file_hash, infos in raw_map.items()
+                    if isinstance(infos, list)
+                }
+                setattr(self, k, restored_map)
+                continue
             if k.endswith('_q') and j[k]:
                 setattr(self, k, Queue())
                 [getattr(self, k).put(e, False) for e in j[k]]
@@ -1183,6 +1208,10 @@ class Task(object):
         d = dict({k: v for k, v in self.__dict__.items()
                   if not k.endswith('_q') and not k.startswith("_")})
         d['meta'] = self.meta.to_dict()
+        d['dumplicated_file_map'] = {
+            fhash: [info.to_dict() for info in infos if isinstance(info, DumplicatedFileInfo)]
+            for fhash, infos in self.dumplicated_file_map.items()
+        }
         for k in ['img_q', 'page_q', 'list_q']:
             if getattr(self, k):
                 d[k] = [e for e in getattr(self, k).queue]
