@@ -147,6 +147,12 @@ class ArchiveMeta:
         data['gnname'] = self.title_primary
         return data
 
+@dataclass
+class DumplicatedFileInfo:
+    fid: str
+    existed_fid: str
+    file_name: str
+    existed_file_name: str
 
 class Task(object):
     PRESCAN_STATUS_NONE = 0
@@ -173,9 +179,9 @@ class Task(object):
         # Whether original-quality image variants are detected.
         self.has_ori: bool = False
         # Maps image URL to [reload URL, resolved filename].
-        self.reload_map: Dict[str, List[str]] = {}
-        # map same hash to different ids, {url:((id, fname), )}
-        self.filehash_map: Dict[str, List[Tuple[str, Any]]] = {}
+        self.reload_map: Dict[str, Tuple[str,str]] = {}
+        # map dumplicated file hash to [dumplicated_fid, src_fid, real_file_name]
+        self.dumplicated_file_map: Dict[str, List[DumplicatedFileInfo]] = {}
 
         # renamed map just don't work well with extension part
 
@@ -394,7 +400,7 @@ class Task(object):
         self.meta.finished = len(self._flist_done)
         self._cnt_lock.release()
 
-    def _build_fid_file_name(self, fid, ext='.jpg'):
+    def _build_fid_file_name(self, fid:str, ext='.jpg'):
         fid = int(fid)
         _ = "%%0%dd%%s" % len(str(self.meta.total))
         return _ % (fid, ext)
@@ -441,9 +447,8 @@ class Task(object):
                 return ext
         return '.jpg'
 
-    def _set_final_file_ext(self, fid, ext):
+    def _set_final_file_ext(self, fid:str, ext:str) -> str:
         ext = ext or '.jpg'
-        fid = str(fid)
         file_name = self._build_fid_file_name(fid, ext)
         self.fid_2_file_ext_map[fid] = ext
         self.fid_2_file_name_map[fid] = file_name
@@ -475,12 +480,10 @@ class Task(object):
         # if same file occurs several times in a gallery
         # to be done with new rename logic
 
-        this_fid = RE_GALLERY.findall(reload_url)[0][1]
-        real_file_name = self.fid_2_original_file_name_map[this_fid]
+        this_fid:str = RE_GALLERY.findall(reload_url)[0][1]
+        original_file_name:str = self.fid_2_original_file_name_map[this_fid]
 
-        ext = os.path.splitext(fname)[1]
-        if self.config['download_ori']:
-            ext = os.path.splitext(real_file_name)[1]
+        ext:str = os.path.splitext(original_file_name)[1] if self.config['download_ori'] else os.path.splitext(fname)[1]
 
         real_file_name = self._set_final_file_ext(this_fid, ext or '.jpg')
 
@@ -492,43 +495,44 @@ class Task(object):
 
         # two files have same url
         if image_url in self.reload_map:
-            existed_image_url, existed_file_name = self.reload_map[image_url]
+            existed_reload_url, existed_file_name = self.reload_map[image_url]
             folder_path = self.get_task_dir()
             existed_file = os.path.join(folder_path, existed_file_name)
             file_existed = False
             unexpected_file = False
-            existed_file_id = RE_GALLERY.findall(existed_image_url)
+            
+            match:Tuple[str,str] = RE_GALLERY.findall(existed_reload_url)[0]
+            fhash, existed_fid = match
             if os.path.exists(existed_file):
                 file_existed = True
                 unexpected_file = not self.check_size_range(
                     existed_file, filesize)
-                if filesize:
-                    print('>> file existed, expected size: %s, %s' %
-                          (filesize, 'unexpected' if unexpected_file else 'expected'))
 
-            if file_existed and not unexpected_file:
-                new_file = os.path.join(folder_path, real_file_name)
-                # we can just copy old file if already downloaded
-                if not existed_file == new_file:
-                    self._f_lock.acquire()
-                    shutil.copy2(existed_file, new_file)
-                    self._f_lock.release()
-                self.set_fid_done(this_fid)
-                return
-
-            if file_existed and unexpected_file:
-                # target file is not what we wanted
-                # download it again
-                self.img_q.put(image_url)
-
-            del self.reload_map[image_url]
-
-            # whether file not exist or is unexpected file
-            # set a copy sequence
-            # we will copy them in save_file
-            if image_url not in self.filehash_map:
-                self.filehash_map[image_url] = []
-            self.filehash_map[image_url].append((this_fid, existed_file_id))
+            if file_existed:
+                if unexpected_file:
+                    # target file is not what we wanted
+                    # download it again
+                    self.img_q.put(image_url)
+                else:
+                    new_file = os.path.join(folder_path, real_file_name)
+                    # we can just copy old file if already downloaded
+                    if not existed_file == new_file:
+                        self._f_lock.acquire()
+                        shutil.copy2(existed_file, new_file)
+                        self._f_lock.release()
+                    self.set_fid_done(this_fid)
+                    return
+            else:
+                # target file does not exist, set a dumplicated file map for later check
+                # copy them in save_file if we finally get the file
+                if fhash not in self.dumplicated_file_map:
+                    self.dumplicated_file_map[fhash] = []
+                self.dumplicated_file_map[fhash].append(DumplicatedFileInfo(
+                    fid=this_fid,
+                    existed_fid=existed_fid,
+                    file_name=real_file_name,
+                    existed_file_name=existed_file_name,
+                ))
         else:
             self.reload_map.setdefault(image_url, [reload_url, real_file_name])
 
@@ -1032,7 +1036,6 @@ class Task(object):
         callback_page_url_setdefault(_fid, _page_url)
 
     def save_file(self, imgurl, redirect_url, binary_iter, content_type=None, original_hash=None):
-        # TODO: Rlock for finished += 1
         fpath = self.get_task_dir()
         self._f_lock.acquire()
         if not os.path.exists(fpath):
@@ -1071,30 +1074,27 @@ class Task(object):
             os.remove(fn_tmp)
             return
 
-        self._f_lock.acquire()
-        try:
-            os.rename(fn_tmp, fn)
-            self._cnt_lock.acquire()
-            self.meta.finished += 1
-            self._cnt_lock.release()
-            if imgurl in self.filehash_map:
-                for _fid, _ in self.filehash_map[imgurl]:
-                    # if a file download is interrupted, it will appear in self.filehash_map as well
-                    if int(_fid) == int(fid):
-                        continue
-                    rep_name = self._set_final_file_ext(_fid, ext)
-                    fn_rep = os.path.join(fpath, rep_name)
-                    if not fn == fn_rep:
-                        shutil.copyfile(fn, fn_rep)
-                        self._cnt_lock.acquire()
-                        self.meta.finished += 1
-                        self._cnt_lock.release()
-                del self.filehash_map[imgurl]
-        except Exception as ex:
-            self._f_lock.release()
-            raise ex
-
-        self._f_lock.release()
+        with self._f_lock:
+            try:
+                os.rename(fn_tmp, fn)
+                with self._cnt_lock:
+                    self.meta.finished += 1
+                
+                fhash = original_hash[0:10]
+                if fhash in self.dumplicated_file_map:
+                    for info in self.dumplicated_file_map[fhash]:
+                        # if a file download is interrupted, it will appear in self.dumplicated_file_map as well
+                        if int(info.fid) == int(fid):
+                            continue
+                        rep_name = self._set_final_file_ext(info.fid, ext)
+                        fn_rep = os.path.join(fpath, rep_name)
+                        if not fn == fn_rep:
+                            shutil.copyfile(fn, fn_rep)
+                            with self._cnt_lock:
+                                self.meta.finished += 1
+                    del self.dumplicated_file_map[fhash]
+            except Exception as ex:
+                raise ex
         return True
 
     def get_fname(self, imgurl):

@@ -290,7 +290,6 @@ class xeHentai(HostInterface):
             if _t.state == TASK_STATE_SCAN_PAGE or _t.state == TASK_STATE_SCAN_IMG or _t.state == TASK_STATE_DOWNLOAD:
                 _t.page_q = Queue()
                 _t.reload_map = {}
-                _t.filehash_map = {}
                 _t.fid_2_file_name_map = {}
                 _t.fid_2_file_ext_map = {}
                 _t.state = TASK_STATE_GET_META
