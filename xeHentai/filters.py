@@ -247,7 +247,7 @@ def flt_imgurl_wrapper(ori:bool):
 def download_file_wrapper(dirpath):
 
     @flt_quota_check
-    def download_file(r, suc, fail, dirpath=dirpath):
+    def download_file(r:requests.Response, suc, fail, dirpath=dirpath):
         # input image/archive response
         # return (binary, url) if suc; return (errocode, url) if fail
         if r.status_code == 404:

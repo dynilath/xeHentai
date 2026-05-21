@@ -3,6 +3,8 @@
 # Contributor:
 #      fffonion        <fffonion@gmail.com>
 
+from typing import Callable
+
 from xeHentai.task import Task
 
 from .exceptions import FilterException
@@ -112,7 +114,7 @@ class HttpReq(object):
                     f, __proxy_control = self.proxy.proxied_request(
                         self.session, wait=self.proxy_wait)
                 else:
-                    f = self.session.request
+                    f: Callable[..., requests.Response] = self.session.request
                 r: requests.Response = f(method, url,
                       allow_redirects=False,
                       data=data,
@@ -149,6 +151,7 @@ class HttpReq(object):
                 try:
                     t = r.text
                 except requests.RequestException:
+                    self.logger.warning("%s-%s failed to decode response body, fallback to empty string" % (i18n.THREAD, self.tname))
                     continue
 
                 # if it's a redirect, 3xx

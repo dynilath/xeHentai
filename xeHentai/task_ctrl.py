@@ -232,7 +232,7 @@ class TaskControl:
         def img_scan_success(x:tuple[str,str,str,str]):
             # This callback is called for each image page scanned, with x containing image info
             # We use it to populate task's reload_map and page_q for later downloading
-            task.set_reload_url(x[0], x[1], x[2], x[3])
+            task.set_reload_url(image_url=x[0],reload_url=x[1], fname=x[2],filesize=x[3])
             mon.vote('scan', 0)
             
         def get_img_scan_fail(tid:str) -> function[[tuple[str,str]], None]:
@@ -265,14 +265,23 @@ class TaskControl:
     def _stage_download(self, task: Task, task_guid: str, mon):
         """Stage: Spawn worker threads to download images."""
         # spawn thread to download all urls
+        
+        def create_download_success(tid:str) -> function[[tuple[str,str,str,str,str]], None]:
+            def download_success(x:tuple[str,str,str,str,str]) -> None:
+                # This callback is called for each image downloaded, with x containing download info
+                # We use it to save the file and log the download
+                saved = task.save_file(imgurl=x[1], redirect_url=x[2], binary_iter=x[0], content_type=x[3], original_hash=x[4])
+                if saved:
+                    self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(tid, *task.get_fname(x[1])))
+                    mon.vote(tid, 0)
+            return download_success
+        
         for i in range(task.config['download_thread_cnt']):
             tid = 'down-%d' % (i + 1)
             _ = self._get_httpworker(tid, task.img_q,
                                      filters.download_file_wrapper(
                                          task.config['dir']),
-                                     lambda _x, _tid=tid: (task.save_file(_x[1], _x[2], _x[0], _x[3], _x[4]) and
-                                                           (self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(_tid, *task.get_fname(_x[1]))),
-                                                            mon.vote(_tid, 0))),
+                                     create_download_success(tid),
                                      lambda _x, _tid=tid: (
                                          task.page_q.put(task.get_reload_url(
                                              _x[1])) if 'hentai.org/img/509.gif' not in _x[1] else None,
