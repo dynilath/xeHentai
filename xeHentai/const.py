@@ -32,12 +32,12 @@ else:
 DUMMY_FILENAME = "-dummy-"
 RENAME_TMPDIR = "-xeh-conflict-"
 
-RE_INDEX = re.compile(r'.+/(\d+)/([^\/]+)/*')
-RE_GALLERY = re.compile(r'/([a-f0-9]{10})/[^\-]+\-(\d+)')
-RE_IMGHASH = re.compile(r'/([a-f0-9]{40})-(\d+)-(\d+)-(\d+)-([a-z]{,4})')
+RE_INDEX = re.compile(r'.+\/(\d+)\/([^\/]+)\/*')
+RE_GALLERY = re.compile(r'\/([a-f0-9]{10})\/[^\-]+\-(\d+)')
+RE_IMGHASH = re.compile(r'\/([a-f0-9]{40})-(\d+)-(\d+)-(\d+)-([a-z]{,4})')
 RE_FULLIMG = re.compile(r'fullimg.php\?gid=([a-z0-9]+)&page=(\d+)&key=')
 
-__restr_webpage = r'^https*://([^\.]+\.)*(?:[g\.]*e-|ex)hentai.org'
+__restr_webpage = r'^https*:\/\/([^\.]+\.)*(?:[g\.]*e-|ex)hentai.org'
 RE_URL_WEBPAGE = re.compile(__restr_webpage)
 RE_URL_IMAGE = re.compile(r'(?!%s)' % __restr_webpage)
 # matches all

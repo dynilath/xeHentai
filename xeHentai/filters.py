@@ -9,7 +9,7 @@ import re
 import requests
 from . import util
 from .const import *
-from .exceptions import ConnectionFilterException, ImagePageInfoParseException, KeyExpiredException, QuotaExceededException
+from .exceptions import ConnectionFilterException, ImageFileException, ImagePageInfoParseException, KeyExpiredException, QuotaExceededException
 from typing import Callable, Any
 
 SUC = 0
@@ -258,9 +258,10 @@ def download_file_wrapper(dirpath):
         # if multiple hash-size-h-w-type is found, use the last one
         # the first is original and the last is scaled
         # _FakeReponse will be filtered in flt_quota_check
-        if not r.content_length or \
-                p and p[-1] and int(p[-1][1]) != r.content_length:
-            return fail((ERR_IMAGE_BROKEN, r._real_url, r.url))
+        if not r.content_length:
+            raise ImageFileException(r._real_url, "zero content-length")
+        if p and p[-1] and int(p[-1][1]) != r.content_length:
+            raise ImageFileException(r._real_url, f"content-length mismatch (expected {p[-1][1]}, got {r.content_length})")
         if not hasattr(r, 'iter_content_cb'):
             return fail((ERR_STREAM_NOT_IMPLEMENTED, r._real_url, r.url))
 

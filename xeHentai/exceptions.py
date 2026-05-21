@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 # coding:utf-8
 
-from .const import ERR_CONNECTION_ERROR, ERR_KEY_EXPIRED, ERR_QUOTA_EXCEEDED
+from typing import Optional
+
+from .const import ERR_CONNECTION_ERROR, ERR_IMAGE_BROKEN, ERR_KEY_EXPIRED, ERR_QUOTA_EXCEEDED, ERR_SCAN_REGEX_FAILED
 
 
 class FilterException(Exception):
@@ -12,7 +14,7 @@ class FilterException(Exception):
         url    (str): The real request URL that triggered the error.
         reason (str): Human-readable description of the specific trigger condition, or None.
     """
-    def __init__(self, code, url, reason=None):
+    def __init__(self, code: int, url:str, reason:Optional[str]=None):
         Exception.__init__(self, url)
         self.code = code
         self.url = url
@@ -46,9 +48,12 @@ class ConnectionFilterException(FilterException):
     def __init__(self, url):
         FilterException.__init__(self, ERR_CONNECTION_ERROR, url)
         
-class ImagePageInfoParseException(Exception):
+class ImagePageInfoParseException(FilterException):
     """Raised when the page info parsing fails, e.g. due to site structure change."""
     def __init__(self, url, reason=None):
-        Exception.__init__(self, url)
-        self.url = url
-        self.reason = reason
+        FilterException.__init__(self, ERR_SCAN_REGEX_FAILED, url, reason)
+        
+class ImageFileException(FilterException):
+    """Raised when the downloaded image file is broken, e.g. content-length mismatch or zero-length."""
+    def __init__(self, url, reason=None):
+        FilterException.__init__(self, ERR_IMAGE_BROKEN, url, reason)

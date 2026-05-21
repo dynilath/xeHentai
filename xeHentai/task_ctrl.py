@@ -276,22 +276,22 @@ class TaskControl:
                     mon.vote(tid, 0)
             return download_success
         
+        def create_download_fail(tid:str) -> function[[tuple[str,str]], None]:
+            def download_fail(x:tuple[str,str]) -> None:
+                if 'hentai.org/img/509.gif' not in x[1]:
+                    task.page_q.put(task.get_reload_url(x[1]))
+                task.reload_map.pop(x[1])  # delete old url in reload_map if exists
+                self.logger.debug(i18n.XEH_DOWNLOAD_HAS_ERROR % (tid, i18n.c(x[0]) + ' (' + x[1] + ') '))
+                mon.vote(tid, x[0])
+            return download_fail
+        
         for i in range(task.config['download_thread_cnt']):
             tid = 'down-%d' % (i + 1)
             _ = self._get_httpworker(tid, task.img_q,
                                      filters.download_file_wrapper(
                                          task.config['dir']),
                                      create_download_success(tid),
-                                     lambda _x, _tid=tid: (
-                                         task.page_q.put(task.get_reload_url(
-                                             _x[1])) if 'hentai.org/img/509.gif' not in _x[1] else None,
-                                         # delete old url in reload_map
-                                         task.reload_map.pop(
-                                             _x[1]) if _x[1] in task.reload_map else None,
-                                         self.logger.debug(
-                                             i18n.XEH_DOWNLOAD_HAS_ERROR % (tid,
-                                                                            i18n.c(_x[0]) + ' (' + _x[1] + ') ')),
-                                         mon.vote(_tid, _x[0])),
+                                     create_download_fail(tid),
                                      mon.wrk_keepalive,
                                      util.get_proxy_policy(
                                          task.config),
