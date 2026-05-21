@@ -5,7 +5,6 @@ from .archive_build_worker import ArchiveBuildWorker
 from .gallery_crawler_worker import GalleryCrawlerWorker
 from .managed_worker import ManagedWorker
 from .proxy_exhaustion_gate import ProxyExhaustionGate
-from .single_page_download_worker import SinglePageDownloadWorker
 from .worker_runtime import KeepAliveFn, VoteFn, WorkerRuntime
 
 __all__ = [
@@ -15,6 +14,5 @@ __all__ = [
     "ManagedWorker",
     "ProxyExhaustionGate",
     "GalleryCrawlerWorker",
-    "SinglePageDownloadWorker",
     "ArchiveBuildWorker",
 ]
