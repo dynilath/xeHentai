@@ -5,15 +5,18 @@
 from typing import Protocol, Any, Dict, Optional
 from queue import Queue
 
+from .util.logger import Logger
+from .proxy import Pool
+
 
 class HostInterface(Protocol):
     """Protocol defining the interface that TaskControl expects from its host object."""
 
     # Mutable attributes
-    logger: Any
+    logger: Logger
     """Logger instance for logging messages."""
 
-    proxy: Any
+    proxy: Pool
     """Proxy configuration/pool."""
 
     headers: Dict[str, str]
