@@ -3,7 +3,7 @@
 # Contributor:
 #      fffonion        <fffonion@gmail.com>
 
-from typing import Callable
+from typing import Callable,Optional
 
 from xeHentai.task import Task
 
@@ -99,8 +99,22 @@ class HttpReq(object):
         self.logger = logger
         self.tname = tname
         self.proxy_wait = proxy_wait
+        
+    
+    def request(self, method, url, _filter, suc, fail, data=None, stream_cb: Optional[Callable[...,None]]=None):
+        try:
+            self.request_base(method, url, _filter, suc, fail, data=data, stream_cb=stream_cb)
+        except FilterException as ex:
+            if ex.reason:
+                self.logger.debug(f"{i18n.THREAD}-{self.tname} filter rejected: {ex.reason}")
+            fail((ex.code, ex.url))
+        except Exception as ex:
+            self.logger.warning(i18n.THREAD_UNCAUGHT_EXCEPTION % (
+                self.tname, traceback.format_exc()))
+            fail((ERR_CONNECTION_ERROR, url))
+        
 
-    def request(self, method, url, _filter, suc, fail, data=None, stream_cb=None):
+    def request_base(self, method, url, _filter, suc, fail, data=None, stream_cb: Optional[Callable[...,None]]=None):
         retry = 0
         old_url = str(url)
         url_history = [url]
@@ -121,6 +135,7 @@ class HttpReq(object):
                       timeout=self.timeout,
                       stream=stream_cb is not None,
                       verify=False)
+                t = r.text
             except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout,
                     requests.exceptions.ReadTimeout, requests.exceptions.SSLError) as ex:
                 if do_proxy:
@@ -147,12 +162,6 @@ class HttpReq(object):
                     r.content_length = 0
                 self.logger.verbose("%s-%s %s %s %d %d" % (i18n.THREAD,
                                     self.tname, method, url, r.status_code, r.content_length))
-
-                try:
-                    t = r.text
-                except requests.RequestException:
-                    self.logger.warning("%s-%s failed to decode response body, fallback to empty string" % (i18n.THREAD, self.tname))
-                    continue
 
                 # if it's a redirect, 3xx
                 if 300 < r.status_code < 400:
