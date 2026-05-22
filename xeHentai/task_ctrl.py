@@ -4,10 +4,16 @@ import shutil
 import time
 import traceback
 from queue import Empty, Queue
+from typing import Optional
+
+from xeHentai.exceptions import FilterException
 
 from . import filters, reuse_index, util
 from .async_woker import ArchiveBuildWorker, GalleryCrawlerWorker, ProxyExhaustionGate, WorkerRuntime
-from .const import ERR_GALLERY_REMOVED, ERR_IP_BANNED, ERR_ONLY_VISIBLE_EXH, TASK_STATE_DOWNLOAD, TASK_STATE_FAILED, TASK_STATE_FINISHED, TASK_STATE_GET_META, TASK_STATE_MAKE_ARCHIVE, TASK_STATE_PAUSED, TASK_STATE_SCAN_IMG, TASK_STATE_SCAN_PAGE, TASK_STATE_WAITING, XEH_STATE_FULL_EXIT
+from .const import ERR_CANNOT_MAKE_ARCHIVE, ERR_GALLERY_REMOVED, ERR_IP_BANNED, ERR_ONLY_VISIBLE_EXH
+from .const import TASK_STATE_DOWNLOAD, TASK_STATE_FAILED, TASK_STATE_FINISHED, TASK_STATE_GET_META, TASK_STATE_MAKE_ARCHIVE, TASK_STATE_PAUSED, TASK_STATE_SCAN_IMG, TASK_STATE_SCAN_PAGE, TASK_STATE_WAITING, XEH_STATE_FULL_EXIT
+from .const import RE_GALLERY
+from .util.checkfile import extract_img_url_info, check_file
 from .host_interface import HostInterface
 from .i18n import i18n
 from .task import Task
@@ -42,47 +48,11 @@ class TaskControl:
 
     def _update_task_reuse_index(self, task):
         """Upsert reusable page-hash mappings from a task into global_reuse_index."""
-        self._host.global_reuse_index = reuse_index.record_task_reuse(self._host.global_reuse_index, task)
+        self._host.global_reuse_index = reuse_index.record_task_reuse(
+            self._host.global_reuse_index, task)
 
     def _get_httpreq(self, proxy_policy):
         return HttpReq(self.headers, logger=self.logger, proxy=self.proxy, proxy_policy=proxy_policy)
-
-    def _get_httpworker(self, tid, task_q, flt, suc, fail, keep_alive, proxy_policy, timeout, stream_mode):
-        return HttpWorker(tid, task_q, flt, suc, fail,
-                          headers=self.headers, proxy=self.proxy, logger=self.logger,
-                          keep_alive=keep_alive, proxy_policy=proxy_policy, timeout=timeout, stream_mode=stream_mode)
-
-    def _get_gallery_crawler_worker(self, tid, mode, task, task_q, keep_alive, vote, proxy_policy, timeout=10):
-        """Factory for new gallery metadata/page crawler worker (v2, not wired by default)."""
-        runtime = WorkerRuntime(
-            keep_alive=lambda wrk, _exit=False: keep_alive(wrk, _exit=_exit),
-            vote=lambda tname, code: vote(tname, code),
-            proxy_gate=self._v2_proxy_gate,
-            proxy_pool=self.proxy,
-        )
-        return GalleryCrawlerWorker(
-            tname=tid,
-            mode=mode,
-            task=task,
-            task_queue=task_q,
-            logger=self.logger,
-            headers=self.headers,
-            proxy=self.proxy,
-            proxy_policy=proxy_policy,
-            runtime=runtime,
-            timeout=timeout,
-        )
-
-    def _get_archive_build_worker(self, task: Task):
-        """Factory for asynchronous archive builder (v2, not wired by default)."""
-        return ArchiveBuildWorker(
-            logger=self.logger,
-            task=task,
-            runtime=WorkerRuntime(
-                proxy_gate=self._v2_proxy_gate,
-                proxy_pool=self.proxy,
-            ),
-        )
 
     def _stage_get_meta(self, task: Task, task_guid: str, req: HttpReq):
         """Stage: Fetch gallery metadata from E-H site."""
@@ -130,7 +100,8 @@ class TaskControl:
             arc = task.make_archive(remove=False)
             self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED % (task.guid, arc))
         except Exception as ex:
-            self.logger.error(i18n.TASK_ERROR % (task.guid, traceback.format_exc()))
+            self.logger.error(i18n.TASK_ERROR %
+                              (task.guid, traceback.format_exc()))
         self._update_task_reuse_index(task)
         task.state = TASK_STATE_FINISHED
 
@@ -145,7 +116,8 @@ class TaskControl:
             return 'retry_meta'
 
         # Phase 1: Try to find exact matching archive with fid_page_hash_map
-        is_exact_match, found_archive = task.exact_downloaded_exits(require_fid_page_hash_map=True)
+        is_exact_match, found_archive = task.exact_downloaded_exits(
+            require_fid_page_hash_map=True)
 
         if is_exact_match:
             self._handle_exact_match_found(task, task_guid, found_archive)
@@ -159,11 +131,14 @@ class TaskControl:
                 extracted_count = prescan_result.get('extracted_count', 0)
                 if extracted_count > 0:
                     sources = prescan_result.get('sources', [])
-                    self.logger.info(i18n.PRESCAN_EXTRACTED % (task_guid, extracted_count, len(sources)))
+                    self.logger.info(i18n.PRESCAN_EXTRACTED %
+                                     (task_guid, extracted_count, len(sources)))
                     for src in sources[:3]:
-                        self.logger.debug(f"{task_guid}: Reused files from {os.path.basename(src)}")
+                        self.logger.debug(
+                            f"{task_guid}: Reused files from {os.path.basename(src)}")
             except Exception as ex:
-                self.logger.warning(f"{task_guid}: Prescan extraction error: {str(ex)}")
+                self.logger.warning(
+                    f"{task_guid}: Prescan extraction error: {str(ex)}")
 
         # No exact match found, continue to SCAN_PAGE
         return 'continue_scan_page'
@@ -172,19 +147,19 @@ class TaskControl:
         """Stage: Scan gallery pages for image URLs and check archive (Phase 2)."""
         temp_fid_2_page_url_map = {}
         self.logger.info(i18n.DF_STATE_START_SCAN_PAGE % (task_guid))
-        
-        def page_scan_success(x:tuple[str,str,str]):
+
+        def page_scan_success(x: tuple[str, str, str]):
             # This callback is called for each page scanned, with x containing page info
             # We use it to populate temp_fid_2_page_url_map for later checks
             task.queue_wrapper(temp_fid_2_page_url_map.setdefault, img_tuble=x)
-        
+
         for x in range(0,
                        int(math.ceil(1.0 * task.meta.total / int(task.meta.thumbnail_cnt)))):
-            r = req.request("GET",
-                            "%s/?p=%d" % (task.url, x),
-                            filters.flt_pageurl,
-                            page_scan_success,
-                            lambda x: task.set_fail(x))
+            req.request("GET",
+                        "%s/?p=%d" % (task.url, x),
+                        filters.flt_pageurl,
+                        page_scan_success,
+                        lambda x: task.set_fail(x))
             if task.failcode:
                 break
 
@@ -192,7 +167,8 @@ class TaskControl:
             return False
 
         # Phase 2: After scanning pages, try exact match again (now fid_page_hash_map is built from scan)
-        is_exact_match, found_archive = task.exact_downloaded_exits(require_fid_page_hash_map=False)
+        is_exact_match, found_archive = task.exact_downloaded_exits(
+            require_fid_page_hash_map=False)
         if is_exact_match:
             # Ensure old archives get updated with the hash map collected during page scanning
             # (exact_downloaded_exits preserves populated hash map from queue_wrapper calls above)
@@ -205,9 +181,11 @@ class TaskControl:
             self.logger.info(i18n.TASK_TITLE % (task_guid, task.meta.title))
             try:
                 arc = task.make_archive(remove=False)
-                self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED % (task.guid, arc))
+                self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED %
+                                 (task.guid, arc))
             except Exception as ex:
-                self.logger.error(i18n.TASK_ERROR % (task.guid, traceback.format_exc()))
+                self.logger.error(i18n.TASK_ERROR %
+                                  (task.guid, traceback.format_exc()))
             self._update_task_reuse_index(task)
             task.state = TASK_STATE_FINISHED
             return False  # Stop processing, task is complete
@@ -215,8 +193,11 @@ class TaskControl:
         task.state = TASK_STATE_SCAN_IMG
         return True
 
-    def _stage_scan_img(self, task: Task, task_guid: str, mon):
-        """Stage: Spawn worker threads to scan individual image pages."""
+    def _stage_img_scan_then_download(self, task: Task, task_guid: str, req: HttpReq, mon):
+        """
+        Stage: Scan the individual image page, and download the image.
+        This will make it easier to fallback individual page scan when download fails, which is a common case
+        """
         # print here so that see it after we can join former threads
         self.logger.info(i18n.TASK_TITLE % (task_guid, task.meta.title))
 
@@ -228,88 +209,134 @@ class TaskControl:
 
         # spawn thread to scan images
         task.img_q.queue.clear()
-        
-        def img_scan_success(x:tuple[str,str,str,str]):
-            # This callback is called for each image page scanned, with x containing image info
-            # We use it to populate task's reload_map and page_q for later downloading
-            task.set_reload_url(image_url=x[0],reload_url=x[1], fname=x[2],filesize=x[3])
-            mon.vote('scan', 0)
-            
-        def get_img_scan_fail(tid:str) -> function[[tuple[str,str]], None]:
-            def img_scan_fail_inner(x):
-                self.logger.debug("%s: Failed to scan image page, url=%s" % (task_guid, x[0], x[1]))
-                mon.vote(tid, x[0])
-            return img_scan_fail_inner
-        
-        for i in range(task.config['scan_thread_cnt']):
-            tid = 'scan-%d' % (i + 1)
-            fail = get_img_scan_fail(tid)
-            _ = self._get_httpworker(tid, task.page_q,
-                                     filters.flt_imgurl_wrapper(
-                                         task.config['download_ori'] and self.has_login),
-                                     img_scan_success,
-                                     fail,
-                                     mon.wrk_keepalive,
-                                     util.get_proxy_policy(
-                                         task.config),
-                                     10,
-                                     False)
-            # we don't need proxy_image in the scan thread
-            # we use default timeout in the scan thread
-            self._all_threads[TASK_STATE_SCAN_IMG].append(_)
-            _.start()
 
-        task.state = TASK_STATE_DOWNLOAD
-        return True
+        self.logger.debug("%s: page_q size before scan: %d" %
+                          (task_guid, task.page_q.qsize()))
+        
+        def log_task_state():
+            self.logger.info(f"{task_guid}: P={task.page_q.qsize()} {task.meta.finished}/{task.meta.total}")
 
-    def _stage_download(self, task: Task, task_guid: str, mon):
-        """Stage: Spawn worker threads to download images."""
-        # spawn thread to download all urls
-        
-        def create_download_success(tid:str) -> function[[tuple[str,str,str,str,str]], None]:
-            def download_success(x:tuple[str,str,str,str,str]) -> None:
-                # This callback is called for each image downloaded, with x containing download info
-                # We use it to save the file and log the download
-                saved = task.save_file(imgurl=x[1], redirect_url=x[2], binary_iter=x[0], content_type=x[3], original_hash=x[4])
-                if saved:
-                    self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(tid, *task.get_fname(x[1])))
-                    mon.vote(tid, 0)
-            return download_success
-        
-        def create_download_fail(tid:str) -> function[[tuple[str,str]], None]:
-            def download_fail(x:tuple[str,str]) -> None:
-                if 'hentai.org/img/509.gif' not in x[1]:
-                    task.page_q.put(task.get_reload_url(x[1]))
-                task.reload_map.pop(x[1])  # delete old url in reload_map if exists
-                self.logger.debug(i18n.XEH_DOWNLOAD_HAS_ERROR % (tid, i18n.c(x[0]) + ' (' + x[1] + ') '))
-                mon.vote(tid, x[0])
-            return download_fail
-        
-        for i in range(task.config['download_thread_cnt']):
-            tid = 'down-%d' % (i + 1)
-            _ = self._get_httpworker(tid, task.img_q,
-                                     filters.download_file_wrapper(
-                                         task.config['dir']),
-                                     create_download_success(tid),
-                                     create_download_fail(tid),
-                                     mon.wrk_keepalive,
-                                     util.get_proxy_policy(
-                                         task.config),
-                                     task.config['download_timeout'],
-                                     True)
-            self._all_threads[TASK_STATE_DOWNLOAD].append(_)
-            _.start()
+        while not task.page_q.empty():
+            cur_page = task.page_q.get()
 
-        # spawn archiver if we need
-        if task.config['make_archive']:
-            if self._all_threads[TASK_STATE_MAKE_ARCHIVE]:
-                self._all_threads[TASK_STATE_MAKE_ARCHIVE][0].join()
-                self._all_threads[TASK_STATE_MAKE_ARCHIVE] = []
-            _a = ArchiveWorker(self.logger, task)
-            self._all_threads[TASK_STATE_MAKE_ARCHIVE].append(_a)
-            _a.start()
+            img_url: Optional[str] = None
+
+            def set_img_url(x: str):
+                nonlocal img_url
+                img_url = x
+
+            def img_scan_success(x: tuple[str, str, str, str]):
+                # This callback is called for each image page scanned, with x containing image info
+                # We use it to populate task's reload_map and page_q for later downloading
+                image_url, reload_url, fname, filesize = x
+
+                this_fid: str = RE_GALLERY.findall(reload_url)[0][1]
+                original_file_name: str = task.fid_2_original_file_name_map[this_fid]
+                ext: str = os.path.splitext(original_file_name)[
+                    1] if task.config['download_ori'] else os.path.splitext(fname)[1]
+                real_file_name = task._set_final_file_ext(
+                    this_fid, ext or '.jpg')
+
+                info = extract_img_url_info(image_url)
+
+                task.set_file_size(this_fid, filesize)
+
+                folder_path = task.get_task_dir()
+                target_file_path = os.path.join(folder_path, real_file_name)
+                if os.path.exists(target_file_path) and check_file(target_file_path, info):
+                    task.set_fid_done(this_fid)
+                    return
+
+                task.reload_map.setdefault(
+                    image_url, [reload_url, real_file_name])
+                set_img_url(image_url)
+                log_task_state()
+
+            def simple_img_scan_fail(x: tuple[int, str]):
+                self.logger.debug(
+                    "%s: Failed to scan image page, url=%s" % (task_guid, x[1]))
+                task.page_q.put(x[1])
+                log_task_state()
+
+            req.request("GET",
+                        cur_page,
+                        filters.flt_imgurl_wrapper(
+                            task.config['download_ori'] and self.has_login),
+                        img_scan_success,
+                        simple_img_scan_fail)
+
+            if not img_url:
+                # image scan failed, the url will be put back to page_q by simple_img_scan_fail,
+                # so just continue to next loop and wait for it
+                continue
+
+            saved: bool = False
+
+            def set_saved(x: bool):
+                nonlocal saved
+                saved = x
+
+            def create_download_success(tid: str) -> function[[tuple[str, str, str, str, str]], None]:
+                def download_success(x: tuple[str, str, str, str, str]) -> None:
+                    # This callback is called for each image downloaded, with x containing download info
+                    # We use it to save the file and log the download
+                    saved = task.save_file(
+                        imgurl=x[1],
+                        redirect_url=x[2],
+                        binary_iter=x[0],
+                        content_type=x[3],
+                        original_hash=x[4])
+                    if saved:
+                        self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(
+                            tid, *task.get_fname(x[1])))
+                        set_saved(saved)
+                    log_task_state()
+                return download_success
+
+            def create_download_fail(tid: str) -> function[[tuple[str, str]], None]:
+                def download_fail(x: tuple[str, str]) -> None:
+                    reload_url = task.reload_map[x[1]][0]
+                    if 'hentai.org/img/509.gif' not in x[1]:
+                        task.page_q.put(reload_url)
+                    # delete old url in reload_map if exists
+                    task.reload_map.pop(x[1])
+                    self.logger.debug(i18n.XEH_DOWNLOAD_HAS_ERROR % (
+                        tid, i18n.c(x[0]) + ' (' + x[1] + ') ', reload_url))
+                    log_task_state()
+                return download_fail
+
+            def noop(x):
+                pass
+
+            req.request("GET",
+                        url=img_url,
+                        _filter=filters.download_file_wrapper(
+                            task.config['dir']),
+                        suc=create_download_success('main'),
+                        fail=create_download_fail('main'),
+                        stream_cb=noop)
+
+            if not saved:
+                # download failed, the url will be put back to page_q by create_download_fail,
+                # so just continue to next loop and wait for it
+                continue
 
         self._update_task_reuse_index(task)
+
+        self.logger.info(i18n.TASK_START_MAKE_ARCHIVE % task.guid)
+        task.state = TASK_STATE_MAKE_ARCHIVE
+        t = time.time()
+        try:
+            pth = task.make_archive()
+        except Exception as ex:
+            task.state = TASK_STATE_FAILED
+            self.logger.error(i18n.TASK_ERROR % (task.guid, i18n.c(
+                ERR_CANNOT_MAKE_ARCHIVE) % traceback.format_exc()))
+        else:
+            task.state = TASK_STATE_FINISHED
+            self.logger.info(i18n.TASK_MAKE_ARCHIVE_FINISHED %
+                             (task.guid, pth, time.time() - t))
+
         return False  # End of coroutine
 
     def _do_task_coroutine(self, task: Task, task_guid: str, req: HttpReq, mon_ref):
@@ -339,21 +366,10 @@ class TaskControl:
             yield 'page_scan_complete'
 
         # Stage 4: SCAN_IMG
-        if task.state == TASK_STATE_SCAN_IMG:
-            # Monitor should be started by _do_task before calling stages
-            if not mon_ref[0]:
-                return
-            if not self._stage_scan_img(task, task_guid, mon_ref[0]):
-                return
-            yield 'scan_img_complete'
-
         # Stage 5: DOWNLOAD
-        if task.state == TASK_STATE_DOWNLOAD:
-            if not mon_ref[0]:
-                return
-            self._stage_download(task, task_guid, mon_ref[0])
-            # Workers now running in background
-            return
+        if task.state == TASK_STATE_SCAN_IMG:
+            if not self._stage_img_scan_then_download(task, task_guid, req, mon_ref[0]):
+                return  # Task complete or failed
 
     def _do_task(self, task_guid):
         """Execute a task using coroutine-based stages instead of manual state machine."""
@@ -399,9 +415,9 @@ class TaskControl:
                 mon.set_vote_ns(_)
                 self._monitor = mon
                 task._monitor = mon
-                mon.start()
+                # mon.start()
                 # Put in the lowest state
-                self._all_threads[TASK_STATE_SCAN_IMG].append(mon)
+                # self._all_threads[TASK_STATE_SCAN_IMG].append(mon)
                 mon_ref[0] = mon
 
             # Drive the coroutine forward

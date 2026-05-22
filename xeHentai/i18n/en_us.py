@@ -113,7 +113,7 @@ XEH_CRITICAL_ERROR = "xeHentai throws critical error:\n%s"
 XEH_DOWNLOAD_ORI_NEED_LOGIN = "haven't login, so I won't download original images"
 XEH_FILE_DOWNLOADED = "file downloaded by thread-{} #{} {}"
 XEH_RENAME_HAS_ERRORS = "some files are not renamed:\n%s"
-XEH_DOWNLOAD_HAS_ERROR = "thread-%s retry because of error: %s"
+XEH_DOWNLOAD_HAS_ERROR = "thread-%s retry because of error: %s, will retry url %s later"
 
 RPC_STARTED = "RPC server listening on %s:%d"
 RPC_TOO_OPEN = "RPC server is listening on public interface (%s) but no rpc_secret defined, which is not safe"
