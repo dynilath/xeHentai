@@ -481,6 +481,23 @@ class Task(object):
             fid_ext_map[fid] = ext or '.jpg'
         return fid_name_map, fid_ext_map
 
+    def set_file_size(self, this_fid:str, filesize: Optional[str]):
+        if filesize:
+            if this_fid not in self.fid_2_file_size_map:
+                self.fid_2_file_size_map.setdefault(this_fid, filesize)
+            else:
+                self.fid_2_file_size_map[this_fid] = filesize
+                
+    def set_file_dumplicated(self, fhash:str, this_fid:str, existed_fid:str, real_file_name:str, existed_file_name:str):
+        if fhash not in self.dumplicated_file_map:
+            self.dumplicated_file_map[fhash] = []
+        self.dumplicated_file_map[fhash].append(DumplicatedFileInfo(
+            fid=this_fid,
+            existed_fid=existed_fid,
+            file_name=real_file_name,
+            existed_file_name=existed_file_name,
+        ))
+
     def set_reload_url(self, image_url, reload_url, fname, filesize):
         """Register image reload metadata and try local/related-archive reuse before download.
 
