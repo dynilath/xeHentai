@@ -383,6 +383,89 @@ class TaskControl:
                                                default_code=task.failcode,
                                                result=result)
 
+    async def _scan_download_async(self, task: Task, task_guid: str, req: HttpRequest):
+        """Combined async pipeline for scanning image pages and downloading images."""
+
+        self.logger.debug("%s: page_q size before scan: %d" %
+                          (task_guid, task.page_q.qsize()))
+
+        page_urls = []
+        while not task.page_q.empty():
+            page_urls.append(task.page_q.get())
+
+        inflight_limit = int(self._task_cfg(
+            task, 'pipeline_inflight_pages', 0) or 0)
+        if inflight_limit <= 0:
+            inflight_limit = max(1, len(page_urls))
+
+        pending = deque(page_urls)
+        running = set()
+
+        def log_task_state(label: str):
+            self.logger.verbose(
+                f"{task_guid}: {label} P={len(pending)} W={len(running)} {task.meta.finished}/{task.meta.total}")
+
+        log_task_state('pipeline_start')
+
+        async def process_page(start_page_url: str):
+            current_page_url = start_page_url
+            while True:
+                try:
+                    scan_result = await self._scan_img_async(
+                        current_page_url, task, task_guid, req)
+                    await self._download_img_async(
+                        scan_result.img_url, task, task_guid, req)
+
+                    self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(
+                        task_guid, *task.get_fname(scan_result.img_url)))
+
+                    log_task_state('img_downloaded')
+                    return
+                except ScanDownloadRetry as ex:
+                    log_task_state('scan_download_retry')
+                    current_page_url = ex.result.reload_url if ex.result and ex.result.reload_url else current_page_url
+                    if ex.delay:
+                        await asyncio.sleep(ex.delay)
+
+        async def run_one(url: str):
+            try:
+                await process_page(url)
+            except asyncio.CancelledError:
+                raise
+
+        def schedule_next():
+            while pending and len(running) < inflight_limit:
+                url = pending.popleft()
+                running.add(asyncio.create_task(run_one(url)))
+
+        schedule_next()
+
+        try:
+            while running:
+                done, _ = await asyncio.wait(
+                    running,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for fut in done:
+                    running.discard(fut)
+                    await fut
+                schedule_next()
+        except asyncio.CancelledError:
+            for fut in running:
+                fut.cancel()
+            await asyncio.gather(*running, return_exceptions=True)
+            raise
+        except Exception:
+            for fut in running:
+                fut.cancel()
+            await asyncio.gather(*running, return_exceptions=True)
+            raise
+
+        log_task_state('pipeline_done')
+        return
+
+    @stage_retry_scope
+    async def _make_archive_async(self, task: Task):
 
         def work():
             try:
@@ -394,110 +477,6 @@ class TaskControl:
                 )
 
         return await self._archive_scheduler.submit(work)
-
-    async def _run_scan_and_download_concurrent(self, task: Task, task_guid: str, req: HttpRequest):
-        page_urls = deque()
-        while not task.page_q.empty():
-            page_urls.append(task.page_q.get())
-
-        self.logger.debug("%s: page_q size before scan: %d" %
-                          (task_guid, len(page_urls)))
-
-        pending = {}
-
-        def log_task_state(label: str):
-            self.logger.verbose(
-                "%s: %s P=%d W=%d %d/%d" % (
-                    task_guid,
-                    label,
-                    len(page_urls),
-                    len(pending),
-                    task.meta.finished,
-                    task.meta.total,
-                )
-            )
-
-        log_task_state('pipeline_start')
-
-        async def process_page(start_page_url: str):
-            current_page_url = start_page_url
-
-            while True:
-                if self._task_should_abort(task):
-                    raise TaskAbort('task aborted before scan/download page')
-
-                try:
-                    scan_result = await self._scan_img_async(current_page_url, task, task_guid, req)
-                except TaskSkip:
-                    log_task_state('scan_skip')
-                    return
-                except ScanDownloadRetry as ex:
-                    if ex.delay:
-                        await asyncio.sleep(ex.delay)
-                    continue
-
-                if not scan_result or not scan_result.img_url:
-                    log_task_state('scan_unexpected_skip')
-                    return
-
-                img_url = scan_result.img_url
-                try:
-                    await self._download_img_async(img_url, task, task_guid, req)
-                except TaskSkip:
-                    log_task_state('download_skip')
-                    return
-                except ScanDownloadRetry as ex:
-                    if ex.delay:
-                        await asyncio.sleep(ex.delay)
-
-                    reload_url = ex.result.reload_url if ex.result else task.get_reload_url(
-                        img_url)
-                    task.reload_map.pop(img_url, None)
-                    self.logger.debug(i18n.XEH_DOWNLOAD_HAS_ERROR % (
-                        task_guid, img_url, reload_url or img_url))
-                    log_task_state('pipeline_retry_rescan')
-                    current_page_url = reload_url or current_page_url
-                    continue
-
-                if img_url:
-                    self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(
-                        task_guid, *task.get_fname(img_url)))
-                    log_task_state('download_ok')
-                    return
-
-                log_task_state('download_unexpected_skip')
-                return
-
-        # Do not mirror Scheduler thread counts here; scheduler itself already limits execution.
-        inflight_limit = int(self._task_cfg(
-            task, 'pipeline_inflight_pages', 0) or 0)
-
-        while page_urls or pending:
-            while page_urls and (inflight_limit <= 0 or len(pending) < inflight_limit):
-                page_url = page_urls.popleft()
-                fut = asyncio.create_task(process_page(page_url))
-                pending[fut] = page_url
-                log_task_state('dispatch')
-
-            if not pending:
-                continue
-
-            done, _ = await asyncio.wait(set(pending.keys()), return_when=asyncio.FIRST_COMPLETED)
-            for fut in done:
-                pending.pop(fut, None)
-                try:
-                    fut.result()
-                except (TaskFailed, TaskAbort) as ex:
-                    raise
-                except TaskControlFlow as ex:
-                    raise TaskFailed(
-                        ex.reason or 'unexpected control flow in process_page', failcode=ex.failcode)
-                except Exception as ex:
-                    self._raise_mapped_stage_exception(
-                        'scan_img', task, ex, default_code=task.failcode)
-
-        log_task_state('pipeline_done')
-        return
 
     def _task_should_abort(self, task: Task) -> bool:
         return self._exit >= XEH_STATE_FULL_EXIT or task.state == TASK_STATE_PAUSED
@@ -553,7 +532,7 @@ class TaskControl:
             # Stage 5: DOWNLOAD
             if self._task_should_abort(task):
                 raise TaskAbort('task aborted before page pipeline starts')
-            await self._run_scan_and_download_concurrent(task, task_guid, req)
+            await self._scan_download_async(task, task_guid, req)
             self._update_task_reuse_index(task)
             if self._task_should_abort(task):
                 raise TaskAbort('task aborted before make_archive')
