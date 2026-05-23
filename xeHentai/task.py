@@ -5,14 +5,16 @@
 
 import os
 import re
-import copy
 import json
+import time
 import uuid
 import shutil
 import zipfile
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple
 from threading import RLock
 from dataclasses import dataclass, asdict, field
+
+import requests
 from . import util
 from . import reuse_index
 from .const import *
@@ -1063,8 +1065,15 @@ class Task(object):
 
         callback_page_url_setdefault(_fid, _page_url)
 
-    def save_file(self, imgurl, redirect_url, binary_iter, content_type=None, original_hash=None):
+    def save_file(self, 
+                  imgurl:str, 
+                  redirect_url:str, 
+                  binary_iter: Callable[[int, requests.Response], Generator], 
+                  content_type:str,
+                  original_hash:str,
+                  timeout_time:float):
         fpath = self.get_task_dir()
+        
         
         with self._cnt_lock:
             if not os.path.exists(fpath):
@@ -1095,6 +1104,8 @@ class Task(object):
         try:
             with open(fn_tmp, "wb") as f:
                 for binary in binary_iter():
+                    if time.time() > timeout_time:
+                        raise TimeoutError("Download timed out")
                     f.write(binary)
         except Exception:
             os.remove(fn_tmp)

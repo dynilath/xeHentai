@@ -9,7 +9,9 @@ from collections import deque
 from functools import wraps
 
 from queue import Empty, Queue
-from typing import Optional
+from typing import Callable, Generator, Optional
+
+import requests
 
 from .scheduler import Scheduler
 from . import filters, reuse_index, util
@@ -344,7 +346,7 @@ class TaskControl:
     @stage_retry_scope
     async def _download_img_async(self, img_url: str, task: Task, task_guid: str, req: HttpRequest):
 
-        def download_image(x: tuple[str, str, str, str, str]):
+        def download_image(x: tuple[Callable[[int, requests.Response], Generator], str, str, str, str]):
             # This callback is called for each image downloaded, with x containing download info
             # We use it to save the file and log the download
             saved = task.save_file(
@@ -352,7 +354,8 @@ class TaskControl:
                 redirect_url=x[2],
                 binary_iter=x[0],
                 content_type=x[3],
-                original_hash=x[4])
+                original_hash=x[4],
+                timeout_time = time.time() + self._task_cfg(task, 'download_timeout', 10))
             reload_url = task.get_reload_url(img_url)
             if saved:
                 return DownloadResult(img_url=img_url, reload_url=reload_url)
