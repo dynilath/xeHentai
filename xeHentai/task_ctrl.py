@@ -52,9 +52,10 @@ class TaskControl:
         self._exit = 0
 
         self._scan_scheduler = Scheduler(
-            workers=host.config['scan_thread_cnt'], interval=1)
+            workers=host.config.get('scan_thread_cnt', 1),
+            interval=host.config.get('page_interval', 0.5))
         self._download_scheduler = Scheduler(
-            workers=host.config['download_thread_cnt'])
+            workers=host.config.get('download_thread_cnt', 2))
         self._archive_scheduler = Scheduler(workers=1)
 
         self._host.logger.info("Scan threads count: {}".format(
@@ -238,6 +239,8 @@ class TaskControl:
 
         page_count = 0
         try:
+            do_proxy_page = not self._task_cfg(task, 'proxy_image_only', False)
+            
             awaitables = []
             for x in range(0, int(math.ceil(1.0 * task.meta.total / int(task.meta.thumbnail_cnt)))):
                 def work(page_num=x):
@@ -247,7 +250,7 @@ class TaskControl:
                                            task, 'page_retry', 3),
                                        timeout=self._task_cfg(
                                            task, 'page_timeout', 10),
-                                       proxy=self._host.proxy,
+                                       proxy=self._host.proxy if do_proxy_page else None,
                                        proxy_wait=False)
                 awaitables.append(self._scan_scheduler.submit(work))
 
@@ -322,12 +325,14 @@ class TaskControl:
             return ScanImageResult(page_url=page_url, img_url=image_url, reload_url=reload_url)
 
         try:
+            do_proxy_scan = not self._task_cfg(task, 'proxy_image_only', False)
+            
             def work():
                 return req.request("GET", page_url,
                                    retry=self._task_cfg(task, 'page_retry', 3),
                                    timeout=self._task_cfg(
                                        task, 'page_timeout', 10),
-                                   proxy=self._host.proxy,
+                                   proxy=self._host.proxy if do_proxy_scan else None,
                                    proxy_wait=False)
             r = await self._scan_scheduler.submit(work)
             filter = filters.flt_imgurl_wrapper(
@@ -360,7 +365,7 @@ class TaskControl:
             )
 
         try:
-            do_proxy_image = not self._task_cfg(
+            do_proxy_image = self._task_cfg(
                 task, 'proxy_image_only', False) or self._task_cfg(task, 'proxy_image', False)
 
             def work(): return req.request("GET",
@@ -416,7 +421,7 @@ class TaskControl:
                     await self._download_img_async(
                         scan_result.img_url, task, task_guid, req)
 
-                    self.logger.debug(i18n.XEH_FILE_DOWNLOADED.format(
+                    self.logger.info(i18n.XEH_FILE_DOWNLOADED.format(
                         task_guid, *task.get_fname(scan_result.img_url)))
 
                     log_task_state('img_downloaded')
