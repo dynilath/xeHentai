@@ -9,7 +9,7 @@ import re
 import requests
 from . import util
 from .const import *
-from .exceptions import ConnectionFilterException, GalleryDetailPageParseException, ImageFileException, ImageFileNotFoundException, ImageFileStreamException, ImagePageInfoParseException, ImagePageInvalidException, KeyExpiredException, QuotaExceededException
+from .exceptions import DownloadConnectionException, DownloadLengthMismatchException, GalleryDetailPageParseException, ImageFileException, ImageFileNotFoundException, ImageFileStreamException, ImagePageInfoParseException, ImagePageInvalidException, KeyExpiredException, QuotaExceededException
 from typing import Callable, Any, ParamSpec, TypeVar
 
 SUC = 0
@@ -168,8 +168,6 @@ def flt_quota_check(func:Callable[[requests.Response, Callable[P,R]], R]):
                 r.headers.get('content-type') and r.headers.get('content-type').startswith('text') and \
                 re.findall("exceeded your image viewing limits", r.text):
             raise QuotaExceededException(r._real_url, "image viewing limits exceeded (text match)")
-        elif r.status_code == 503:
-            raise ConnectionFilterException(r._real_url)
         else:
             return func(r, suc)
     return _
@@ -271,10 +269,10 @@ def download_file_wrapper():
                     length_read += len(_)
                     _r.iter_content_cb(_)
                     yield _
-            except (ConnectionError, SSLWantReadError):  # read timeout
-                raise ImageFileStreamException(r._real_url, "connection error during streaming download")
+            except (ConnectionError, SSLWantReadError) as ex:  # read timeout
+                raise DownloadConnectionException(r._real_url, str(ex))
             if length_read != r.content_length:
-                raise ImageFileException(r._real_url, f"content-length mismatch after streaming download (expected {r.content_length}, got {length_read})")
+                raise DownloadLengthMismatchException(r._real_url, r.content_length, length_read)
 
         suc((_yield, r._real_url, r.url, content_type, original_hash))
 
