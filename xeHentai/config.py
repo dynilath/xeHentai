@@ -45,18 +45,22 @@ download_range = None
 scan_thread_cnt = 1
 # download threads count
 download_thread_cnt = 5
+
+# max number of concurrent _do_task_async task pipelines
+async_task_concurrency = 1
+# optional cap for in-flight page pipelines per task, 0 means unlimited
+pipeline_inflight_pages = 0
+
+# interval between page requests in seconds (metadata/page/img-page fetch)
+page_interval = 0.5
 # page request retry count (metadata/page/img-page fetch)
 page_retry = 3
 # page request timeout in seconds (metadata/page/img-page fetch)
 page_timeout = 10
 # image download retry count
 download_retry = 5
-# max number of concurrent _do_task_async task pipelines
-async_task_concurrency = 1
-# optional cap for in-flight page pipelines per task, 0 means unlimited
-pipeline_inflight_pages = 0
 # set image download timeout
-download_timeout = 10
+download_timeout = 8
 
 # ignore these error codes, continue download
 # to use predefined error codes, use:

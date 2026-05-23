@@ -35,6 +35,7 @@ class xeHentai(HostInterface):
     _TASK_CONFIG_KEYS = (
         "dir", "download_ori", "ignored_errors", "rename_ori", "make_archive",
         "delete_task_files", "jpn_title", "download_range",
+        "page_interval",
         "page_retry", "page_timeout", "download_retry", "download_timeout",
         "pipeline_inflight_pages"
     )
