@@ -52,7 +52,7 @@ class TaskControl:
         self._exit = 0
 
         self._scan_scheduler = Scheduler(
-            workers=host.config['scan_thread_cnt'])
+            workers=host.config['scan_thread_cnt'], interval=1)
         self._download_scheduler = Scheduler(
             workers=host.config['download_thread_cnt'])
         self._archive_scheduler = Scheduler(workers=1)
