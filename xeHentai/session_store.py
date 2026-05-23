@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 TASKS_FILE = 'h.tasks.json'
 COOKIES_FILE = 'h.cookies.json'
+PROXY_FILE = 'h.proxy.json'
 LEGACY_SESSION_FILE = 'h.json'
 SAVE_TASKS_DEBOUNCE_SECONDS = 5
 
@@ -100,11 +101,25 @@ def load_legacy_session(path: str = LEGACY_SESSION_FILE) -> Dict[str, Any]:
     return _load_json(path)
 
 
+def save_proxy_store(proxy_store: Dict[str, Any], path: str = PROXY_FILE) -> None:
+    _atomic_save_json(path, {'proxies': proxy_store})
+
+
+def load_proxy_store(path: str = PROXY_FILE) -> Dict[str, Any]:
+    data = _load_json(path)
+    proxies = data.get('proxies', {})
+    return proxies if isinstance(proxies, dict) else {}
+
+
 def has_tasks_file(path: str = TASKS_FILE) -> bool:
     return os.path.exists(path)
 
 
 def has_cookies_file(path: str = COOKIES_FILE) -> bool:
+    return os.path.exists(path)
+
+
+def has_proxy_file(path: str = PROXY_FILE) -> bool:
     return os.path.exists(path)
 
 

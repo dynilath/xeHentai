@@ -13,7 +13,7 @@ from .. import filters
 from ..const import *
 from ..exceptions import FilterException
 from ..i18n import i18n
-from ..proxy import PoolException
+from ..proxy import ProxyPoolDepleted
 from ..task import Task
 from ..worker import HttpReq
 from .managed_worker import ManagedWorker
@@ -76,7 +76,7 @@ class GalleryCrawlerWorker(Thread):
     def _vote(self, code: int) -> None:
         self._managed.vote(code)
 
-    def _wait_proxy(self, ex: PoolException) -> bool:
+    def _wait_proxy(self, ex: ProxyPoolDepleted) -> bool:
         gate = self._managed.runtime.proxy_gate
         pool = self._managed.runtime.proxy_pool
         if gate:
@@ -148,7 +148,7 @@ class GalleryCrawlerWorker(Thread):
                     self._crawl_meta(url)
                 else:
                     self._crawl_gallery_page(url)
-            except PoolException as ex:
+            except ProxyPoolDepleted as ex:
                 self.logger.warning("%s-%s %s" % (i18n.THREAD, self.name, str(ex)))
                 if self._wait_proxy(ex):
                     continue

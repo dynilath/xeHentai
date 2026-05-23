@@ -3,12 +3,14 @@
 # Contributor:
 #      fffonion        <fffonion@gmail.com>
 
+from dataclasses import dataclass
+import math
 import re
 import time
 import random
-from typing import Callable, Dict
-from collections import deque
-from requests.exceptions import ConnectTimeout, ConnectionError, ProxyError, InvalidSchema
+from typing import Any, Callable, Dict, Optional
+import requests
+from requests.exceptions import InvalidSchema
 from . import util
 from .const import *
 
@@ -16,77 +18,168 @@ from .const import *
 SUCCESS_THREHOLD = 16
 
 
-class PoolException(Exception):
-    def __init__(self, message, retry_after=None):
+class ProxyPoolException(Exception):
+    def __init__(self, message, retry_after=0.0):
         Exception.__init__(self, message)
-        self.retry_after = retry_after
+        wait_for = 0.0 if retry_after is None else max(0.0, float(retry_after))
+        self.retry_after = wait_for
+        self.wait_for = wait_for
 
-class ProxyControl(object):
-    def __init__(self, handle: Callable[[requests.Session], Callable[..., requests.Response]]):
+
+class ProxyPoolUnavailable(ProxyPoolException):
+    def __init__(self, message="try to use proxy but no proxies avaliable"):
+        ProxyPoolException.__init__(self, message, retry_after=0.0)
+
+
+class ProxyPoolDepleted(ProxyPoolException):
+    def __init__(self, message="proxy pool depleted", retry_after=0.0):
+        ProxyPoolException.__init__(self, message, retry_after=retry_after)
+
+@dataclass
+class ProxyState:
+    score: float = 1.0
+    cooldown_until: float = 0
+    disabled: bool = False
+    last_update: float = 0
+    
+DEFAULT_HALF_LIFE = 600
+DEFAULT_FAIL_PENALTY = 0.3
+DEFAULT_SUCCESS_REWARD = 0.05
+DEFAULT_DISABLE_THRESHOLD = 0.15
+
+class ProxyControl(object):    
+    def __init__(
+            self,
+            handle: Callable[[requests.Session], Callable[..., requests.Response]],
+            addr: str = "",
+            half_life: float = DEFAULT_HALF_LIFE,
+            fail_penalty: float = DEFAULT_FAIL_PENALTY,
+            success_reward: float = DEFAULT_SUCCESS_REWARD,
+            disable_threshold: float = DEFAULT_DISABLE_THRESHOLD):
+        
+        def clamp(value: float) -> float:
+            return min(max(float(value), 0.0), 1.0)
+        
         self.handle = handle
-        self.good_calls = deque()
-        self.bad_calls = deque()
-        self.cooldown = 0
-        self.disabled = False
+        self.addr = addr
+        self.half_life = max(1e-3, float(half_life))
+        self.fail_penalty = clamp(fail_penalty)
+        self.success_reward = clamp(success_reward)
+        self.disable_threshold = clamp(disable_threshold)
+        self.state = ProxyState(last_update=time.time())
 
-    def _clean_calls(self, now):
-        while self.good_calls and self.good_calls[0] < now - 3600:
-            self.good_calls.popleft()
-        while self.bad_calls and self.bad_calls[0] < now - 3600:
-            self.bad_calls.popleft()
+    def import_state(self, data: Dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            return
 
-    def _update_enabled_by_health(self):
-        if self.health() < 0.5:
-            self.disabled = True
+        state = data.get('state', {})
 
+        def _to_float(value, default):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _to_bool(value, default):
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.lower() in ('1', 'true', 'yes', 'on')
+            return default
+
+        self.half_life = max(1e-3, _to_float(data.get('half_life'), self.half_life))
+        self.fail_penalty = min(max(_to_float(data.get('fail_penalty'), self.fail_penalty), 0.0), 1.0)
+        self.success_reward = min(max(_to_float(data.get('success_reward'), self.success_reward), 0.0), 1.0)
+        self.disable_threshold = min(max(_to_float(data.get('disable_threshold'), self.disable_threshold), 0.0), 1.0)
+
+        self.state.score = min(max(_to_float(state.get('score'), self.state.score), 0.0), 1.0)
+        self.state.cooldown_until = max(0.0, _to_float(state.get('cooldown_until'), self.state.cooldown_until))
+        self.state.disabled = _to_bool(state.get('disabled'), self.state.disabled)
+        self.state.last_update = max(0.0, _to_float(state.get('last_update'), self.state.last_update))
+
+    def export_state(self) -> Dict[str, Any]:
+        return {
+            'half_life': self.half_life,
+            'fail_penalty': self.fail_penalty,
+            'success_reward': self.success_reward,
+            'disable_threshold': self.disable_threshold,
+            'state': {
+                'score': self.state.score,
+                'cooldown_until': self.state.cooldown_until,
+                'disabled': self.state.disabled,
+                'last_update': self.state.last_update,
+            },
+        }
+
+    def set_disable_after_failures(self, fail_count):
+        fail_count = max(1.0, float(fail_count))
+        self.disable_threshold = pow(1 - self.fail_penalty, fail_count)
+
+    def set_good_threshold(self, threshold):
+        threshold = max(1.0, float(threshold))
+        self.success_reward = min(1.0, 1.0 / threshold)
+
+    def _decay(self):
+        now = time.time()
+        dt = now - self.state.last_update
+        self.state.last_update = now
+        
+        decay = math.exp(-dt / self.half_life)
+        self.state.score = 1 - (1 - self.state.score) * decay
+        
+    def success(self):
+        self._decay()
+        self.state.score = min(
+            1.0,
+            self.state.score + self.success_reward,
+        )
+
+    def fail(self):
+        self._decay()
+
+        self.state.score *= (1 - self.fail_penalty)
+
+        if self.state.score < self.disable_threshold:
+            self.state.disabled = True
+
+    def cooldown(self, seconds):
+        self.state.cooldown_until = time.time() + seconds
+
+    def available(self):
+        now = time.time()
+
+        if self.state.disabled:
+            return False
+
+        if now < self.state.cooldown_until:
+            return False
+
+        return True
+
+    @property
     def health(self):
-        if len(self.bad_calls) > 0:
-            return (len(self.good_calls) + 32) / (len(self.bad_calls) + len(self.good_calls) + 32)
-        else:
-            return 1
-
-    def not_good(self):
-        self.bad_calls.append(time.time())
-        self._clean_calls(time.time())
-        self._update_enabled_by_health()
-
-    def good(self):
-        self.good_calls.append(time.time())
-        self._clean_calls(time.time())
-        self._update_enabled_by_health()
-
-    def banned(self, expire=0):
-        self.cooldown = time.time() + expire
-
-    def limit_exceeded(self):
-        self.cooldown = time.time() + 3600
-
-    def is_disabled(self):
-        return self.disabled
+        self._decay()
+        return self.state.score
 
 
-class Pool(object):
-    # TODO: refactor, a single proxy should have a health and a cooldown
+class ProxyPool(object):
     def __init__(self, logger):
         self.proxies: Dict[str, ProxyControl] = {}
-        self.errors = {}
-        self.MAX_FAIL = 16
-        self.GOOD_THRESHOLD = 16
         self.logger = logger
 
     def _enabled_proxies(self):
-        return [i for i in self.proxies.values() if not i.is_disabled()]
+        return [i for i in self.proxies.values() if not i.state.disabled]
 
     def _ready_proxies(self):
         now = time.time()
-        return [i for i in self._enabled_proxies() if i.cooldown <= now]
+        return [i for i in self._enabled_proxies() if now >= i.state.cooldown_until]
 
     def next_available_after(self):
         enabled = self._enabled_proxies()
-        if not enabled:
+        if len(enabled) == 0:
             return None
         now = time.time()
-        return max(0.0, min([i.cooldown for i in enabled]) - now)
+        return max(0.0, min([i.state.cooldown_until for i in enabled]) - now)
 
     def wait_until_available(self, check_interval=1.0, exit_check=None):
         while True:
@@ -102,20 +195,24 @@ class Pool(object):
             time.sleep(min(check_interval, max(wait_for, 0.0)))
 
     def proxied_request(self, session: requests.Session, wait=True):
-        l_of_proxy = self._enabled_proxies()
-        if not l_of_proxy:
-            raise PoolException("try to use proxy but no proxies avaliable")
+        proxies = self._enabled_proxies()
+        if len(proxies) == 0:
+            raise ProxyPoolUnavailable()
 
         while True:
             ready = self._ready_proxies()
             if ready:
-                t_proxy = random.choice(ready)
-                return t_proxy.handle(session), t_proxy
+                weights = [max(0.0, p.health) for p in ready]
+                if any(weights):
+                    target_proxy = random.choices(ready, weights=weights, k=1)[0]
+                else:
+                    target_proxy = random.choice(ready)
+                return target_proxy.handle(session), target_proxy
 
             wait_for = self.next_available_after()
             wait_for = 0 if wait_for is None else max(wait_for, 0.0)
             if not wait:
-                raise PoolException("proxy pool depleted", retry_after=wait_for)
+                raise ProxyPoolDepleted(retry_after=wait_for)
 
             self.logger.info("Proxy pool depleted, wait for %s" % wait_for)
             time.sleep(wait_for if wait_for > 0 else 0.5)
@@ -123,77 +220,28 @@ class Pool(object):
     def has_available_proxies(self):
         return len(self._ready_proxies()) > 0
 
-    def not_good(self, addr):
-        def n(weight=1):
-            self.proxies[addr].not_good()
-            return addr
-        return n
-
-    def limit_exceeded(self, addr):
-        def n():
-            self.proxies[addr].limit_exceeded()
-            return addr
-        return n
-
-    def banned(self, addr):
-        def n(weight=self.MAX_FAIL, expire=0):
-            self.proxies[addr].banned(expire)
-            return addr
-        return n
-
-    def good(self, addr):
-        def n(weight=1):
-            self.proxies[addr].good()
-            return addr
-        return n
-
-    def trace_proxy(self, addr, weight=1, check_func=None, exceptions=[]):
-        def _(func):
-            def __(*args, **kwargs):
-                r = None
-                try:
-                    r = func(*args, **kwargs)
-                except Exception as _ex:
-                    raise _ex
-                else:
-                    if check_func and not check_func(r):
-                        self.logger.verbose(
-                            "check_func failed for %s" % check_func.__name__)
-                        # self.proxies[addr][2] += weight
-                    elif check_func:
-                        self.logger.verbose(
-                            "check_func passed for %s" % check_func.__name__)
-                        # self.proxies[addr][1] += weight
-                return r
-            return __
-        return _
-
-    def add_proxy(self, addr):
+    def add_proxy(self, addr, state: Optional[Dict[str, Any]] = None):
         if re.match(r"socks[45][ah]*://([^:^/]+)(\:\d{1,5})*/*$", addr):
-            p = socks_proxy(addr, self.trace_proxy)
+            p = socks_proxy(addr)
         elif re.match(r"https*://([^:^/]+)(\:\d{1,5})*/*$", addr):
-            p = http_proxy(addr, self.trace_proxy)
+            p = http_proxy(addr)
         else:
             raise ValueError("%s is not an acceptable proxy address" % addr)
-        # self.proxies[addr] = [p, 0, 0]
-        self.proxies[addr] = ProxyControl(p)
+        proxy_control = ProxyControl(p, addr=addr)
+        proxy_control.import_state(state or {})
+        self.proxies[addr] = proxy_control
 
-    def set_max_fail(self, threhold):
-        self.MAX_FAIL = threhold
-
-    def set_good_threshold(self, threhold):
-        self.GOOD_THRESHOLD = threhold
-        pass
+    def export_store(self) -> Dict[str, Dict[str, Any]]:
+        return {addr: control.export_state() for addr, control in self.proxies.items()}
 
 
-def socks_proxy(addr, trace_proxy):
+def socks_proxy(addr):
     proxy_info = {
         'http': addr,
         'https': addr
     }
 
     def handle(session: requests.Session):
-        @trace_proxy(addr, exceptions=[InvalidSchema])
         def f(*args, **kwargs):
             kwargs.update({'proxies': proxy_info})
             return session.request(*args, **kwargs)
@@ -201,14 +249,13 @@ def socks_proxy(addr, trace_proxy):
     return handle
 
 
-def http_proxy(addr, trace_proxy):
+def http_proxy(addr):
     proxy_info = {
         'http': addr,
         'https': addr
     }
 
     def handle(session: requests.Session):
-        @trace_proxy(addr)
         def f(*args, **kwargs):
             kwargs.update({'proxies': proxy_info})
             return session.request(*args, **kwargs)
@@ -218,7 +265,7 @@ def http_proxy(addr, trace_proxy):
 
 if __name__ == '__main__':
     import requests
-    p = Pool()
+    p = ProxyPool()
     p.add_proxy("sock5://127.0.0.1:16961")
     print(p.proxied_request(requests.Session())(
         "GET", "http://ipip.tk", headers={}, timeout=2).headers)

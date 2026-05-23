@@ -57,3 +57,16 @@ class ImageFileException(FilterException):
     """Raised when the downloaded image file is broken, e.g. content-length mismatch or zero-length."""
     def __init__(self, url, reason=None):
         FilterException.__init__(self, ERR_IMAGE_BROKEN, url, reason)
+
+
+class RequestLayerException(Exception):
+    """Base exception for request-layer failures outside filter callbacks."""
+
+
+class RequestRetryExhaustedException(RequestLayerException):
+    """Raised when HttpRequest retries are exhausted without a valid response."""
+    def __init__(self, url: str, retry: int):
+        Exception.__init__(self, message)
+        self.url = url
+        self.retry = retry
+        message = "request retry exhausted: url=%s retry=%d" % (url, retry)

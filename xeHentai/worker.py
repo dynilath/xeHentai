@@ -7,8 +7,8 @@ from typing import Callable,Optional
 
 from xeHentai.task import Task
 
-from .exceptions import FilterException
-from .proxy import PoolException, Pool
+from .exceptions import FilterException, RequestRetryExhaustedException
+from .proxy import ProxyPool, ProxyPoolDepleted, ProxyPoolUnavailable
 from .i18n import i18n
 from .const import *
 from . import util
@@ -85,7 +85,7 @@ reg_509gif = re.compile(
 
 
 class HttpReq(object):
-    def __init__(self, headers={}, proxy:Pool=None, proxy_policy=None, retry=2, timeout=10, logger=None, tname="main", proxy_wait=True):
+    def __init__(self, headers={}, proxy:ProxyPool=None, proxy_policy=None, retry=2, timeout=10, logger=None, tname="main", proxy_wait=True):
         self.session = requests.Session()
         self.session.headers = headers
         # for u in ('forums.e-hentai.org', 'e-hentai.org', 'exhentai.org'):
@@ -104,6 +104,8 @@ class HttpReq(object):
     def request(self, method, url, _filter, suc, fail, data=None, stream_cb: Optional[Callable[...,None]]=None):
         try:
             self.request_base(method, url, _filter, suc, fail, data=data, stream_cb=stream_cb)
+        except (ProxyPoolUnavailable, ProxyPoolDepleted):
+            raise
         except FilterException as ex:
             if ex.reason:
                 self.logger.debug(f"{i18n.THREAD}-{self.tname} filter rejected: {ex.reason}")
@@ -139,10 +141,10 @@ class HttpReq(object):
             except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout,
                     requests.exceptions.ReadTimeout, requests.exceptions.SSLError) as ex:
                 if do_proxy:
-                    _ = __proxy_control.not_good()
-                    if _:
+                    __proxy_control.fail()
+                    if __proxy_control.state.disabled:
                         self.logger.info("%s-%s proxy %s is disabled for failed too often" %
-                                         (i18n.THREAD, self.tname, _))
+                                         (i18n.THREAD, self.tname, __proxy_control.addr))
 
                 self.logger.warning("%s-%s %s %s: %s" %
                                     (i18n.THREAD, self.tname, method, url, ex))
@@ -184,26 +186,25 @@ class HttpReq(object):
                     _t = util.parse_human_time(r.text)
                     self.logger.warn(i18n.PROXY_DISABLE_BANNED % _t)
                     # fail this proxy immediately and set expire time
-                    _p = __proxy_control.banned(expire=_t)
+                    __proxy_control.cooldown(seconds=_t)
                     self.logger.info("%s-%s proxy %s is banned for %s" %
-                                     (i18n.THREAD, self.tname, _p, _t))
+                                     (i18n.THREAD, self.tname, __proxy_control.addr, _t))
                     continue
 
                 if do_proxy and 'hentai.org/img/509.gif' in r.text:
-                    _p = __proxy_control.limit_exceeded()
+                    __proxy_control.cooldown(seconds=3600)
                     self.logger.info(
-                        "%s-%s proxy %s has exceed band width" % (i18n.THREAD, self.tname, _p))
+                        "%s-%s proxy %s has exceed band width" % (i18n.THREAD, self.tname, __proxy_control.addr))
                     continue
 
                 if do_proxy and r.ok:
-                    _p = __proxy_control.good()
-                    if _p:
-                        self.logger.info("%s-%s proxy %s is very good" %
-                                         (i18n.THREAD, self.tname, _p))
+                    __proxy_control.success()
+                    self.logger.info("%s-%s proxy %s is very good" %
+                                     (i18n.THREAD, self.tname, __proxy_control.addr))
 
                 if r.status_code == 200 and r.content_length == 0:
                     if do_proxy:
-                        __proxy_control.not_good()
+                        __proxy_control.fail()
                     continue
 
                 r.encoding = "utf-8"
@@ -218,119 +219,131 @@ class HttpReq(object):
         return _filter(_FakeResponse(url_history[0]), suc, fail)
 
 
-class HttpWorker(Thread, HttpReq):
-    def __init__(self, tname, task_queue, flt, suc, fail, headers={}, proxy=None, proxy_policy=None,
-                 retry=3, timeout=10, logger=None, keep_alive=None, stream_mode=False):
-        """
-        Construct a new 'HttpWorker' obkect
+class HttpRequest(object):
+    def __init__(self, headers=None):
+        self.session = requests.Session()
+        self.session.headers = headers or {}
 
-        :param tname: The name of this http worker
-        :param task_queue: The task Queue instance
-        :param flt: the filter function
-        :param suc: the function to call when succeeded
-        :param fail: the function to call when failed
-        :param headers: custom HTTP headers
-        :param proxy: proxy dict
-        :param proxy_policy: a function to determine whether proxy should be used
-        :param retry: retry count
-        :param timeout: timeout in seconds
-        :param logger: the Logger instance
-        :param keep_alive: the callback to send keep alive
-        :param stream_mode: set the request to use stream mode, keep_alive will be called every iteration
-        :return: returns nothing
-        """
-        HttpReq.__init__(self, headers, proxy, proxy_policy,
-                         retry, timeout, logger, tname=tname)
-        Thread.__init__(self, name=tname)
-        Thread.setDaemon(self, True)
-        self.task_queue = task_queue
-        self.logger = logger
-        self._keepalive = keep_alive
-        self._exit = lambda x: False
-        self.flt = flt
-        self._working = False
-        self.f_suc = suc
-        self.f_fail = fail
-        self.stream_mode = stream_mode
-        # if we don't checkin in this zombie_threshold time, monitor will regard us as zombie
-        self.zombie_threshold = timeout * (retry + 1)
-        self.run_once = False
+    def _log(self, logger, level, msg):
+        if logger and hasattr(logger, level):
+            getattr(logger, level)(msg)
 
-    def _finish_queue(self, *args):
-        # exit if current queue is finished
-        return self.run_once and self.task_queue.empty()
+    def request(self,
+                method,
+                url,
+                data=None,
+                stream_cb: Optional[Callable[..., None]] = None,
+                retry=2,
+                timeout=10,
+                proxy: Optional[ProxyPool] = None,
+                proxy_policy=None,
+                proxy_wait=True,
+                logger=None,
+                logger_prefix="main",
+                allow_redirects=False,
+                verify=False):
+        retry_count = 0
+        url_history = [url]
+        last_ex = None
 
-    def is_working(self):
-        return self._working
-
-    def run(self):
-        self.logger.verbose("t-%s start" % self.name)
-        _stream_cb = None
-        if self.stream_mode:
-            def _stream_cb(x): return self._keepalive(self)
-        while not self._keepalive(self) and not self._exit(self):
+        while retry_count < retry:
+            proxy_control = None
+            current_url = url_history[-1]
             try:
-                url = self.task_queue.get(False)
-            except Empty:
-                self._working = False
-                time.sleep(1)
+                if current_url and proxy and proxy_policy and proxy_policy.match(current_url):
+                    f, proxy_control = proxy.proxied_request(self.session, wait=proxy_wait)
+                else:
+                    f = self.session.request
+
+                r: requests.Response = f(
+                    method,
+                    current_url,
+                    allow_redirects=allow_redirects,
+                    data=data,
+                    timeout=timeout,
+                    stream=stream_cb is not None,
+                    verify=verify
+                )
+            except (requests.exceptions.ProxyError,
+                    requests.exceptions.ConnectTimeout,
+                    requests.exceptions.ReadTimeout,
+                    requests.exceptions.SSLError,
+                    ProxyPoolDepleted) as ex:
+                last_ex = ex
+                if proxy_control is not None:
+                    proxy_control.fail()
+                    if proxy_control.state.disabled:
+                        self._log(logger, "info", "%s-%s proxy %s is disabled for failed too often" %
+                                  (i18n.THREAD, logger_prefix, proxy_control.addr))
+                self._log(logger, "warning", "%s-%s %s %s: %s" %
+                          (i18n.THREAD, logger_prefix, method, current_url, ex))
+                time.sleep(random.random() + 0.618)
+                retry_count += 1
+                continue
+            except requests.RequestException as ex:
+                # Non-timeout/non-proxy request exceptions should exit immediately.
+                self._log(logger, "warning", "%s-%s %s %s: %s" %
+                          (i18n.THREAD, logger_prefix, method, current_url, ex))
+                raise
+
+            if r.headers.get('content-length'):
+                r.content_length = int(r.headers.get('content-length'))
+            elif not stream_cb:
+                r.content_length = len(r.content)
+            else:
+                r.content_length = 0
+
+            self._log(logger, "verbose", "%s-%s %s %s %d %d" %
+                      (i18n.THREAD, logger_prefix, method, current_url, r.status_code, r.content_length))
+
+            if 300 < r.status_code < 400:
+                _new_url = r.headers.get("location")
+                if _new_url:
+                    url_history.append(_new_url)
+                    if len(url_history) > DEFAULT_MAX_REDIRECTS:
+                        raise requests.TooManyRedirects("too many redirects: %s" % url_history[0])
+                    continue
+
+            if r.status_code == 503:
+                retry_count += 1
                 continue
 
-            if not url:
-                self._working = False
-                time.sleep(1)
+            if proxy_control is not None and r.content_length < 1024 and \
+                    re.match("Your IP address has been temporarily banned", r.text):
+                _t = util.parse_human_time(r.text)
+                self._log(logger, "warning", i18n.PROXY_DISABLE_BANNED % _t)
+                proxy_control.cooldown(seconds=_t)
+                self._log(logger, "info", "%s-%s proxy %s is banned for %s" %
+                          (i18n.THREAD, logger_prefix, proxy_control.addr, _t))
+                retry_count += 1
                 continue
 
-            self.run_once = True
-            try:
-                self._working = True
-                self.request("GET", url, self.flt, self.f_suc,
-                             self.f_fail, stream_cb=_stream_cb)
-            except PoolException as ex:
-                self.logger.warning("%s-%s %s" %
-                                    (i18n.THREAD, self.tname, str(ex)))
-                break
-            except FilterException as ex:
-                if ex.reason:
-                    self.logger.debug(f"{i18n.THREAD}-{self.tname} filter rejected: {ex.reason}")
-                # TODO: propagate ex.reason to the outside so callers can surface it to the user
-                self.f_fail((ex.code, ex.url))
-            except Exception as ex:
-                self.logger.warning(i18n.THREAD_UNCAUGHT_EXCEPTION % (
-                    self.tname, traceback.format_exc()))
-                self.f_fail((ERR_CONNECTION_ERROR, url))
-        # notify monitor the last time
-        self.logger.verbose("t-%s exit" % self.name)
-        self._keepalive(self, _exit=True)
+            if proxy_control is not None and 'hentai.org/img/509.gif' in r.text:
+                proxy_control.cooldown(seconds=3600)
+                self._log(logger, "info", "%s-%s proxy %s has exceed band width" %
+                          (i18n.THREAD, logger_prefix, proxy_control.addr))
+                retry_count += 1
+                continue
 
+            if proxy_control is not None and r.ok:
+                proxy_control.success()
+                self._log(logger, "info", "%s-%s proxy %s is very good" %
+                          (i18n.THREAD, logger_prefix, proxy_control.addr))
 
-class ArchiveWorker(Thread):
-    # this worker is not managed by monitor
-    def __init__(self, logger, task: Task, exit_check=None):
-        Thread.__init__(self, name="archiver%s" % task.guid)
-        Thread.setDaemon(self, True)
-        self.logger = logger
-        self.task = task
-        self._exit = lambda x: False
+            if r.status_code == 200 and r.content_length == 0:
+                if proxy_control is not None:
+                    proxy_control.fail()
+                retry_count += 1
+                continue
 
-    def run(self):
-        while self.task.state < TASK_STATE_FINISHED:
-            if self._exit(self) or self.task.state in (TASK_STATE_PAUSED, TASK_STATE_FAILED):
-                return
-            time.sleep(1)
-        self.logger.info(i18n.TASK_START_MAKE_ARCHIVE % self.task.guid)
-        self.task.state = TASK_STATE_MAKE_ARCHIVE
-        t = time.time()
-        try:
-            pth = self.task.make_archive()
-        except Exception as ex:
-            self.task.state = TASK_STATE_FAILED
-            self.logger.error(i18n.TASK_ERROR % (self.task.guid, i18n.c(
-                ERR_CANNOT_MAKE_ARCHIVE) % traceback.format_exc()))
-        else:
-            self.task.state = TASK_STATE_FINISHED
-            self.logger.info(i18n.TASK_MAKE_ARCHIVE_FINISHED %
-                             (self.task.guid, pth, time.time() - t))
+            r.encoding = "utf-8"
+            r._real_url = current_url
+            r.iter_content_cb = stream_cb
+            return r
+
+        if last_ex:
+            raise last_ex
+        raise RequestRetryExhaustedException(url=url_history[0], retry=retry)
 
 
 class Monitor(Thread):

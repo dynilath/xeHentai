@@ -88,6 +88,51 @@ class xeHentai(HostInterface):
         """Upsert reusable page-hash mappings from a task into global_reuse_index."""
         self._task_control._update_task_reuse_index(task)
 
+    def _load_proxy_store(self):
+        try:
+            return session_store.load_proxy_store() if session_store.has_proxy_file() else {}
+        except Exception:
+            self.logger.warning(i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc())
+            return {}
+
+    def _save_proxy_store(self, proxy_store):
+        try:
+            session_store.save_proxy_store(proxy_store)
+        except Exception:
+            self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
+
+    def _merge_proxy_store(self):
+        stored = self._load_proxy_store()
+        runtime = self.proxy.export_store() if self.proxy else {}
+        merged = dict(stored)
+        merged.update(runtime)
+        return merged
+
+    def _rebuild_proxy_pool(self, configured_proxies):
+        store = self._merge_proxy_store()
+        active = []
+        for addr in configured_proxies:
+            if addr not in active:
+                active.append(addr)
+
+        for addr in active:
+            store.setdefault(addr, {})
+
+        if not active:
+            self.proxy = None
+            self._save_proxy_store(store)
+            return
+
+        rebuilt_pool = proxy.ProxyPool(self.logger)
+        for addr in active:
+            try:
+                rebuilt_pool.add_proxy(addr, state=store.get(addr, {}))
+            except Exception:
+                self.logger.warning(traceback.format_exc())
+
+        self.proxy = rebuilt_pool
+        self._save_proxy_store(store)
+
     def update_config(self, **cfg_dict):
         self.cfg.update({k: v for k, v in cfg_dict.items()
                         if k in cfg_dict and k not in ('ignored_errors',)})
@@ -97,20 +142,10 @@ class xeHentai(HostInterface):
                 set(self.cfg['ignored_errors'] + cfg_dict['ignored_errors']))
         self.logger.set_level(logger.Logger.WARNING - self.cfg['log_verbose'])
         self.logger.verbose("cfg %s" % self.cfg)
-        if cfg_dict['proxy']:
-            if not self.proxy:  # else we keep it None
-                self.proxy = proxy.Pool(self.logger)
-            for p in self.cfg['proxy']:
-                try:
-                    self.proxy.add_proxy(p)
-                except Exception as ex:
-                    self.logger.warning(traceback.format_exc())
+        if 'proxy' in cfg_dict:
+            self._rebuild_proxy_pool(self.cfg['proxy'])
             self.logger.debug(i18n.PROXY_CANDIDATE_CNT %
-                              len(self.proxy.proxies))
-            if cfg_dict['proxy_disable_threshold']:
-                self.proxy.set_max_fail(cfg_dict['proxy_disable_threshold'])
-            if cfg_dict['proxy_good_threshold']:
-                self.proxy.set_good_threshold(cfg_dict['proxy_good_threshold'])
+                              (0 if not self.proxy else len(self.proxy.proxies)))
         if cfg_dict['dir'] and not os.path.exists(cfg_dict['dir']):
             try:
                 os.makedirs(cfg_dict['dir'])
@@ -254,6 +289,13 @@ class xeHentai(HostInterface):
 
         try:
             reuse_index.save_reuse_index(self.global_reuse_index)
+        except Exception as ex:
+            errors.append(str(ex))
+            self.logger.warning(i18n.SESSION_WRITE_EXCEPTION %
+                                traceback.format_exc())
+
+        try:
+            self._save_proxy_store(self._merge_proxy_store())
         except Exception as ex:
             errors.append(str(ex))
             self.logger.warning(i18n.SESSION_WRITE_EXCEPTION %

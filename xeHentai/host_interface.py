@@ -6,7 +6,7 @@ from typing import Protocol, Any, Dict, Optional
 from queue import Queue
 
 from .util.logger import Logger
-from .proxy import Pool
+from .proxy import ProxyPool
 
 
 class HostInterface(Protocol):
@@ -16,7 +16,7 @@ class HostInterface(Protocol):
     logger: Logger
     """Logger instance for logging messages."""
 
-    proxy: Pool
+    proxy: ProxyPool
     """Proxy configuration/pool."""
 
     headers: Dict[str, str]
