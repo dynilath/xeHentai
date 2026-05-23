@@ -256,8 +256,6 @@ def download_file_wrapper():
             raise ImageFileException(r._real_url, "zero content-length")
         if p and p[-1] and int(p[-1][1]) != r.content_length:
             raise ImageFileException(r._real_url, f"content-length mismatch (expected {p[-1][1]}, got {r.content_length})")
-        if not hasattr(r, 'iter_content_cb'):
-            raise ImageFileStreamException(r._real_url, "response missing iter_content_cb for streaming download")
 
         # merge the iter_content iterator with our custom stream_cb
         def _yield(chunk_size=16384, _r=r):
@@ -267,14 +265,13 @@ def download_file_wrapper():
             try:
                 for _ in _r.iter_content(chunk_size):
                     length_read += len(_)
-                    _r.iter_content_cb(_)
                     yield _
             except (ConnectionError, SSLWantReadError) as ex:  # read timeout
                 raise DownloadConnectionException(r._real_url, str(ex))
             if length_read != r.content_length:
                 raise DownloadLengthMismatchException(r._real_url, r.content_length, length_read)
 
-        suc((_yield, r._real_url, r.url, content_type, original_hash))
+        return suc((_yield, r._real_url, r.url, content_type, original_hash))
 
     return download_file
 

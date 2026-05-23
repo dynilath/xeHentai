@@ -51,12 +51,14 @@ class GalleryDetailPageParseException(FilterException):
     def __init__(self, url, reason=None):
         FilterException.__init__(self, ERR_NO_PAGEURL_FOUND, url, reason)
 
+
 class ImagePageInfoParseException(FilterException):
     """Raised when the page info parsing fails, e.g. due to site structure change.
     Should abort the entire gallery crawl.
     """
     def __init__(self, url, reason=None):
         FilterException.__init__(self, ERR_SCAN_REGEX_FAILED, url, reason)
+        
         
 class ImageFileException(FilterException):
     """Raised when the downloaded image file is broken, e.g. content-length mismatch or zero-length.
@@ -65,12 +67,14 @@ class ImageFileException(FilterException):
     def __init__(self, url, reason=None):
         FilterException.__init__(self, ERR_IMAGE_BROKEN, url, reason)
 
+
 class ImagePageInvalidException(FilterException):
     """Raised when the image page is not found, e.g. due to deletion or resampling.
     Should abort the entire gallery crawl.
     """
     def __init__(self, url):
         FilterException.__init__(self, ERR_IMAGE_RESAMPLED, url)
+
 
 class ImageFileNotFoundException(FilterException):
     """Raised when the image file is not found, e.g. due to deletion.
@@ -79,6 +83,7 @@ class ImageFileNotFoundException(FilterException):
     def __init__(self, url):
         FilterException.__init__(self, ERR_HATH_NOT_FOUND, url)    
 
+
 class ImageFileStreamException(FilterException):
     """Raised when the image file is served in an unsupported streaming format.
     Should abort the entire gallery crawl.
@@ -86,11 +91,13 @@ class ImageFileStreamException(FilterException):
     def __init__(self, url, reason=None):
         FilterException.__init__(self, ERR_STREAM_NOT_IMPLEMENTED, url, reason)
 
+
 class DownloadException(Exception):
     """Base exception for download failures that are not directly related to filter checks."""
     def __init__(self, url, message=None):
         Exception.__init__(self, message or url)
         self.url = url
+    
     
 class DownloadConnectionException(DownloadException):
     """Raised when a download request fails due to a connection error, e.g. network failure or proxy error.
@@ -99,6 +106,7 @@ class DownloadConnectionException(DownloadException):
     def __init__(self, url, reason=None):
         message = "connection error during download: %s, reason: %s" % (url, reason)
         DownloadException.__init__(self, url, message)
+
 
 class DownloadLengthMismatchException(DownloadException):
     """Raised when the downloaded file's content length does not match the expected length.
@@ -114,7 +122,7 @@ class RequestLayerException(Exception):
     def __init__(self, url:str, message: Optional[str]=None):
         Exception.__init__(self, message or url)
         self.url = url
-        
+
     
 class RequestInvalidURLException(RequestLayerException):
     """Raised when the request URL is invalid or empty.
@@ -154,18 +162,18 @@ def map_exception_policy(stage: str,
 
     if isinstance(ex, KeyExpiredException):
         if stage in ('scan_img', 'download_img'):
-            return ExceptionPolicy(action=StageAction.FALLBACK)
+            return ExceptionPolicy(action=StageAction.PIPELINE_RETRY)
         return ExceptionPolicy(action=StageAction.RETRY, delay=0.5)
 
     if isinstance(ex, (ImageFileException, DownloadConnectionException, DownloadLengthMismatchException)):
-        return ExceptionPolicy(action=StageAction.RETRY, delay=1.0)
+        return ExceptionPolicy(action=StageAction.PIPELINE_RETRY, delay=1.0)
 
     if isinstance(ex, ImageFileNotFoundException):
-        return ExceptionPolicy(action=StageAction.FALLBACK)
+        return ExceptionPolicy(action=StageAction.PIPELINE_RETRY)
 
     if isinstance(ex, RequestRetryExhaustedException):
         if stage in ('scan_img', 'download_img'):
-            return ExceptionPolicy(action=StageAction.RETRY, delay=1.0)
+            return ExceptionPolicy(action=StageAction.PIPELINE_RETRY, delay=1.0)
         return ExceptionPolicy(action=StageAction.FAIL)
 
     if isinstance(ex, (RequestInvalidURLException,
@@ -181,9 +189,9 @@ def map_exception_policy(stage: str,
 if __name__ == '__main__':
     # policy smoke checks
     assert map_exception_policy('scan_img', QuotaExceededException('u')).action == StageAction.RETRY
-    assert map_exception_policy('scan_img', KeyExpiredException('u')).action == StageAction.FALLBACK
+    assert map_exception_policy('scan_img', KeyExpiredException('u')).action == StageAction.PIPELINE_RETRY
     assert map_exception_policy('get_meta', KeyExpiredException('u')).action == StageAction.RETRY
-    assert map_exception_policy('download_img', ImageFileNotFoundException('u')).action == StageAction.FALLBACK
+    assert map_exception_policy('download_img', ImageFileNotFoundException('u')).action == StageAction.PIPELINE_RETRY
     assert map_exception_policy('scan_page', RequestRetryExhaustedException('u', 3)).action == StageAction.FAIL
     assert map_exception_policy('scan_img', RequestRetryExhaustedException('u', 3)).action == StageAction.RETRY
         

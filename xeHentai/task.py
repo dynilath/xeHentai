@@ -260,8 +260,7 @@ class Task(object):
         self.list_q: Optional[Queue] = None
         # Finished image IDs (rebuilt on scan, not persisted directly).
         self._flist_done: Set[int] = set()
-        # Task monitor thread reference.
-        self._monitor: Any = None
+        
         # Lock for counters/state transitions.
         self._cnt_lock: Any = RLock()
         # Lock for file-system writes and renames.
@@ -1096,34 +1095,29 @@ class Task(object):
         try:
             with open(fn_tmp, "wb") as f:
                 for binary in binary_iter():
-                    if self._monitor._exit(None):
-                        raise DownloadAbortedException()
                     f.write(binary)
         except DownloadAbortedException as ex:
             os.remove(fn_tmp)
             return
 
         with self._f_lock:
-            try:
-                os.rename(fn_tmp, fn)
-                with self._cnt_lock:
-                    self.meta.finished += 1
-                
-                fhash = original_hash[0:10]
-                if fhash in self.dumplicated_file_map:
-                    for info in self.dumplicated_file_map[fhash]:
-                        # if a file download is interrupted, it will appear in self.dumplicated_file_map as well
-                        if int(info.fid) == int(fid):
-                            continue
-                        rep_name = self._set_final_file_ext(info.fid, ext)
-                        fn_rep = os.path.join(fpath, rep_name)
-                        if not fn == fn_rep:
-                            shutil.copyfile(fn, fn_rep)
-                            with self._cnt_lock:
-                                self.meta.finished += 1
-                    del self.dumplicated_file_map[fhash]
-            except Exception as ex:
-                raise ex
+            os.rename(fn_tmp, fn)
+            with self._cnt_lock:
+                self.meta.finished += 1
+            
+            fhash = original_hash[0:10]
+            if fhash in self.dumplicated_file_map:
+                for info in self.dumplicated_file_map[fhash]:
+                    # if a file download is interrupted, it will appear in self.dumplicated_file_map as well
+                    if int(info.fid) == int(fid):
+                        continue
+                    rep_name = self._set_final_file_ext(info.fid, ext)
+                    fn_rep = os.path.join(fpath, rep_name)
+                    if not fn == fn_rep:
+                        shutil.copyfile(fn, fn_rep)
+                        with self._cnt_lock:
+                            self.meta.finished += 1
+                del self.dumplicated_file_map[fhash]
         return True
 
     def get_fname(self, imgurl):

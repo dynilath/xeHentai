@@ -28,7 +28,7 @@ class ProxyPoolException(Exception):
 
 class ProxyPoolUnavailable(ProxyPoolException):
     def __init__(self, message="try to use proxy but no proxies avaliable"):
-        ProxyPoolException.__init__(self, message, retry_after=0.0)
+        ProxyPoolException.__init__(self, message, retry_after=600.0)
 
 
 class ProxyPoolDepleted(ProxyPoolException):
@@ -136,11 +136,7 @@ class ProxyControl(object):
 
     def fail(self):
         self._decay()
-
         self.state.score *= (1 - self.fail_penalty)
-
-        if self.state.score < self.disable_threshold:
-            self.state.disabled = True
 
     def cooldown(self, seconds):
         self.state.cooldown_until = time.time() + seconds

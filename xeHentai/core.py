@@ -6,10 +6,6 @@
 import os
 import re
 import sys
-import math
-import json
-import time
-import shutil
 import traceback
 from .task import Task
 from . import reuse_index
@@ -24,17 +20,7 @@ from .host_interface import HostInterface
 from .task_ctrl import TaskControl
 from .const import *
 from .const import __version__
-from .worker import *
-from .async_woker import (
-    ArchiveBuildWorker,
-    GalleryCrawlerWorker,
-    KeepAliveFn,
-    ManagedWorker,
-    ProxyExhaustionGate,
-    VoteFn,
-    WorkerRuntime,
-)
-from queue import Queue, Empty
+from queue import Queue
 
 from . import config as default_config
 sys.path.insert(1, FILEPATH)
@@ -48,7 +34,9 @@ sys.path.pop(1)
 class xeHentai(HostInterface):
     _TASK_CONFIG_KEYS = (
         "dir", "download_ori", "ignored_errors", "rename_ori", "make_archive",
-        "delete_task_files", "jpn_title", "download_range", "download_timeout"
+        "delete_task_files", "jpn_title", "download_range",
+        "page_retry", "page_timeout", "download_retry", "download_timeout",
+        "pipeline_inflight_pages"
     )
 
     def __init__(self):
@@ -78,11 +66,6 @@ class xeHentai(HostInterface):
         self._task_control = TaskControl(self)
         self.load_session()
         self.rpc = None
-
-    @property
-    def _monitor(self):
-        """Expose task control monitor for RPC compatibility."""
-        return self._task_control._monitor
 
     @property
     def _exit(self):
@@ -228,8 +211,6 @@ class xeHentai(HostInterface):
         t = self._all_tasks[guid]
         if t.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED, TASK_STATE_FAILED):
             return ERR_TASK_CANNOT_PAUSE, None
-        if t._monitor:
-            t._monitor._exit = lambda x: True
         t.state = TASK_STATE_PAUSED
         return ERR_NO_ERROR, ""
 

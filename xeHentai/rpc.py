@@ -310,15 +310,6 @@ class xeHentaiRPCExtended(object):
             "threads_zombie": 0, "threads_running": 0,
             "queue_pending": 0, "queue_finished": 0
         }
-        if hasattr(self, '_monitor'):
-            ret['threads_running'] = len(self._monitor.thread_last_seen)
-            ret['threads_zombie'] = len(self._monitor.thread_zombie)
-            if self._monitor.task.state > TASK_STATE_PAUSED and self._monitor.task.img_q:
-                ret['queue_pending'] = self._monitor.task.img_q.qsize()
-                ret['queue_finished'] = self._monitor.task.meta.finished
-            else:
-                ret['queue_pending'] = 0
-                ret['queue_finished'] = 0
         return ERR_NO_ERROR, ret
     
     def get_config(self):
