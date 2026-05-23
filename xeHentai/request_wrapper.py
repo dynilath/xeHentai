@@ -6,7 +6,6 @@ from .i18n import i18n
 from .proxy import ProxyPool, ProxyPoolDepleted
 from .util.logger import Logger
 
-
 import random
 import re
 import time
@@ -77,29 +76,31 @@ class HttpRequest(object):
                     stream=stream,
                     verify=False
                 )
+                
+                if not stream:
+                    text = r.text
+                
             except ProxyPoolDepleted as ex:
                 last_ex = ex
                 if proxy_control is not None:
                     proxy_control.fail()
-                logger.warning("%s %s %s: %s" %
-                               (logger_prefix, method, current_url, ex))
+                logger.debug("%s %s %s: %s" %
+                               (logger_prefix, method, current_url, str(ex)))
                 time.sleep(random.random() + 0.618)
                 retry_count += 1
                 continue
             except requests.RequestException as ex:
+                logger.debug("%s %s %s: %s" %
+                                (logger_prefix, method, current_url, str(ex)))
                 if _is_retryable_request_exception(ex):
                     last_ex = ex
                     if proxy_control is not None:
                         proxy_control.fail()
-                    logger.warning("%s %s %s: %s" %
-                                   (logger_prefix, method, current_url, ex))
                     time.sleep(random.random() + 0.618)
                     retry_count += 1
                     continue
 
                 # Non-transport request exceptions should exit immediately.
-                logger.warning("%s %s %s: %s" %
-                               (logger_prefix, method, current_url, ex))
                 raise 
 
             if r.headers.get('content-length'):
@@ -127,7 +128,7 @@ class HttpRequest(object):
             if proxy_control is not None:
                 if r.content_length < 1024 and re.search(r"Your IP address has been temporarily banned", r.text):
                     _t = util.parse_human_time(r.text)
-                    logger.warning(i18n.PROXY_DISABLE_BANNED % _t)
+                    logger.info(i18n.PROXY_DISABLE_BANNED % _t)
                     proxy_control.cooldown(seconds=_t)
                     retry_count += 1
                     continue
@@ -149,6 +150,4 @@ class HttpRequest(object):
             r._real_url = current_url
             return r
 
-        if last_ex:
-            raise last_ex
-        raise RequestRetryExhaustedException(url=url_history[0], retry=retry)
+        raise RequestRetryExhaustedException(url=url_history[0], retry=retry, last_ex=last_ex)

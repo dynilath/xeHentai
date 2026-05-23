@@ -2,6 +2,7 @@
 # coding:utf-8
 
 from dataclasses import dataclass
+import traceback
 from typing import Iterable, Optional, Set
 
 from .const import ERR_HATH_NOT_FOUND, ERR_IMAGE_BROKEN, ERR_IMAGE_RESAMPLED, ERR_KEY_EXPIRED, ERR_NO_PAGEURL_FOUND, ERR_QUOTA_EXCEEDED, ERR_SCAN_REGEX_FAILED, ERR_STREAM_NOT_IMPLEMENTED
@@ -137,9 +138,10 @@ class RequestRetryExhaustedException(RequestLayerException):
     If it was during image download or individual page crawl, should retry the operation with reloaded URL.
     Otherwise, should abort the entire gallery crawl.
     """
-    def __init__(self, url: str, retry: int):
+    def __init__(self, url: str, retry: int, last_ex: Optional[Exception]=None):
         self.retry = retry
-        message = "request retry exhausted: url=%s retry=%d" % (url, retry)
+        self.last_ex = last_ex
+        message = "request retry exhausted: url=%s retry=%d last_ex=%s" % (url, retry, last_ex)
         RequestLayerException.__init__(self, url, message)
 
 
@@ -147,6 +149,7 @@ class RequestRetryExhaustedException(RequestLayerException):
 class ExceptionPolicy:
     action: StageAction
     delay: float = 0.0
+    fail_detail: Optional[str] = None
 
 
 def map_exception_policy(stage: str,
@@ -174,16 +177,16 @@ def map_exception_policy(stage: str,
     if isinstance(ex, RequestRetryExhaustedException):
         if stage in ('scan_img', 'download_img'):
             return ExceptionPolicy(action=StageAction.PIPELINE_RETRY, delay=1.0)
-        return ExceptionPolicy(action=StageAction.FAIL)
+        return ExceptionPolicy(action=StageAction.FAIL, fail_detail=traceback.format_exc())
 
     if isinstance(ex, (RequestInvalidURLException,
                        GalleryDetailPageParseException,
                        ImagePageInfoParseException,
                        ImagePageInvalidException,
                        ImageFileStreamException)):
-        return ExceptionPolicy(action=StageAction.FAIL)
+        return ExceptionPolicy(action=StageAction.FAIL, fail_detail=traceback.format_exc())
 
-    return ExceptionPolicy(action=StageAction.FAIL)
+    return ExceptionPolicy(action=StageAction.FAIL, fail_detail=traceback.format_exc())
 
 
 if __name__ == '__main__':

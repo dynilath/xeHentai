@@ -3,14 +3,13 @@
 # Contributor:
 #      fffonion        <fffonion@gmail.com>
 
-import os
 import re
 
 import requests
 from . import util
 from .const import *
-from .exceptions import DownloadConnectionException, DownloadLengthMismatchException, GalleryDetailPageParseException, ImageFileException, ImageFileNotFoundException, ImageFileStreamException, ImagePageInfoParseException, ImagePageInvalidException, KeyExpiredException, QuotaExceededException
-from typing import Callable, Any, ParamSpec, TypeVar
+from .exceptions import DownloadConnectionException, DownloadLengthMismatchException, GalleryDetailPageParseException, ImageFileException, ImageFileNotFoundException, ImagePageInfoParseException, ImagePageInvalidException, KeyExpiredException, QuotaExceededException
+from typing import Callable, ParamSpec, TypeVar
 
 SUC = 0
 FAIL = 1
@@ -259,14 +258,12 @@ def download_file_wrapper():
 
         # merge the iter_content iterator with our custom stream_cb
         def _yield(chunk_size=16384, _r=r):
-            from requests.exceptions import ConnectionError
-            from ssl import SSLWantReadError
             length_read = 0
             try:
                 for _ in _r.iter_content(chunk_size):
                     length_read += len(_)
                     yield _
-            except (ConnectionError, SSLWantReadError) as ex:  # read timeout
+            except requests.RequestException as ex: 
                 raise DownloadConnectionException(r._real_url, str(ex))
             if length_read != r.content_length:
                 raise DownloadLengthMismatchException(r._real_url, r.content_length, length_read)

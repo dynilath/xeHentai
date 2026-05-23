@@ -97,10 +97,10 @@ class TaskControl:
         )
         if isinstance(ex, FilterException):
             failcode = ex.code
-            reason = ex.reason or str(ex)
+            reason = ex.reason or traceback.format_exc()
         else:
             failcode = default_code or 0
-            reason = str(ex)
+            reason = traceback.format_exc()
         if policy.action == StageAction.RETRY:
             raise StageRetry(reason, delay=policy.delay,
                              failcode=failcode, result=result)
@@ -114,7 +114,7 @@ class TaskControl:
             raise TaskAbort(reason, delay=policy.delay,
                             failcode=failcode, result=result)
         if policy.action == StageAction.FAIL:
-            raise TaskFailed(reason, delay=policy.delay,
+            raise TaskFailed(policy.fail_detail or reason, delay=policy.delay,
                              failcode=failcode, result=result)
         if policy.action == StageAction.FINISH:
             raise TaskFinished(reason, delay=policy.delay,
@@ -240,7 +240,7 @@ class TaskControl:
         page_count = 0
         try:
             do_proxy_page = not self._task_cfg(task, 'proxy_image_only', False)
-            
+
             awaitables = []
             for x in range(0, int(math.ceil(1.0 * task.meta.total / int(task.meta.thumbnail_cnt)))):
                 def work(page_num=x):
@@ -279,8 +279,6 @@ class TaskControl:
         # No exact match, check if all files are already downloaded
         if task.scan_downloaded(temp_fid_2_page_url_map):
             # All files found, update archive and finish
-            self.logger.info(i18n.TASK_TITLE %
-                             (task_guid, task.meta.title))
             try:
                 arc = task.make_archive(remove=False)
                 self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED %
@@ -326,7 +324,7 @@ class TaskControl:
 
         try:
             do_proxy_scan = not self._task_cfg(task, 'proxy_image_only', False)
-            
+
             def work():
                 return req.request("GET", page_url,
                                    retry=self._task_cfg(task, 'page_retry', 3),
@@ -368,15 +366,16 @@ class TaskControl:
             do_proxy_image = self._task_cfg(
                 task, 'proxy_image_only', False) or self._task_cfg(task, 'proxy_image', False)
 
-            def work(): return req.request("GET",
-                                           url=img_url,
-                                           retry=self._task_cfg(
-                                               task, 'download_retry', 5),
-                                           timeout=self._task_cfg(
-                                               task, 'download_timeout', 10),
-                                           proxy=self._host.proxy if do_proxy_image else None,
-                                           proxy_wait=False,
-                                           stream=True)
+            def work():
+                return req.request("GET",
+                                   url=img_url,
+                                   retry=self._task_cfg(
+                                       task, 'download_retry', 5),
+                                   timeout=self._task_cfg(
+                                       task, 'download_timeout', 10),
+                                   proxy=self._host.proxy if do_proxy_image else None,
+                                   proxy_wait=False,
+                                   stream=True)
             r = await self._download_scheduler.submit(work)
 
             filter = filters.download_file_wrapper()
@@ -515,28 +514,27 @@ class TaskControl:
             raise TaskAbort('task aborted after stage_get_meta')
         self._host.save_session()
 
+        self.logger.info(i18n.TASK_TITLE % (task_guid, task.meta.title))
+
         if task.state == TASK_STATE_GET_META:
             task.state = TASK_STATE_SCAN_PAGE
 
         if task.state <= TASK_STATE_SCAN_PAGE:
+            self.logger.info(i18n.DF_STATE_START_SCAN_PAGE % task_guid)
             # Stage 3: SCAN_PAGE (Phase 2 archive check inside)
             await self._scan_page_async(task, task_guid, req)
             if self._task_should_abort(task):
                 raise TaskAbort('task aborted before scan/download pipeline')
             self._host.save_session()
 
-            self.logger.info(i18n.TASK_TITLE % (task_guid, task.meta.title))
-            self.logger.info(i18n.TASK_WILL_DOWNLOAD_CNT % (
-                task_guid, task.meta.total - task.meta.finished,
-                task.meta.total))
-
             task.state = TASK_STATE_SCAN_IMG
 
         if task.state <= TASK_STATE_SCAN_IMG and not task.page_q.empty():
             # Stage 4: SCAN_IMG
             # Stage 5: DOWNLOAD
-            if self._task_should_abort(task):
-                raise TaskAbort('task aborted before page pipeline starts')
+            self.logger.info(i18n.TASK_WILL_DOWNLOAD_CNT % (
+                task_guid, task.meta.total - task.meta.finished,
+                task.meta.total))
             await self._scan_download_async(task, task_guid, req)
             self._update_task_reuse_index(task)
             if self._task_should_abort(task):
@@ -549,8 +547,8 @@ class TaskControl:
 
         # After all pages are processed, make archive
         if task.state <= TASK_STATE_MAKE_ARCHIVE:
-            start_time = time.time()
             self.logger.info(i18n.TASK_START_MAKE_ARCHIVE % task.guid)
+            start_time = time.time()
             pth = await self._make_archive_async(task)
             self.logger.info(i18n.TASK_MAKE_ARCHIVE_FINISHED %
                              (task.guid, pth, time.time() - start_time))

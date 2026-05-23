@@ -1096,9 +1096,9 @@ class Task(object):
             with open(fn_tmp, "wb") as f:
                 for binary in binary_iter():
                     f.write(binary)
-        except DownloadAbortedException as ex:
+        except Exception:
             os.remove(fn_tmp)
-            return
+            return False
 
         with self._f_lock:
             os.rename(fn_tmp, fn)

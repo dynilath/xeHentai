@@ -109,6 +109,3 @@ ERR_RPC_METHOD_NOT_FOUND = -32601
 ERR_RPC_INVALID_PARAMS = -32602
 ERR_RPC_EXEC_ERROR = -32603
 
-
-class DownloadAbortedException(Exception):
-    pass
