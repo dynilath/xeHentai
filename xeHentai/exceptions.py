@@ -3,7 +3,7 @@
 
 from typing import Optional
 
-from .const import ERR_CONNECTION_ERROR, ERR_IMAGE_BROKEN, ERR_KEY_EXPIRED, ERR_QUOTA_EXCEEDED, ERR_SCAN_REGEX_FAILED
+from .const import ERR_CONNECTION_ERROR, ERR_HATH_NOT_FOUND, ERR_IMAGE_BROKEN, ERR_IMAGE_RESAMPLED, ERR_KEY_EXPIRED, ERR_NO_PAGEURL_FOUND, ERR_QUOTA_EXCEEDED, ERR_SCAN_REGEX_FAILED, ERR_STREAM_NOT_IMPLEMENTED
 
 
 class FilterException(Exception):
@@ -47,7 +47,12 @@ class ConnectionFilterException(FilterException):
     """
     def __init__(self, url):
         FilterException.__init__(self, ERR_CONNECTION_ERROR, url)
-        
+
+class GalleryDetailPageParseException(FilterException):
+    """Raised when the gallery page parsing fails, e.g. due to site structure change."""
+    def __init__(self, url, reason=None):
+        FilterException.__init__(self, ERR_NO_PAGEURL_FOUND, url, reason)
+
 class ImagePageInfoParseException(FilterException):
     """Raised when the page info parsing fails, e.g. due to site structure change."""
     def __init__(self, url, reason=None):
@@ -58,15 +63,34 @@ class ImageFileException(FilterException):
     def __init__(self, url, reason=None):
         FilterException.__init__(self, ERR_IMAGE_BROKEN, url, reason)
 
+class ImagePageInvalidException(FilterException):
+    """Raised when the image page is not found, e.g. due to deletion or resampling."""
+    def __init__(self, url):
+        FilterException.__init__(self, ERR_IMAGE_RESAMPLED, url)
+
+class ImageFileNotFoundException(FilterException):
+    """Raised when the image file is not found, e.g. due to deletion."""
+    def __init__(self, url):
+        FilterException.__init__(self, ERR_HATH_NOT_FOUND, url)    
+
+class ImageFileStreamException(FilterException):
+    """Raised when the image file is served in an unsupported streaming format."""
+    def __init__(self, url, reason=None):
+        FilterException.__init__(self, ERR_STREAM_NOT_IMPLEMENTED, url, reason)
 
 class RequestLayerException(Exception):
     """Base exception for request-layer failures outside filter callbacks."""
 
+class RequestInvalidURLException(RequestLayerException):
+    """Raised when the request URL is invalid or empty."""
+    def __init__(self, url: Optional[str]):
+        Exception.__init__(self, "invalid request URL: %s" % url)
+        self.url = url
 
 class RequestRetryExhaustedException(RequestLayerException):
     """Raised when HttpRequest retries are exhausted without a valid response."""
     def __init__(self, url: str, retry: int):
-        Exception.__init__(self, message)
         self.url = url
         self.retry = retry
         message = "request retry exhausted: url=%s retry=%d" % (url, retry)
+        Exception.__init__(self, message)

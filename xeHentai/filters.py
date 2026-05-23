@@ -9,12 +9,14 @@ import re
 import requests
 from . import util
 from .const import *
-from .exceptions import ConnectionFilterException, ImageFileException, ImagePageInfoParseException, KeyExpiredException, QuotaExceededException
-from typing import Callable, Any
+from .exceptions import ConnectionFilterException, GalleryDetailPageParseException, ImageFileException, ImageFileNotFoundException, ImageFileStreamException, ImagePageInfoParseException, ImagePageInvalidException, KeyExpiredException, QuotaExceededException
+from typing import Callable, Any, ParamSpec, TypeVar
 
 SUC = 0
 FAIL = 1
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
 def login_exhentai(r, suc, fail):
     # input login response
@@ -39,8 +41,6 @@ def flt_metadata(r, suc, fail):
     # input index response
     # add gallery meta if suc; return errorcode if fail
     # TODO: catch re exceptions
-    if r.status_code == 600:
-        return fail(ERR_CONNECTION_ERROR)
     if r.status_code == 404:
         return fail(ERR_GALLERY_REMOVED)
     if re.match("Gallery not found", r.text):
@@ -133,7 +133,7 @@ def flt_metadata(r, suc, fail):
 #         return ERR_MALFORMED_HATHDL
 #     suc(meta)
 
-def flt_pageurl(r, suc, fail):
+def flt_pageurl(r, suc:Callable[P, R]):
     # input gallery response
     # add per image urls if suc; finish task if fail
     # picpage = re.findall(
@@ -148,16 +148,15 @@ def flt_pageurl(r, suc, fail):
         r.text)
     # (page url, page id, original file name)
     if not picpage:
+        raise GalleryDetailPageParseException(r._real_url, "can't find image page urls in gallery page")
         fail(ERR_NO_PAGEURL_FOUND)
     for p in picpage:
         suc(p)
 
 
-def flt_quota_check(func:Callable[[requests.Response, Callable[...,None], Callable[...,None]], None]):
-    def _(r: requests.Response, suc:Callable[...,None], fail:Callable[...,None]) -> None:
-        if r.status_code == 600:  # tcp layer error
-            raise ConnectionFilterException(r._real_url)
-        elif r.status_code == 403:
+def flt_quota_check(func:Callable[[requests.Response, Callable[P,R]], R]):
+    def _(r: requests.Response, suc:Callable[P,R]) -> R:
+        if r.status_code == 403:
             raise KeyExpiredException(r._real_url)
         elif r.status_code == 509:
             raise QuotaExceededException(r._real_url, "HTTP 509 bandwidth limit exceeded")
@@ -172,27 +171,26 @@ def flt_quota_check(func:Callable[[requests.Response, Callable[...,None], Callab
         elif r.status_code == 503:
             raise ConnectionFilterException(r._real_url)
         else:
-            func(r, suc, fail)
+            return func(r, suc)
     return _
 
 
 def flt_imgurl_wrapper(ori:bool):
+    
     @flt_quota_check
-    def flt_imgurl(r: requests.Response, suc:Callable[...,None], fail:Callable[...,None], ori=ori):
+    def flt_imgurl(r: requests.Response, suc:Callable[P, R], ori=ori) -> R:
         # input per image page response
         # add (image url, reload url, filename) to queue if suc
         # return (errorcode, page_url) if fail
         if re.match('Invalid page', r.text):
-            return fail((ERR_IMAGE_RESAMPLED, r._real_url))
+            raise ImagePageInvalidException(r._real_url)
         
         _ = re.findall(r'src="([^"]+keystamp[^"]+)"', r.text)
         if not _:
             _ = re.findall(r'src="([^"]+)"\s+style="', r.text)
         if not _:
             raise ImagePageInfoParseException(r._real_url, "can't find image url in page")
-        picurl = util.htmlescape(_[0])
-        
-        
+        page_img_url = util.htmlescape(_[0])
         
         _ = re.findall(
             r'<\/a><\/div><div>(.*?) :: ?\d+ x \d+ ?(?::: ([0-9\/.]+ [M|K]?i?B))?<\/div>', r.text)
@@ -202,7 +200,7 @@ def flt_imgurl_wrapper(ori:bool):
         filesize = filesize or None
             
         if 'image.php' in filename:
-            _ = re.findall(r'n=(.+)', picurl)
+            _ = re.findall(r'n=(.+)', page_img_url)
             if not _:
                 raise ImagePageInfoParseException(r._real_url, "filename in image.php format but can't find n= in url")
             filename = _[0]
@@ -220,16 +218,16 @@ def flt_imgurl_wrapper(ori:bool):
         # http://exhentai.org/fullimg.php?gid=577354&page=2&key=af594b7cf3
         
         
-        fullurl = re.findall(
+        original_img_url = re.findall(
             r'class="mr".+<a href="(.+)"\s*>Download original', r.text)
         _ = re.findall(
             r'>Download original \d+ x \d+ ([\d.]+ [a-zA-Z]{2,})<\/a>', r.text)  # like 2.20MB
         ori_file_size = _[0] if _ else None
         
-        if fullurl:
-            fullurl = util.htmlescape(fullurl[0])
+        if original_img_url:
+            original_img_url = util.htmlescape(original_img_url[0])
         else:
-            fullurl = picurl
+            original_img_url = page_img_url
         _ = re.findall(r"return nl\('([a-zA-Z\d\-]+)'\)", r.text)
         if not _:
             raise ImagePageInfoParseException(r._real_url, "can't find js nl value in page")
@@ -238,32 +236,30 @@ def flt_imgurl_wrapper(ori:bool):
             r._real_url, "&" if "?" in r._real_url else "?", js_nl)
         if ori:
             # we will parse the 302 url to get original filename
-            return suc((fullurl, reload_url, filename, ori_file_size))
+            return suc((original_img_url, reload_url, filename, ori_file_size))
         else:
-            return suc((picurl, reload_url, filename, filesize))
+            return suc((page_img_url, reload_url, filename, filesize))
     return flt_imgurl
 
 
-def download_file_wrapper(dirpath):
-
+def download_file_wrapper():
     @flt_quota_check
-    def download_file(r:requests.Response, suc, fail, dirpath=dirpath):
+    def download_file(r:requests.Response, suc:Callable[P, R])->R:
         # input image/archive response
         # return (binary, url) if suc; return (errocode, url) if fail
         if r.status_code == 404:
-            return fail((ERR_HATH_NOT_FOUND, r._real_url, r.url))
+            raise ImageFileNotFoundException(r._real_url)
         p = RE_IMGHASH.findall(r.url)
         content_type = (r.headers.get('content-type') or '').split(';', 1)[0].strip().lower()
         original_hash = p[-1][0] if p and p[-1] else None
         # if multiple hash-size-h-w-type is found, use the last one
         # the first is original and the last is scaled
-        # _FakeReponse will be filtered in flt_quota_check
         if not r.content_length:
             raise ImageFileException(r._real_url, "zero content-length")
         if p and p[-1] and int(p[-1][1]) != r.content_length:
             raise ImageFileException(r._real_url, f"content-length mismatch (expected {p[-1][1]}, got {r.content_length})")
         if not hasattr(r, 'iter_content_cb'):
-            return fail((ERR_STREAM_NOT_IMPLEMENTED, r._real_url, r.url))
+            raise ImageFileStreamException(r._real_url, "response missing iter_content_cb for streaming download")
 
         # merge the iter_content iterator with our custom stream_cb
         def _yield(chunk_size=16384, _r=r):
@@ -276,11 +272,9 @@ def download_file_wrapper(dirpath):
                     _r.iter_content_cb(_)
                     yield _
             except (ConnectionError, SSLWantReadError):  # read timeout
-                fail((ERR_IMAGE_BROKEN, r._real_url, r.url))
-                raise DownloadAbortedException()
+                raise ImageFileStreamException(r._real_url, "connection error during streaming download")
             if length_read != r.content_length:
-                fail((ERR_IMAGE_BROKEN, r._real_url, r.url))
-                raise DownloadAbortedException()
+                raise ImageFileException(r._real_url, f"content-length mismatch after streaming download (expected {r.content_length}, got {length_read})")
 
         suc((_yield, r._real_url, r.url, content_type, original_hash))
 

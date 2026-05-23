@@ -5,6 +5,8 @@
 from typing import Protocol, Any, Dict, Optional
 from queue import Queue
 
+from .task import Task
+
 from .util.logger import Logger
 from .proxy import ProxyPool
 
@@ -19,7 +21,7 @@ class HostInterface(Protocol):
     config: Dict[str, Any]
     """Global runtime configuration."""
 
-    proxy: ProxyPool
+    proxy: Optional[ProxyPool]
     """Proxy configuration/pool."""
 
     headers: Dict[str, str]
@@ -37,7 +39,7 @@ class HostInterface(Protocol):
     last_task_guid: Optional[str]
     """Last processed task GUID."""
 
-    _all_tasks: Dict[str, Any]
+    _all_tasks: Dict[str, Task]
     """Dictionary of all tasks by GUID."""
 
     # Methods

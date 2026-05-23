@@ -1066,10 +1066,10 @@ class Task(object):
 
     def save_file(self, imgurl, redirect_url, binary_iter, content_type=None, original_hash=None):
         fpath = self.get_task_dir()
-        self._f_lock.acquire()
-        if not os.path.exists(fpath):
-            os.makedirs(fpath)
-        self._f_lock.release()
+        
+        with self._cnt_lock:
+            if not os.path.exists(fpath):
+                os.makedirs(fpath)
 
         if imgurl not in self.reload_map:
             return
@@ -1186,9 +1186,8 @@ class Task(object):
                 zipfile_target.write(full_path, _f_name, zipfile.ZIP_STORED)
 
         if remove:
-            self._f_lock.acquire()
-            shutil.rmtree(dpath)
-            self._f_lock.release()
+            with self._f_lock:
+                shutil.rmtree(dpath)
         return arc
 
     def from_dict(self, j):
