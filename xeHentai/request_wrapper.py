@@ -11,9 +11,10 @@ import random
 import re
 import time
 import urllib3
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+urllib3.util.ssl_.DEFAULT_CIPHERS += ':HIGH:!DH:!aNULL'
 
 def _is_509gif(content: str) -> bool:
     return content.find('hentai.org/img/509.gif') != -1
@@ -65,9 +66,9 @@ class HttpRequest(object):
                 if proxy:
                     f, proxy_control = proxy.proxied_request(self.session, wait=proxy_wait)
                 else:
-                    f = self.session.request
+                    f: Callable[..., requests.Response] = self.session.request
 
-                r: requests.Response = f(
+                r = f(
                     method,
                     current_url,
                     allow_redirects=False,
