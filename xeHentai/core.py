@@ -46,17 +46,25 @@ sys.path.pop(1)
 
 
 class xeHentai(HostInterface):
+    _TASK_CONFIG_KEYS = (
+        "dir", "download_ori", "ignored_errors", "rename_ori", "make_archive",
+        "delete_task_files", "jpn_title", "download_range", "download_timeout"
+    )
+
     def __init__(self):
         self.verstr = f"{__version__}{'-dev' if DEVELOPMENT else ''}"
         self.logger = logger.Logger()
         self.tasks: Queue[str] = Queue()  # for queueing, stores gid only
         self.last_task_guid = None
         self._all_tasks: dict[str,Task] = {}  # for saving states
-        self.cfg = {k: v for k, v in default_config.__dict__.items()
-                    if not k.startswith("_")}
+        _cfg = {k: v for k, v in default_config.__dict__.items()
+                if not k.startswith("_")}
         # note that ignored_errors are overwritten using val from custom config
-        self.cfg.update(
+        _cfg.update(
             {k: v for k, v in config.__dict__.items() if not k.startswith("_")})
+        self.config = _cfg
+        # backward compatibility for older code paths
+        self.cfg = self.config
         self.proxy = None
         self.cookies = {"nw": "1"}
         self.headers = {
@@ -134,42 +142,39 @@ class xeHentai(HostInterface):
         self._save_proxy_store(store)
 
     def update_config(self, **cfg_dict):
-        self.cfg.update({k: v for k, v in cfg_dict.items()
-                        if k in cfg_dict and k not in ('ignored_errors',)})
+        self.config.update({k: v for k, v in cfg_dict.items()
+                            if k not in ('ignored_errors',)})
         # merge ignored errors list
         if 'ignored_errors' in cfg_dict and cfg_dict['ignored_errors']:
-            self.cfg['ignored_errors'] = list(
-                set(self.cfg['ignored_errors'] + cfg_dict['ignored_errors']))
-        self.logger.set_level(logger.Logger.WARNING - self.cfg['log_verbose'])
-        self.logger.verbose("cfg %s" % self.cfg)
+            self.config['ignored_errors'] = list(
+                set(self.config['ignored_errors'] + cfg_dict['ignored_errors']))
+        self.logger.set_level(logger.Logger.WARNING - self.config['log_verbose'])
+        self.logger.verbose("cfg %s" % self.config)
         if 'proxy' in cfg_dict:
-            self._rebuild_proxy_pool(self.cfg['proxy'])
+            self._rebuild_proxy_pool(self.config['proxy'])
             self.logger.debug(i18n.PROXY_CANDIDATE_CNT %
                               (0 if not self.proxy else len(self.proxy.proxies)))
-        if cfg_dict['dir'] and not os.path.exists(cfg_dict['dir']):
+        if self.config['dir'] and not os.path.exists(self.config['dir']):
             try:
-                os.makedirs(cfg_dict['dir'])
+                os.makedirs(self.config['dir'])
             except OSError as ex:  # Python >2.5
-                self.logger.error(i18n.ERR_CANNOT_CREATE_DIR % cfg_dict['dir'])
-        if not self.rpc and self.cfg['rpc_port'] and self.cfg['rpc_interface']:
-            self.rpc = RPCServer(self, (self.cfg['rpc_interface'], int(self.cfg['rpc_port'])),
-                                 secret=None if 'rpc_secret' not in self.cfg else self.cfg['rpc_secret'],
+                self.logger.error(i18n.ERR_CANNOT_CREATE_DIR % self.config['dir'])
+        if not self.rpc and self.config['rpc_port'] and self.config['rpc_interface']:
+            self.rpc = RPCServer(self, (self.config['rpc_interface'], int(self.config['rpc_port'])),
+                                 secret=None if 'rpc_secret' not in self.config else self.config['rpc_secret'],
                                  logger=self.logger)
-            if not RE_LOCAL_ADDR.match(self.cfg['rpc_interface']) and \
-                    not self.cfg['rpc_secret']:
+            if not RE_LOCAL_ADDR.match(self.config['rpc_interface']) and \
+                    not self.config['rpc_secret']:
                 self.logger.warning(i18n.RPC_TOO_OPEN %
-                                    self.cfg['rpc_interface'])
+                                    self.config['rpc_interface'])
             self.rpc.start()
-        self.logger.set_logfile(self.cfg['log_path'])
+        self.logger.set_logfile(self.config['log_path'])
         return ERR_NO_ERROR, ""
 
     def add_task(self, url, **cfg_dict):
         url = url.strip()
-        cfg = {k: v for k, v in self.cfg.items() if k in (
-            "dir", "download_ori", "download_thread_cnt", "scan_thread_cnt",
-            "proxy_image", "proxy_image_only", "ignored_errors",
-            "rename_ori", "make_archive", "delete_task_files", "jpn_title", "download_range", "download_timeout")}
-        cfg.update(cfg_dict)
+        cfg = {k: self.config[k] for k in self._TASK_CONFIG_KEYS}
+        cfg.update({k: v for k, v in cfg_dict.items() if k in self._TASK_CONFIG_KEYS})
         if cfg['download_ori'] and not self.has_login:
             self.logger.warning(i18n.XEH_DOWNLOAD_ORI_NEED_LOGIN)
         t = Task(url, cfg)
@@ -273,7 +278,7 @@ class xeHentai(HostInterface):
         errors = []
         try:
             session_store.save_tasks(
-                {} if not self.cfg['save_tasks'] else
+                {} if not self.config['save_tasks'] else
                 {k: v.to_dict() for k, v in self._all_tasks.items()})
         except Exception as ex:
             errors.append(str(ex))

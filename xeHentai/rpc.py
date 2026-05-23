@@ -327,7 +327,7 @@ class xeHentaiRPCExtended(object):
     
     def update_config(self, **cfg_dict):
         cfg_dict = {k: v for k, v in cfg_dict.items() if not k.startswith('rpc_') and k not in ('urls',)}
-        if 'proxy' in cfg_dict:
+        if cfg_dict:
             self.xeH.update_config(**cfg_dict)
         return self.get_config()
            

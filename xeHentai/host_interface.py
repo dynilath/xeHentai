@@ -16,6 +16,9 @@ class HostInterface(Protocol):
     logger: Logger
     """Logger instance for logging messages."""
 
+    config: Dict[str, Any]
+    """Global runtime configuration."""
+
     proxy: ProxyPool
     """Proxy configuration/pool."""
 
