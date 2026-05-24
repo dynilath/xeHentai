@@ -7,6 +7,7 @@ import os
 import re
 import json
 import time
+import traceback
 import uuid
 import shutil
 import zipfile
@@ -15,6 +16,7 @@ from threading import RLock
 from dataclasses import dataclass, asdict, field
 
 import requests
+from .util.logger import Logger
 from . import util
 from . import reuse_index
 from .const import *
@@ -173,7 +175,10 @@ class Task(object):
     PRESCAN_STATUS_COMPLETE = 1
     PRESCAN_STATUS_COMPLETE_EXACT = 2
 
-    def __init__(self, url: str, cfgdict: Dict[str, Any]):
+    def __init__(self, url: str, cfgdict: Dict[str, Any], logger: Logger):
+        
+        self._logger = logger
+        
         # Original gallery URL.
         self.url: str = url
         if url:
@@ -267,6 +272,11 @@ class Task(object):
         self._cnt_lock: Any = RLock()
         # Lock for file-system writes and renames.
         self._f_lock: Any = RLock()
+
+    @property
+    def logger(self) -> Logger:
+        return self._logger
+    
 
     def cleanup(self, before_delete=False):
         if before_delete:
@@ -927,6 +937,8 @@ class Task(object):
         # if there is any problem in zip
         # prescan should have extracted it
 
+        self.page_q.queue.clear()  # Clear any pre-populated page URLs before scanning
+
         if os.path.exists(folder_path):
             scanning_folder = True
         else:
@@ -1108,6 +1120,7 @@ class Task(object):
                         raise TimeoutError("Download timed out")
                     f.write(binary)
         except Exception:
+            self.logger.warn("Failed to save file for fid %s:\n %s", fid, traceback.format_exc())
             os.remove(fn_tmp)
             return False
 

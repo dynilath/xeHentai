@@ -346,7 +346,13 @@ class TaskControl:
     @stage_retry_scope
     async def _download_img_async(self, img_url: str, task: Task, task_guid: str, req: HttpRequest):
 
+        download_retry = self._task_cfg(task, 'download_retry', 5)
+        download_timeout = self._task_cfg(task, 'download_timeout', 10)
+        
+        stream_retried = 0
+
         def download_image(x: tuple[Callable[[int, requests.Response], Generator], str, str, str, str]):
+            nonlocal download_retry, download_timeout, stream_retried
             # This callback is called for each image downloaded, with x containing download info
             # We use it to save the file and log the download
             saved = task.save_file(
@@ -355,15 +361,19 @@ class TaskControl:
                 binary_iter=x[0],
                 content_type=x[3],
                 original_hash=x[4],
-                timeout_time = time.time() + self._task_cfg(task, 'download_timeout', 10))
+                timeout_time=time.time() + download_timeout)
             reload_url = task.get_reload_url(img_url)
+            result = DownloadResult(img_url=img_url, reload_url=reload_url)
+
             if saved:
-                return DownloadResult(img_url=img_url, reload_url=reload_url)
-            raise StageRetry(
-                'save_file returned False',
-                delay=1.0,
-                result=DownloadResult(img_url=img_url, reload_url=reload_url),
-            )
+                return result
+            
+            if stream_retried < download_retry:
+                self.logger.warning(f"{task_guid}: Stream download failed for {img_url}, retrying... ({stream_retried + 1}/{download_retry})")
+                stream_retried += 1
+                raise StageRetry('stream download failed, retrying', delay=1.0, result=result)
+            
+            raise ScanDownloadRetry('failed to save downloaded image after retries, retry from scan', failcode=task.failcode, result=result)
 
         try:
             do_proxy_image = self._task_cfg(
@@ -372,10 +382,9 @@ class TaskControl:
             def work():
                 return req.request("GET",
                                    url=img_url,
-                                   retry=self._task_cfg(
-                                       task, 'download_retry', 5),
+                                   retry=self._task_cfg(task, 'page_retry', 3),
                                    timeout=self._task_cfg(
-                                       task, 'download_timeout', 10),
+                                       task, 'page_timeout', 10),
                                    proxy=self._host.proxy if do_proxy_image else None,
                                    proxy_wait=False,
                                    stream=True)
@@ -392,9 +401,6 @@ class TaskControl:
 
     async def _scan_download_async(self, task: Task, task_guid: str, req: HttpRequest):
         """Combined async pipeline for scanning image pages and downloading images."""
-
-        self.logger.debug("%s: page_q size before scan: %d" %
-                          (task_guid, task.page_q.qsize()))
 
         page_urls = []
         while not task.page_q.empty():
@@ -449,6 +455,7 @@ class TaskControl:
 
         try:
             while running:
+                log_task_state('pipeline_wait_begin')
                 done, _ = await asyncio.wait(
                     running,
                     return_when=asyncio.FIRST_COMPLETED,
@@ -456,6 +463,7 @@ class TaskControl:
                 for fut in done:
                     running.discard(fut)
                     await fut
+                log_task_state('pipeline_wait_end')
                 schedule_next()
         except asyncio.CancelledError:
             for fut in running:
@@ -599,6 +607,8 @@ class TaskControl:
                     if task:
                         task.state = TASK_STATE_FAILED
                         task.failcode = ex.failcode or task.failcode
+                    self.logger.error(
+                        f"{task_guid}: unexpected control flow exception: {traceback.format_exc()}")
                     self.logger.error(i18n.TASK_ERROR % (
                         task_guid, ex.reason or 'unexpected task control flow'))
                     return

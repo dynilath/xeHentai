@@ -33,11 +33,8 @@ sys.path.pop(1)
 
 class xeHentai(HostInterface):
     _TASK_CONFIG_KEYS = (
-        "dir", "download_ori", "ignored_errors", "rename_ori", "make_archive",
-        "delete_task_files", "jpn_title", "download_range",
-        "page_interval",
-        "page_retry", "page_timeout", "download_retry", "download_timeout",
-        "pipeline_inflight_pages"
+        "download_ori", "rename_ori", "make_archive",
+        "delete_task_files", "jpn_title", "download_range"
     )
 
     def __init__(self):
@@ -161,7 +158,7 @@ class xeHentai(HostInterface):
         cfg.update({k: v for k, v in cfg_dict.items() if k in self._TASK_CONFIG_KEYS})
         if cfg['download_ori'] and not self.has_login:
             self.logger.warning(i18n.XEH_DOWNLOAD_ORI_NEED_LOGIN)
-        t = Task(url, cfg)
+        t = Task(url, cfg, self.logger)
 
         # check if task on same url already exists
         # well, you may need to download from a link and save images in different zip files
@@ -309,7 +306,7 @@ class xeHentai(HostInterface):
             return ERR_SAVE_SESSION_FAILED, str(ex)
 
         for _ in tasks_payload.values():
-            _t = Task("", {}).from_dict(_)
+            _t = Task("", {}, self.logger).from_dict(_)
             if _t.meta.filelist:
                 _t.scan_downloaded()
                 # _t.meta['has_ori'] and task.config['download_ori'])
