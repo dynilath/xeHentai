@@ -233,40 +233,6 @@ def flt_imgurl_wrapper(ori:bool):
     return flt_imgurl
 
 
-def download_file_wrapper():
-    @flt_quota_check
-    def download_file(r:requests.Response, suc:Callable[P, R])->R:
-        # input image/archive response
-        # return (binary, url) if suc; return (errocode, url) if fail
-        if r.status_code == 404:
-            raise ImageFileNotFoundException(r._real_url)
-        p = RE_IMGHASH.findall(r.url)
-        content_type = (r.headers.get('content-type') or '').split(';', 1)[0].strip().lower()
-        original_hash = p[-1][0] if p and p[-1] else None
-        # if multiple hash-size-h-w-type is found, use the last one
-        # the first is original and the last is scaled
-        if not r.content_length:
-            raise ImageFileException(r._real_url, "zero content-length")
-        if p and p[-1] and int(p[-1][1]) != r.content_length:
-            raise ImageFileException(r._real_url, f"content-length mismatch (expected {p[-1][1]}, got {r.content_length})")
-
-        # merge the iter_content iterator with our custom stream_cb
-        def _yield(chunk_size=16384, _r=r):
-            length_read = 0
-            try:
-                for _ in _r.iter_content(chunk_size):
-                    length_read += len(_)
-                    yield _
-            except requests.RequestException as ex: 
-                raise DownloadConnectionException(r._real_url, str(ex))
-            if length_read != r.content_length:
-                raise DownloadLengthMismatchException(r._real_url, r.content_length, length_read)
-
-        return suc((_yield, r._real_url, r.url, content_type, original_hash))
-
-    return download_file
-
-
 def reset_quota(r, suc, fail):
     # reset quota response
     # reset quota if suc; finish task if fail

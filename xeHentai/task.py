@@ -241,9 +241,7 @@ class Task(object):
         self._flist_done: Set[int] = set()
         
         # Lock for counters/state transitions.
-        self._cnt_lock: Any = RLock()
-        # Lock for file-system writes and renames.
-        self._f_lock: Any = RLock()
+        self._cnt_lock: RLock = RLock()
 
     @property
     def logger(self) -> Logger:
@@ -328,27 +326,9 @@ class Task(object):
         self.meta.select_display_title(bool(self.config.get('jpn_title')))
 
 
-    # def guess_ori(self):
-    #     # guess if this gallery has resampled files depending on some sample hashes
-    #     # return True if it's ori
-    #     if 'sample_hash' not in self.meta:
-    #         return
-    #     all_keys = map(lambda x:x[:10], self.meta['filelist'].keys())
-    #     for h in self.meta['sample_hash']:
-    #         if h not in all_keys:
-    #             self.has_ori = True
-    #             break
-    #     del self.meta['sample_hash']
-
     def base_url(self):
         return re.findall(RESTR_SITE, self.url)[0]
 
-    # def get_picpage_url(self, pichash):
-    #     # if file resized, this url not works
-    #     # http://%s.org/s/hash_s/gid-picid'
-    #     return "%s/s/%s/%s-%s" % (
-    #         self.base_url(), pichash[:10], self.gid, self.meta['filelist'][pichash][0]
-    #     )
 
     def set_fid_done(self, fid):
         with self._cnt_lock:
@@ -356,9 +336,10 @@ class Task(object):
             self.meta.finished = len(self._flist_done)
 
     def _build_saving_file_name(self, fid:str, ext):
-        return fid.zfill(len(str(self.meta.total))) + ext
+        return f"{fid.zfill(len(str(self.meta.total)))}{ext}"
 
     def _content_type_to_ext(self, content_type):
+        """Map HTTP content type to file extension, result contains leading dot."""
         content_type = (content_type or '').strip().lower()
         content_type_map = {
             'image/jpeg': '.jpg',
@@ -615,7 +596,8 @@ class Task(object):
                                       accepts match regardless of fid_page_hash_map presence.
         
         Returns:
-            (bool, archive_path or None): (True, path) if exact match found, (False, None) otherwise.
+            (bool, archive_path or None): (True, path) if exact match found, (False, None) for 
+                                          no match, (False, path) for non-exact match.
         """
         # fpath requires title
         if not self.meta.has_title():
@@ -672,6 +654,27 @@ class Task(object):
             except Exception:
                 return False, None
         
+        def _reuse_not_exact_zip(arc_path):
+            """Extract files from an existing archive if it matches the current task's gid+hash.
+            This just extracts files, it does not check file integrity or update metadata.
+            """
+            task_dir = self.get_task_dir()
+            if not os.path.exists(task_dir):
+                os.makedirs(task_dir)
+                
+            with zipfile.ZipFile(arc_path, 'r') as zf:
+                for member in zf.namelist():
+                    if member.endswith('/'):
+                        continue
+                    
+                    member_path = os.path.join(task_dir, member)
+                    if os.path.exists(member_path):
+                        os.remove(member_path)
+                    with zf.open(member, 'r') as src, open(member_path, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+                        
+            os.remove(arc_path)
+        
         current_arc_abs = os.path.abspath(archive_path)
         
         # Check current task directory zip
@@ -681,6 +684,8 @@ class Task(object):
                     is_exact, metadata = _check_exact_match(current_zip)
                     if is_exact:
                         return True, archive_path
+                _reuse_not_exact_zip(archive_path)
+                return False, archive_path
             except zipfile.BadZipFile:
                 try:
                     os.remove(archive_path)
@@ -697,77 +702,13 @@ class Task(object):
                         is_exact, metadata = _check_exact_match(gid_zip)
                         if is_exact:
                             return True, gid_arc
+                    _reuse_not_exact_zip(gid_arc)
+                    return False, gid_arc
                 except zipfile.BadZipFile:
                     pass
         
         return False, None
     
-
-    def save_file(self, 
-                  imgurl:str, 
-                  redirect_url:str, 
-                  binary_iter: Callable[[int, requests.Response], Generator], 
-                  content_type:str,
-                  original_hash:str,
-                  timeout_time:float):
-        fpath = self.get_task_dir()
-        
-        
-        with self._cnt_lock:
-            if not os.path.exists(fpath):
-                os.makedirs(fpath)
-
-        if imgurl not in self.reload_map:
-            return
-
-        pageurl, fname = self.reload_map[imgurl]
-        _, fid = RE_GALLERY.findall(pageurl)[0]
-        ext = self._content_type_to_ext(content_type)
-        if ext:
-            fname = self._build_saving_file_name(fid, ext)
-            self.reload_map[imgurl][1] = fname
-
-        # if a same file exists
-        # assuming that file is downloaded by other means
-        # for example, another instance of xehentai
-        # or user just downloaded herself, by dragging from browser
-
-        fn = os.path.join(fpath, fname)
-        if os.path.exists(fn):
-            os.remove(fn)
-
-        # create a femp file first
-        # we don't need _f_lock because this will not be in a sequence
-        # and we can't do that otherwise we are breaking the multi threading
-        fn_tmp = os.path.join(fpath, ".%s.xeh" % fname)
-        try:
-            with open(fn_tmp, "wb") as f:
-                for binary in binary_iter():
-                    if time.time() > timeout_time:
-                        raise TimeoutError("Download timed out")
-                    f.write(binary)
-        except Exception:
-            self.logger.warn("Failed to save file for fid %s:\n %s", fid, traceback.format_exc())
-            os.remove(fn_tmp)
-            return False
-
-        with self._f_lock:
-            os.rename(fn_tmp, fn)
-            self.set_fid_done(fid)
-            
-            fhash = original_hash[0:10]
-            if fhash in self.dumplicated_file_map:
-                for info in self.dumplicated_file_map[fhash]:
-                    # if a file download is interrupted, it will appear in self.dumplicated_file_map as well
-                    if int(info.fid) == int(fid):
-                        continue
-                    rep_name = self._build_saving_file_name(info.fid, ext)
-                    fn_rep = os.path.join(fpath, rep_name)
-                    if not fn == fn_rep:
-                        shutil.copyfile(fn, fn_rep)
-                        self.set_fid_done(info.fid)
-                del self.dumplicated_file_map[fhash]
-        return True
 
     def get_task_dir(self) -> str:
         """
@@ -789,6 +730,65 @@ class Task(object):
             # fallback for unknown/non-numeric id
             return os.path.join(self.config.get("dir"), f"{gallery_id} - {util.legalpath(self.meta.title)}")
 
+
+    def save_image_response_content(self, res: requests.Response, img_url:str) -> str:
+        """Save the content of a response to the appropriate file path based on the image URL and fid.
+
+        Args:
+            res (requests.Response): The HTTP response containing the image content and headers.
+            img_url (str): The URL of the image, used to look up the reload URL and file name from the reload_map.
+            fid (str): The file ID associated with the image, used to mark it as done after saving.
+
+        Returns:
+            str: The file path where the image was saved.
+        """
+
+        content = res.content
+        content_type = res.headers.get('Content-Type', '')
+        
+        fpath = self.get_task_dir()
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        
+        pageurl, fname = self.reload_map[img_url]
+        _, fid = RE_GALLERY.findall(pageurl)[0]
+        ext = self._content_type_to_ext(content_type)
+        if ext:
+            fname = self._build_saving_file_name(fid, ext)
+            self.reload_map[img_url][1] = fname
+            
+        fn = os.path.join(fpath, fname)
+        fn_tmp = os.path.join(fpath, ".%s.xeh" % fname)
+        
+        try:
+            with open(fn_tmp, 'wb+') as f:
+                f.write(content)
+            if os.path.exists(fn):
+                os.remove(fn)
+            os.rename(fn_tmp, fn)
+        except Exception:
+            self.logger.warn("Failed to save file for fid %s:\n %s", fid, traceback.format_exc())
+            os.remove(fn_tmp)
+            raise
+            
+        self.set_fid_done(fid)
+        
+        page_hash = self.fid_2_page_hash_map.get(fid)
+
+        if page_hash in self.dumplicated_file_map:
+            for info in self.dumplicated_file_map[page_hash]:
+                if int(info.fid) == int(fid):
+                    continue
+                rep_name = self._build_saving_file_name(info.fid, ext)
+                fn_rep = os.path.join(fpath, rep_name)
+                if not fn == fn_rep:
+                    shutil.copyfile(fn, fn_rep)
+                    self.set_fid_done(info.fid)
+            del self.dumplicated_file_map[page_hash]
+            
+        return fn
+
+
     def make_archive(self, remove=True):
         dpath = self.get_task_dir()
         arc = "%s.zip" % dpath
@@ -796,7 +796,6 @@ class Task(object):
             # [s]when truncated images not exist, the zip file is considered fully downloaded[\s]
             # [s]but tags still need  update[\s]
             # in fact you can not edit the comment without rezip files, just leave it
-            nochange = True
             with zipfile.ZipFile(arc, 'r') as zipfile_target:
                 if zipfile_target.comment == self.encode_meta():
                     return arc
@@ -806,8 +805,7 @@ class Task(object):
                 zipfile_target.comment = self.encode_meta()
             if remove:
                 if os.path.exists(dpath):
-                    with self._f_lock:
-                        shutil.rmtree(dpath)
+                    shutil.rmtree(dpath)
                     
             return arc
 
@@ -823,9 +821,9 @@ class Task(object):
 
         if remove:
             if os.path.exists(dpath):
-                with self._f_lock:
-                    shutil.rmtree(dpath)
+                shutil.rmtree(dpath)
         return arc
+
 
     def from_dict(self, j, core_config=None):
         for k in self.__dict__:
@@ -860,6 +858,7 @@ class Task(object):
             else:
                 setattr(self, k, j[k])
         return self
+
 
     def to_dict(self):
         d = dict({k: v for k, v in self.__dict__.items()

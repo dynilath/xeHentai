@@ -23,7 +23,7 @@ from .host_interface import HostInterface
 from .i18n import i18n
 from .task import DumplicatedFileInfo, Task
 from .request_wrapper import HttpRequest
-from .exceptions import FilterException, ImagePageInfoParseException
+from .exceptions import FilterException, ImageFileNotFoundException, ImagePageInfoParseException
 from .exceptions import map_exception_policy
 from .stage_flow import StageAction
 from .stage_flow import GetMetaResult, ScanPageResult, ScanImageResult, DownloadResult
@@ -325,14 +325,14 @@ class TaskControl:
                         existed_file_name=other_file_name,
                     ))
                 
-                raise ScanDownloadSkip("file is dumplicated with another page, skip scan and download", result=ScanImageResult(
+                raise ScanDownloadSkip(i18n.CF_SCANDOWNLOADSKIP_DUPLICATE, result=ScanImageResult(
                     fid=unpad_fid, page_url=page_url, reload_url=reload_url))
                 
             # STEP 2: Check if the file for this image URL already exists with correct hash
             # Might be downloaded restored from previous runs, or reuse other downloaded archives with same file (hash) but different URLs
             if check_file(expected, file_hash):
                 task.set_fid_done(unpad_fid)
-                raise ScanDownloadSkip("file already exists with correct hash, skip scan and download", result=ScanImageResult(
+                raise ScanDownloadSkip(i18n.CF_SCANDOWNLOADSKIP_EXISTING, result=ScanImageResult(
                     fid=unpad_fid, page_url=page_url, reload_url=reload_url))
             
             # STEP 3: New file that needs to be downloaded, add to reload_map for later download stage
@@ -362,58 +362,33 @@ class TaskControl:
     @stage_retry_skip_scope
     async def _download_img_async(self, img_url: str, task: Task, task_guid: str, req: HttpRequest):
 
-        download_retry = task.config.get('download_retry', 5)
-        download_timeout = task.config.get('download_timeout', 10)
-        
-        stream_retried = 0
-
-        def download_image(x: tuple[Callable[[int, requests.Response], Generator], str, str, str, str]):
-            nonlocal download_retry, download_timeout, stream_retried
-            # This callback is called for each image downloaded, with x containing download info
-            # We use it to save the file and log the download
-            saved = task.save_file(
-                imgurl=x[1],
-                redirect_url=x[2],
-                binary_iter=x[0],
-                content_type=x[3],
-                original_hash=x[4],
-                timeout_time=time.time() + download_timeout)
-            reload_url = task.reload_map[img_url][0]
-            result = DownloadResult(img_url=img_url, reload_url=reload_url)
-
-            if saved:
-                return result
-            
-            if stream_retried < download_retry:
-                self.logger.warning(f"{task_guid}: Stream download failed for {img_url}, retrying... ({stream_retried + 1}/{download_retry})")
-                stream_retried += 1
-                raise StageRetry('stream download failed, retrying', delay=1.0, result=result)
-            
-            raise ScanDownloadRetry('failed to save downloaded image after retries, retry from scan', failcode=task.failcode, result=result)
+        result = DownloadResult(img_url=img_url, reload_url=task.reload_map[img_url][0])
 
         try:
             do_proxy_image = task.config.get('proxy_image_only') or task.config.get('proxy_image')
 
             def work():
-                return req.request("GET",
+                res = req.request("GET",
                                    url=img_url,
-                                   retry=task.config.get('page_retry'),
-                                   timeout=task.config.get('page_timeout'),
+                                   retry=task.config.get('download_retry'),
+                                   timeout=task.config.get('download_timeout'),
                                    proxy=self._host.proxy if do_proxy_image else None,
-                                   proxy_wait=False,
-                                   stream=True)
-            r = await self._download_scheduler.submit(work)
+                                   proxy_wait=False)
+                
+                if res.status_code != 200:
+                    raise ImageFileNotFoundException(res._real_url)
+                
+                return task.save_image_response_content(res, img_url)
+                
+            await self._download_scheduler.submit(work)
 
-            filter = filters.download_file_wrapper()
-            return filter(r, suc=download_image)
+            return result
         except Exception as ex:
-            result = DownloadResult(
-                img_url=img_url, reload_url=task.reload_map[img_url][0])
             self._raise_mapped_stage_exception('download_img', task, ex,
                                                default_code=task.failcode,
                                                result=result)
 
-    async def _image_download_async(self, task: Task, task_guid: str, req: HttpRequest):
+    async def _image_scan_download_async(self, task: Task, task_guid: str, req: HttpRequest):
         """Combined async pipeline for scanning image pages and downloading images."""
 
         page_urls = []
@@ -449,7 +424,8 @@ class TaskControl:
                     log_task_state('img_downloaded')
                     return
                 except ScanDownloadSkip as ex:
-                    log_task_state('task_skipped')
+                    self.logger.info(i18n.DF_FILE_DOWNLOADED_SKIPPED.format(
+                        task_guid, ex.result.fid, ex.reason))
                     return
                 except ScanDownloadRetry as ex:
                     log_task_state('scan_download_retry')
@@ -472,7 +448,6 @@ class TaskControl:
 
         try:
             while running:
-                log_task_state('pipeline_wait_begin')
                 done, _ = await asyncio.wait(
                     running,
                     return_when=asyncio.FIRST_COMPLETED,
@@ -480,7 +455,6 @@ class TaskControl:
                 for fut in done:
                     running.discard(fut)
                     await fut
-                log_task_state('pipeline_wait_end')
                 schedule_next()
         except asyncio.CancelledError:
             for fut in running:
@@ -561,7 +535,7 @@ class TaskControl:
             self.logger.info(i18n.TASK_WILL_DOWNLOAD_CNT % (
                 task_guid, task.meta.total - task.meta.finished,
                 task.meta.total))
-            await self._image_download_async(task, task_guid, req)
+            await self._image_scan_download_async(task, task_guid, req)
             self._update_task_reuse_index(task)
             if self._task_should_abort(task):
                 raise TaskAbort('task aborted before make_archive')
