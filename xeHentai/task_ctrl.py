@@ -4,33 +4,33 @@ import shutil
 import time
 import traceback
 import asyncio
-from types import SimpleNamespace
+from types import CoroutineType, SimpleNamespace
 from collections import deque
 from functools import wraps
 
 from queue import Empty, Queue
-from typing import Callable, Generator, Optional
+from typing import Any, Callable, Generator, List, Optional
 
 import requests
 
 from .scheduler import Scheduler
 from . import filters, reuse_index, util
-from .const import ERR_CANNOT_MAKE_ARCHIVE, ERR_GALLERY_REMOVED, ERR_IP_BANNED, ERR_ONLY_VISIBLE_EXH
+from .const import ERR_CANNOT_MAKE_ARCHIVE, ERR_GALLERY_REMOVED, ERR_IP_BANNED, ERR_ONLY_VISIBLE_EXH, RE_IMGHASH
 from .const import TASK_STATE_FAILED, TASK_STATE_FINISHED, TASK_STATE_GET_META, TASK_STATE_MAKE_ARCHIVE, TASK_STATE_PAUSED, TASK_STATE_SCAN_IMG, TASK_STATE_SCAN_PAGE, TASK_STATE_WAITING, XEH_STATE_FULL_EXIT
 from .const import RE_GALLERY
 from .util.checkfile import extract_img_url_info, check_file
 from .host_interface import HostInterface
 from .i18n import i18n
-from .task import Task
+from .task import DumplicatedFileInfo, Task
 from .request_wrapper import HttpRequest
-from .exceptions import FilterException
+from .exceptions import FilterException, ImagePageInfoParseException
 from .exceptions import map_exception_policy
 from .stage_flow import StageAction
 from .stage_flow import GetMetaResult, ScanPageResult, ScanImageResult, DownloadResult
-from .stage_flow import TaskControlFlow, TaskReschedule, StageRetry, TaskFailed, TaskFinished, TaskAbort, TaskSkip, ScanDownloadRetry
+from .stage_flow import TaskControlFlow, TaskReschedule, StageRetry, TaskFailed, TaskFinished, TaskAbort, StageSkip, ScanDownloadRetry, ScanDownloadSkip
 
 
-def stage_retry_scope(func):
+def stage_retry_skip_scope(func):
     """Retry stage method when StageRetry is raised."""
 
     @wraps(func)
@@ -41,6 +41,8 @@ def stage_retry_scope(func):
             except StageRetry as ex:
                 await asyncio.sleep(ex.delay or 1.0)
                 continue
+            except StageSkip:
+                break
 
     return _wrapped
 
@@ -95,7 +97,7 @@ class TaskControl:
         policy = map_exception_policy(
             stage,
             ex,
-            ignored_errors=task.config.get('ignored_errors') or [],
+            ignored_errors=task.config.get('ignored_errors'),
         )
         if isinstance(ex, FilterException):
             failcode = ex.code
@@ -110,7 +112,7 @@ class TaskControl:
             raise ScanDownloadRetry(
                 reason, delay=policy.delay, failcode=failcode, result=result)
         if policy.action == StageAction.SKIP:
-            raise TaskSkip(reason, delay=policy.delay,
+            raise StageSkip(reason, delay=policy.delay,
                            failcode=failcode, result=result)
         if policy.action == StageAction.ABORT:
             raise TaskAbort(reason, delay=policy.delay,
@@ -128,11 +130,6 @@ class TaskControl:
             result=result,
         )
 
-    def _task_cfg(self, task: Task, key: str, default=None):
-        if key in task.config:
-            return task.config[key]
-        return self._host.config.get(key, default)
-
     def _handle_exact_match_found(self, task: Task, task_guid: str, found_archive: str) -> None:
         """Handle found exact matching archive: relocate, update zip comment, and finish task."""
         current_arc = "%s.zip" % task.get_task_dir()
@@ -143,7 +140,7 @@ class TaskControl:
             shutil.move(found_archive, current_arc)
         self.logger.info(i18n.DF_FULLY_MATCHED % (task.guid, found_archive))
         try:
-            arc = task.make_archive(remove=False)
+            arc = task.make_archive()
             self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED % (task.guid, arc))
         except Exception as ex:
             self.logger.error(i18n.TASK_ERROR %
@@ -188,7 +185,7 @@ class TaskControl:
         # No exact match found, continue to SCAN_PAGE
         pass
 
-    @stage_retry_scope
+    @stage_retry_skip_scope
     async def _get_meta_async(self, task: Task, task_guid: str, req: HttpRequest):
         """Async version of Stage: Fetch gallery metadata from E-H site."""
 
@@ -197,9 +194,8 @@ class TaskControl:
             def work():
                 return req.request("GET", task.url,
                                    proxy=self._host.proxy,
-                                   retry=self._task_cfg(task, 'page_retry', 3),
-                                   timeout=self._task_cfg(
-                                       task, 'page_timeout', 10),
+                                   retry=task.config.get('page_retry'),
+                                   timeout=task.config.get('page_timeout'),
                                    proxy_wait=False)
 
             r = await self._scan_scheduler.submit(work)
@@ -220,38 +216,27 @@ class TaskControl:
             self.logger.error(i18n.c(ERR_IP_BANNED) % r)
             raise TaskFailed(i18n.c(ERR_IP_BANNED), failcode=ERR_IP_BANNED)
 
-        if task.config['download_range']:
-            task_total = task.meta.total
-            for dRange in task.config['download_range']:
-                rg = range(dRange[0], dRange[1] + 1 if dRange[1]
-                           < task_total else task_total + 1)
-                task.download_range.extend(rg)
-
         return GetMetaResult()
 
-    @stage_retry_scope
+    @stage_retry_skip_scope
     async def _scan_page_async(self, task: Task, task_guid: str, req: HttpRequest):
 
         temp_fid_2_page_url_map = {}
 
         def page_scan_success(x: tuple[str, str, str]):
-            # This callback is called for each page scanned, with x containing page info
-            # We use it to populate temp_fid_2_page_url_map for later checks
-            task.queue_wrapper(temp_fid_2_page_url_map.setdefault, img_tuble=x)
+            page_url, unpad_fid, original_file_name = x
+            temp_fid_2_page_url_map[unpad_fid] = page_url
 
         page_count = 0
         try:
-            do_proxy_page = not self._task_cfg(task, 'proxy_image_only', False)
-
-            awaitables = []
+            do_proxy_page = not task.config.get('proxy_image_only')
+            awaitables:List[CoroutineType[Any, Any, requests.Response]] = []
             for x in range(0, int(math.ceil(1.0 * task.meta.total / int(task.meta.thumbnail_cnt)))):
                 def work(page_num=x):
                     return req.request("GET",
                                        "%s/?p=%d" % (task.url, page_num),
-                                       retry=self._task_cfg(
-                                           task, 'page_retry', 3),
-                                       timeout=self._task_cfg(
-                                           task, 'page_timeout', 10),
+                                       retry=task.config.get('page_retry'),
+                                       timeout=task.config.get('page_timeout'),
                                        proxy=self._host.proxy if do_proxy_page else None,
                                        proxy_wait=False)
                 awaitables.append(self._scan_scheduler.submit(work))
@@ -264,10 +249,10 @@ class TaskControl:
             self._raise_mapped_stage_exception(
                 'scan_page', task, ex, default_code=task.failcode)
 
-        if task.state == TASK_STATE_FAILED:
-            raise TaskFailed(
-                'task already failed during scan_page', failcode=task.failcode)
-
+        for fid, page_url in temp_fid_2_page_url_map.items():
+            page_hash = RE_GALLERY.findall(page_url)[0][0]
+            task.fid_2_page_hash_map.setdefault(fid, page_hash)
+            
         # Phase 2: After scanning pages, try exact match again (now fid_page_hash_map is built from scan)
         is_exact_match, found_archive = task.exact_downloaded_exits(
             require_fid_page_hash_map=False)
@@ -278,60 +263,91 @@ class TaskControl:
             raise TaskFinished('phase2 exact-match completed',
                                result=ScanPageResult(page_count=page_count))
 
-        # No exact match, check if all files are already downloaded
-        if task.scan_downloaded(temp_fid_2_page_url_map):
-            # All files found, update archive and finish
-            try:
-                arc = task.make_archive(remove=False)
-                self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED %
-                                 (task.guid, arc))
-            except Exception as ex:
-                self.logger.error(i18n.TASK_ERROR %
-                                  (task.guid, traceback.format_exc()))
-            self._update_task_reuse_index(task)
-            raise TaskFinished('all files already downloaded',
-                               result=ScanPageResult(page_count=page_count))
+        
+        # start rebuild page queue for later stages
+        task.page_q.queue.clear()
+        task_dir = task.get_task_dir()
+        for fid, page_url in temp_fid_2_page_url_map.items():
+            expected_file_name = task.fid_2_file_name_map.get(fid)
+            expected_file_hash = task.fid_2_img_hash_map.get(fid)
+            if expected_file_hash and expected_file_name:
+                expected_path = os.path.join(task_dir, expected_file_name)
+                if check_file(expected_path, expected_file_hash):
+                    # file exists and matches expected hash, skip adding to page queue
+                    task.set_fid_done(fid)
+                    continue
+            
+            # file not found or hash mismatch, add to page queue for scanning and downloading
+            task.page_q.put(page_url)
 
         return ScanPageResult(page_count=page_count)
 
-    @stage_retry_scope
+    @stage_retry_skip_scope
     async def _scan_img_async(self, page_url: str, task: Task, task_guid: str, req: HttpRequest):
 
-        def img_scan_success(x: tuple[str, str, str, str]):
+        _ = RE_GALLERY.findall(page_url)
+        if not _:
+            raise ValueError(f"failed to parse page URL: <{page_url}>")
+        page_hash:str = _[0][0]
+        unpad_fid:str = _[0][1]
+
+        def img_scan_success(x: List[str]):
             # This callback is called for each image page scanned, with x containing image info
             # We use it to populate task's reload_map and page_q for later downloading
-            image_url, reload_url, fname, filesize = x
+            
+            unpad_fid, file_hash, file_ext, image_url, reload_url = x
+            
+            expected_saved = task._build_saving_file_name(unpad_fid, file_ext)
+            expected = os.path.join(task.get_task_dir(), expected_saved)
+            
+            task.fid_2_img_hash_map[unpad_fid] = file_hash
+            task.fid_2_file_name_map[unpad_fid] = expected_saved
+            
+            # STEP 1: Check if this image URL has been scanned before (dumplicated with another page)
+            if image_url in task.reload_map:
+                # 已经存在，说明之前扫描过这个图片了
+                other_reload_url, other_file_name = task.reload_map[image_url]
 
-            this_fid: str = RE_GALLERY.findall(reload_url)[0][1]
-            original_file_name: str = task.fid_2_original_file_name_map[this_fid]
-            ext: str = os.path.splitext(original_file_name)[
-                1] if task.config['download_ori'] else os.path.splitext(fname)[1]
-            real_file_name = task._set_final_file_ext(
-                this_fid, ext or '.jpg')
+                _, other_unpad_fid = RE_GALLERY.findall(other_reload_url)[0]
 
-            info = extract_img_url_info(image_url)
-
-            task.set_file_size(this_fid, filesize)
-
-            folder_path = task.get_task_dir()
-            target_file_path = os.path.join(folder_path, real_file_name)
-            if check_file(target_file_path, info):
-                task.set_fid_done(this_fid)
-                raise TaskSkip(result=ScanImageResult(
-                    page_url=page_url, reload_url=reload_url))
-
+                # 先检查文件是否存在
+                other = os.path.join(task.get_task_dir(), other_file_name)
+                if os.path.exists(other):
+                    # 文件存在，说明之前下载过了，设置这个文件下载完成
+                    shutil.copy(other, expected)
+                    task.set_fid_done(unpad_fid)
+                else:
+                    # 文件不存在，可能还没下载，添加到 dumpicated map
+                    task.dumplicated_file_map.setdefault(page_hash, []).append(DumplicatedFileInfo(
+                        fid=unpad_fid,
+                        existed_fid=other_unpad_fid,
+                        file_name=expected_saved,
+                        existed_file_name=other_file_name,
+                    ))
+                
+                raise ScanDownloadSkip("file is dumplicated with another page, skip scan and download", result=ScanImageResult(
+                    fid=unpad_fid, page_url=page_url, reload_url=reload_url))
+                
+            # STEP 2: Check if the file for this image URL already exists with correct hash
+            # Might be downloaded restored from previous runs, or reuse other downloaded archives with same file (hash) but different URLs
+            if check_file(expected, file_hash):
+                task.set_fid_done(unpad_fid)
+                raise ScanDownloadSkip("file already exists with correct hash, skip scan and download", result=ScanImageResult(
+                    fid=unpad_fid, page_url=page_url, reload_url=reload_url))
+            
+            # STEP 3: New file that needs to be downloaded, add to reload_map for later download stage
             task.reload_map.setdefault(
-                image_url, [reload_url, real_file_name])
-            return ScanImageResult(page_url=page_url, img_url=image_url, reload_url=reload_url)
+                image_url, [reload_url, expected_saved])
+            return ScanImageResult(fid=unpad_fid, page_url=page_url, img_url=image_url, reload_url=reload_url)
+                
 
         try:
-            do_proxy_scan = not self._task_cfg(task, 'proxy_image_only', False)
+            do_proxy_scan = not task.config.get('proxy_image_only')
 
             def work():
                 return req.request("GET", page_url,
-                                   retry=self._task_cfg(task, 'page_retry', 3),
-                                   timeout=self._task_cfg(
-                                       task, 'page_timeout', 10),
+                                   retry=task.config.get('page_retry'),
+                                   timeout=task.config.get('page_timeout'),
                                    proxy=self._host.proxy if do_proxy_scan else None,
                                    proxy_wait=False)
             r = await self._scan_scheduler.submit(work)
@@ -339,15 +355,15 @@ class TaskControl:
                 task.config['download_ori'] and self.has_login)
             return filter(r, suc=img_scan_success)
         except Exception as ex:
-            result = ScanImageResult(page_url=page_url)
+            result = ScanImageResult(fid=unpad_fid,page_url=page_url)
             self._raise_mapped_stage_exception(
                 'scan_img', task, ex, default_code=task.failcode, result=result)
 
-    @stage_retry_scope
+    @stage_retry_skip_scope
     async def _download_img_async(self, img_url: str, task: Task, task_guid: str, req: HttpRequest):
 
-        download_retry = self._task_cfg(task, 'download_retry', 5)
-        download_timeout = self._task_cfg(task, 'download_timeout', 10)
+        download_retry = task.config.get('download_retry', 5)
+        download_timeout = task.config.get('download_timeout', 10)
         
         stream_retried = 0
 
@@ -362,7 +378,7 @@ class TaskControl:
                 content_type=x[3],
                 original_hash=x[4],
                 timeout_time=time.time() + download_timeout)
-            reload_url = task.get_reload_url(img_url)
+            reload_url = task.reload_map[img_url][0]
             result = DownloadResult(img_url=img_url, reload_url=reload_url)
 
             if saved:
@@ -376,15 +392,13 @@ class TaskControl:
             raise ScanDownloadRetry('failed to save downloaded image after retries, retry from scan', failcode=task.failcode, result=result)
 
         try:
-            do_proxy_image = self._task_cfg(
-                task, 'proxy_image_only', False) or self._task_cfg(task, 'proxy_image', False)
+            do_proxy_image = task.config.get('proxy_image_only') or task.config.get('proxy_image')
 
             def work():
                 return req.request("GET",
                                    url=img_url,
-                                   retry=self._task_cfg(task, 'page_retry', 3),
-                                   timeout=self._task_cfg(
-                                       task, 'page_timeout', 10),
+                                   retry=task.config.get('page_retry'),
+                                   timeout=task.config.get('page_timeout'),
                                    proxy=self._host.proxy if do_proxy_image else None,
                                    proxy_wait=False,
                                    stream=True)
@@ -394,20 +408,19 @@ class TaskControl:
             return filter(r, suc=download_image)
         except Exception as ex:
             result = DownloadResult(
-                img_url=img_url, reload_url=task.get_reload_url(img_url))
+                img_url=img_url, reload_url=task.reload_map[img_url][0])
             self._raise_mapped_stage_exception('download_img', task, ex,
                                                default_code=task.failcode,
                                                result=result)
 
-    async def _scan_download_async(self, task: Task, task_guid: str, req: HttpRequest):
+    async def _image_download_async(self, task: Task, task_guid: str, req: HttpRequest):
         """Combined async pipeline for scanning image pages and downloading images."""
 
         page_urls = []
         while not task.page_q.empty():
             page_urls.append(task.page_q.get())
 
-        inflight_limit = int(self._task_cfg(
-            task, 'pipeline_inflight_pages', 0) or 0)
+        inflight_limit = int(task.config.get('pipeline_inflight_pages')) or 0
         if inflight_limit <= 0:
             inflight_limit = max(1, len(page_urls))
 
@@ -424,15 +437,19 @@ class TaskControl:
             current_page_url = start_page_url
             while True:
                 try:
-                    scan_result = await self._scan_img_async(
+                    scan_result: ScanImageResult = await self._scan_img_async(
                         current_page_url, task, task_guid, req)
                     await self._download_img_async(
                         scan_result.img_url, task, task_guid, req)
 
+                    img_file_name = task.reload_map[scan_result.img_url][1]
                     self.logger.info(i18n.XEH_FILE_DOWNLOADED.format(
-                        task_guid, *task.get_fname(scan_result.img_url)))
+                        task_guid, scan_result.fid, img_file_name))
 
                     log_task_state('img_downloaded')
+                    return
+                except ScanDownloadSkip as ex:
+                    log_task_state('task_skipped')
                     return
                 except ScanDownloadRetry as ex:
                     log_task_state('scan_download_retry')
@@ -479,7 +496,7 @@ class TaskControl:
         log_task_state('pipeline_done')
         return
 
-    @stage_retry_scope
+    @stage_retry_skip_scope
     async def _make_archive_async(self, task: Task):
 
         def work():
@@ -505,8 +522,6 @@ class TaskControl:
 
         if not task.page_q:
             task.page_q = Queue()  # per image page queue
-        if not task.img_q:
-            task.img_q = Queue()  # (image url, savepath) queue
 
         if self._task_should_abort(task):
             raise TaskAbort('task aborted before stage_get_meta')
@@ -522,7 +537,7 @@ class TaskControl:
         # Stage 2: CHECK_ARCHIVE Phase 1 (immediately after GET_META)
         self._stage_check_archive_phase1(task, task_guid)
         if self._task_should_abort(task):
-            raise TaskAbort('task aborted after stage_get_meta')
+            raise TaskAbort('task aborted after stage_check_archive_phase1')
         self._host.save_session()
 
         self.logger.info(i18n.TASK_TITLE % (task_guid, task.meta.title))
@@ -546,12 +561,12 @@ class TaskControl:
             self.logger.info(i18n.TASK_WILL_DOWNLOAD_CNT % (
                 task_guid, task.meta.total - task.meta.finished,
                 task.meta.total))
-            await self._scan_download_async(task, task_guid, req)
+            await self._image_download_async(task, task_guid, req)
             self._update_task_reuse_index(task)
             if self._task_should_abort(task):
                 raise TaskAbort('task aborted before make_archive')
             self._host.save_session()
-            if self._task_cfg(task, 'make_archive', True):
+            if task.config.get('make_archive'):
                 task.state = TASK_STATE_MAKE_ARCHIVE
             else:
                 task.state = TASK_STATE_FINISHED

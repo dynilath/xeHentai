@@ -162,8 +162,6 @@ def parse_opt():
                         dest = 'delete_task_files', help = i18n.XEH_OPT_delete_task_files)
     parser.add_argument('-a', '--archive', type = bool, metavar = "BOOL", default = _def['make_archive'],
                         dest = 'make_archive', help = i18n.XEH_OPT_a)
-    parser.add_argument('--download-range', type = _parse_range, metavar = "a-b,c-d,e", default = None,
-                        dest = 'download_range', help = i18n.XEH_OPT_download_range)
     parser.add_argument('-t', '--thread', type = int, metavar = 'N',
                         default = _def['download_thread_cnt'], dest = 'download_thread_cnt',
                         help = i18n.XEH_OPT_t)
@@ -206,7 +204,7 @@ def interactive(xeH):
         while not pwd:
             pwd = _readline(i18n.PS_PASSWD)
         xeH.login_exhentai(uname, pwd)
-    url = proxy = download_range = ""
+    url = proxy = ""
     while not url:
         url = _readline(i18n.PS_URL)
     url = url.split(",")
@@ -217,17 +215,5 @@ def interactive(xeH):
     _dir = _readline(i18n.PS_DOWNLOAD_DIR % __def_dir) or xeH.cfg['dir']
     make_archive = _readline(i18n.PS_MAKE_ARCHIVE, 'y' if xeH.cfg['make_archive'] else 'n') == 'y'
     jpn_title = _readline(i18n.PS_JPN_TITLE, 'y' if xeH.cfg['jpn_title'] else 'n') == 'y'
-    while not download_range:
-        _ = _readline(i18n.PS_DOWNLOAD_RANGE)
-        if not _:
-            download_range = []
-            break
-        try:
-            download_range = _parse_range(logger.safestr(_))
-        except argparse.ArgumentTypeError as ex:
-            print(ex)
-        else:
-            break
     return {'urls': url, 'proxy': proxy, 'download_ori': download_ori, 'dir': _dir,
-            'make_archive': make_archive, 'jpn_title': jpn_title, 'save_tasks': False,
-            'download_range': download_range}
+            'make_archive': make_archive, 'jpn_title': jpn_title, 'save_tasks': False}

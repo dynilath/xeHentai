@@ -6,6 +6,7 @@
 import re
 
 import requests
+from .util.checkfile import extract_img_url_info
 from . import util
 from .const import *
 from .exceptions import DownloadConnectionException, DownloadLengthMismatchException, GalleryDetailPageParseException, ImageFileException, ImageFileNotFoundException, ImagePageInfoParseException, ImagePageInvalidException, KeyExpiredException, QuotaExceededException
@@ -148,7 +149,6 @@ def flt_pageurl(r, suc:Callable[P, R]):
     # (page url, page id, original file name)
     if not picpage:
         raise GalleryDetailPageParseException(r._real_url, "can't find image page urls in gallery page")
-        fail(ERR_NO_PAGEURL_FOUND)
     for p in picpage:
         suc(p)
 
@@ -189,53 +189,47 @@ def flt_imgurl_wrapper(ori:bool):
             raise ImagePageInfoParseException(r._real_url, "can't find image url in page")
         page_img_url = util.htmlescape(_[0])
         
+        page_img_url_info = extract_img_url_info(page_img_url)
+        if not page_img_url_info:
+            raise ImagePageInfoParseException(r._real_url, "can't parse image url info")
+        
         _ = re.findall(
-            r'<\/a><\/div><div>(.*?) :: ?\d+ x \d+ ?(?::: ([0-9\/.]+ [M|K]?i?B))?<\/div>', r.text)
+            r'<\/a><\/div><div>(.*?) :: ?\d+ x \d+ ', r.text)
         if not _:
             raise ImagePageInfoParseException(r._real_url, "can't find filename and filesize in page")  
-        filename, filesize = _[0]
-        filesize = filesize or None
+        original_file_name = _[0].strip()
             
-        if 'image.php' in filename:
-            _ = re.findall(r'n=(.+)', page_img_url)
-            if not _:
-                raise ImagePageInfoParseException(r._real_url, "filename in image.php format but can't find n= in url")
-            filename = _[0]
+        if 'image.php' in original_file_name:
+            raise ImagePageInfoParseException(r._real_url, "filename is image.php, can't parse original filename")
             
-        _ = re.findall(r'.+\/(\d+)-(\d*)', r._real_url)
+        _ = re.findall(r'\/(\w+)\/(\d+)-(\d*)', r._real_url)
         if not _:
             raise ImagePageInfoParseException(r._real_url, "can't parse page id from url")
-        index = _[0]
+        orignal_hash, gid, unpad_fid = _[0]
         
-        # file base name is empty, use page id as file name to avoid error
-        if filename[0] == '.':
-            filename = index[1] + filename
-        
-        # full url example :
-        # http://exhentai.org/fullimg.php?gid=577354&page=2&key=af594b7cf3
-        
+        # original url example: https://exhentai.org/fullimg/92997/9/77hogvralgb/009.jpg
         
         original_img_url = re.findall(
             r'class="mr".+<a href="(.+)"\s*>Download original', r.text)
-        _ = re.findall(
-            r'>Download original \d+ x \d+ ([\d.]+ [a-zA-Z]{2,})<\/a>', r.text)  # like 2.20MB
-        ori_file_size = _[0] if _ else None
+        original_img_url = util.htmlescape(original_img_url[0]) if original_img_url else page_img_url
+        original_file_name = os.path.basename(original_img_url)
+        original_ext = os.path.splitext(original_file_name)[1]
         
-        if original_img_url:
-            original_img_url = util.htmlescape(original_img_url[0])
-        else:
-            original_img_url = page_img_url
+            
         _ = re.findall(r"return nl\('([a-zA-Z\d\-]+)'\)", r.text)
         if not _:
             raise ImagePageInfoParseException(r._real_url, "can't find js nl value in page")
         js_nl = _[0]
+        
         reload_url = "%s%snl=%s" % (
             r._real_url, "&" if "?" in r._real_url else "?", js_nl)
-        if ori:
-            # we will parse the 302 url to get original filename
-            return suc((original_img_url, reload_url, filename, ori_file_size))
-        else:
-            return suc((page_img_url, reload_url, filename, filesize))
+        
+        img_url = original_img_url if ori else page_img_url
+        file_hash = orignal_hash if ori else page_img_url_info.sha1[:10]
+        file_ext = original_ext if ori else page_img_url_info.format
+        
+        return suc((unpad_fid, file_hash, file_ext, img_url, reload_url))
+        
     return flt_imgurl
 
 

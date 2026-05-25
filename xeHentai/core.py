@@ -22,6 +22,7 @@ from .const import *
 from .const import __version__
 from queue import Queue
 
+from .task_config import CoreConfig
 from . import config as default_config
 sys.path.insert(1, FILEPATH)
 try:
@@ -48,7 +49,7 @@ class xeHentai(HostInterface):
         # note that ignored_errors are overwritten using val from custom config
         _cfg.update(
             {k: v for k, v in config.__dict__.items() if not k.startswith("_")})
-        self.config = _cfg
+        self.config = CoreConfig(_cfg)
         # backward compatibility for older code paths
         self.cfg = self.config
         self.proxy = None
@@ -154,11 +155,11 @@ class xeHentai(HostInterface):
 
     def add_task(self, url, **cfg_dict):
         url = url.strip()
-        cfg = {k: self.config[k] for k in self._TASK_CONFIG_KEYS}
-        cfg.update({k: v for k, v in cfg_dict.items() if k in self._TASK_CONFIG_KEYS})
-        if cfg['download_ori'] and not self.has_login:
+        cfg = {k: v for k, v in cfg_dict.items() if k in self._TASK_CONFIG_KEYS}
+        download_ori = cfg.get('download_ori', self.config.get('download_ori'))
+        if download_ori and not self.has_login:
             self.logger.warning(i18n.XEH_DOWNLOAD_ORI_NEED_LOGIN)
-        t = Task(url, cfg, self.logger)
+        t = Task(url, cfg, self.logger, core_config=self.config)
 
         # check if task on same url already exists
         # well, you may need to download from a link and save images in different zip files
@@ -306,20 +307,7 @@ class xeHentai(HostInterface):
             return ERR_SAVE_SESSION_FAILED, str(ex)
 
         for _ in tasks_payload.values():
-            _t = Task("", {}, self.logger).from_dict(_)
-            if _t.meta.filelist:
-                _t.scan_downloaded()
-                # _t.meta['has_ori'] and task.config['download_ori'])
-
-            # page may have changed by the uploader, rescan pages (rescan from metadata in practice) instead
-            # meta can be changed too
-            # besides, ip address of exhentai server may have changed, rescan on reload is essential
-            if _t.state == TASK_STATE_SCAN_PAGE or _t.state == TASK_STATE_SCAN_IMG or _t.state == TASK_STATE_DOWNLOAD:
-                _t.page_q = Queue()
-                _t.reload_map = {}
-                _t.fid_2_file_name_map = {}
-                _t.fid_2_file_ext_map = {}
-                _t.state = TASK_STATE_GET_META
+            _t = Task(_["url"], {}, self.logger, core_config=self.config).from_dict(_, core_config=self.config)
             self._all_tasks[_['guid']] = _t
             self.tasks.put(_['guid'])
         if self._all_tasks:

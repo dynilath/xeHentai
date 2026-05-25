@@ -19,6 +19,7 @@ import requests
 from .util.logger import Logger
 from . import util
 from . import reuse_index
+from .task_config import TaskConfig
 from .const import *
 from .const import __version__
 from queue import Queue, Empty
@@ -107,7 +108,6 @@ class ArchiveMeta:
     tags: Any
     total: int
     title: str
-    rename_ori: bool
     download_ori: bool
     url: str
     fid_page_hash_map: Optional[Dict[str, str]] = None
@@ -115,8 +115,7 @@ class ArchiveMeta:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ArchiveMeta':
         """Create ArchiveMeta from dictionary with validation"""
-        required_fields = {'tags', 'total', 'title',
-                           'rename_ori', 'download_ori', 'url'}
+        required_fields = {'tags', 'total', 'title', 'download_ori', 'url'}
         missing = required_fields - set(data.keys())
         if missing:
             raise ValueError(f"Missing required archive metadata fields: {missing}")
@@ -135,7 +134,6 @@ class ArchiveMeta:
                 tags=data['tags'],
                 total=int(data['total']),
                 title=str(data['title']),
-                rename_ori=bool(data['rename_ori']),
                 download_ori=bool(data['download_ori']),
                 url=str(data['url']),
                 fid_page_hash_map=fid_page_hash_map,
@@ -175,78 +173,56 @@ class Task(object):
     PRESCAN_STATUS_COMPLETE = 1
     PRESCAN_STATUS_COMPLETE_EXACT = 2
 
-    def __init__(self, url: str, cfgdict: Dict[str, Any], logger: Logger):
+    def __init__(self, url: str, cfgdict: Dict[str, Any], logger: Logger, core_config=None):
         
         self._logger = logger
         
         # Original gallery URL.
         self.url: str = url
-        if url:
-            _ = RE_INDEX.findall(url)
-            if _:
-                self.gid, self.sethash = _[0]
+        
+        if not url:
+            raise ValueError("Task URL cannot be empty")
+        _ = RE_INDEX.findall(url)
+        if not _:
+            raise ValueError(f"Invalid task URL format: {url}")
+        self.gid: str = _[0][0]
+        self.sethash: str = _[0][1]
+        
         # Last task failure code.
         self.failcode: int = 0
         # Current lifecycle state (TASK_STATE_*).
         self.state: int = TASK_STATE_WAITING
         # Short runtime task identifier.
         self.guid: str = str(uuid.uuid4())[:8]
-        # Task-level merged config.
-        self.config: Dict[str, Any] = cfgdict
+        # Task-level config view with fallback to the core config.
+        if hasattr(cfgdict, 'to_local_dict'):
+            cfgdict = cfgdict.to_local_dict()
+        self.config = core_config.create_task_config(cfgdict) if core_config else TaskConfig(cfgdict)
         # Parsed gallery metadata payload.
         self.meta: GalleryMeta = GalleryMeta()
-        # Whether original-quality image variants are detected.
-        self.has_ori: bool = False
-        # Maps image URL to [reload URL, resolved filename].
+        
+        # Maps image URL to [reload URL, saving file name].
         self.reload_map: Dict[str, Tuple[str,str]] = {}
-        # map dumplicated file hash to [dumplicated_fid, src_fid, real_file_name]
-        self.dumplicated_file_map: Dict[str, List[DumplicatedFileInfo]] = {}
-
-        # renamed map just don't work well with extension part
-
-        # this situation happens especially with animated galleries
-        # in which you would download an original file even you dont use the Download original link
-        # renamed map still thinks the .gif file is a .jpg file
-        # thus you can only view the first frame of the gif
-
-        # when downloading original file, renamed map still choose the extension in single image page
-        # you will get an png file renamed to be a jpg file
-        # well, in fact you can view the file just fine
-        # but photoshop says "no, png file have to be a png file"
-
-        # besides, in some rare cases, the original png file is so small
-        # that you will get an original png file when not download original
-
-        # it is somehow hard to upgrade the old method
-        # i choose to write a new one
-        # self.renamed_map = {} # map fid to renamed file name, used in finding a file by id in RPC
-
-        # original file name only appears in gallery page
-        # in single image page it shows a formated image other than original file name
-
-        # file that was in the folder, used to check downloaded files
-        # map file name to file size
-
-        # file size check grant more precision in downloaded file check
-        self._file_in_download_folder: List[str] = []
-
-        # map fid to file original name, which appears on gallery pages
-        self.fid_2_original_file_name_map: Dict[str, str] = {}
-
-        # map fid to resolved runtime file name
-        self.fid_2_file_name_map: Dict[str, str] = {}
-
-        # map fid to file extension; file name is derived from fid padding + ext
-        self.fid_2_file_ext_map: Dict[str, str] = {}
-
-        # download range list, former method is too hard to maintain
-        self.download_range: List[int] = []
-
-        # times of image page loading is used by ehentai for counting bandwidth limit
-        self.fid_2_file_size_map: Dict[str, str] = {}  # map fid to file size text, reduce image page load
 
         # map fid to 10-char page hash, extracted from /s/<hash>/<gid>-<fid>
         self.fid_2_page_hash_map: Dict[str, str] = {}
+        
+        # map fid to 10-char image hash
+        # this will help to check file existence before page scan
+        # especially when the task is restarted
+        # this map should not be in archive meta
+        self.fid_2_img_hash_map: Dict[str, str] = {}
+        
+        # map fid to file name (without path)
+        # just like fid_2_img_hash_map, this will help when the task is restarted
+        # and we can check file existence by name before page scan
+        # this map should not be in archive meta too
+        self.fid_2_file_name_map: Dict[str, str] = {}
+        
+        # map dumplicated page hash (original file hash) to list of file info
+        # when the download is done, copy the file to those dumplicated
+        # thus we don't need to download the same file twice
+        self.dumplicated_file_map: Dict[str, List[DumplicatedFileInfo]] = {}
 
         # lazy-loaded mapping: page_hash -> (archive_path, archive_member_name)
         self._related_archive_hash_index: Dict[str, Tuple[str, str]] = {}
@@ -259,12 +235,8 @@ class Task(object):
         # when int key dumps into files by python, it is somehow transformed into str
         # and an error would occur when you load it again
 
-        # Download work queue (image URLs).
-        self.img_q: Optional[Queue] = None
         # Single-image page queue.
         self.page_q: Optional[Queue] = None
-        # Gallery list page queue.
-        self.list_q: Optional[Queue] = None
         # Finished image IDs (rebuilt on scan, not persisted directly).
         self._flist_done: Set[int] = set()
         
@@ -290,21 +262,12 @@ class Task(object):
                 if os.path.exists(zippath):
                     os.remove(zippath)
         elif self.state in (TASK_STATE_FINISHED, TASK_STATE_FAILED):
-            self.img_q = None
             self.page_q = None
-            self.list_q = None
             self.reload_map = {}
 
             if self.state == TASK_STATE_FAILED:
-                self._file_in_download_folder = []
-                self.fid_2_file_size_map = {}
-                self.fid_2_original_file_name_map = {}
-                self.fid_2_file_name_map = {}
-                self.fid_2_page_hash_map = {}
-                self.fid_2_file_ext_map = {}
                 self._related_archive_hash_index = {}
                 self._related_archive_hash_index_ready = False
-                self.download_range = []
             # if 'filelist' in self.meta:
             #     del self.meta['filelist']
             # if 'resampled' in self.meta:
@@ -387,45 +350,13 @@ class Task(object):
     #         self.base_url(), pichash[:10], self.gid, self.meta['filelist'][pichash][0]
     #     )
 
-    def get_size_range(self, size_text):
-        if not size_text:
-            return 0, 0
-        _ = re.findall(r'(\d+(?:\.(\d+))?) *([M|K]?i?B)', size_text)
-        if _:
-            _number, _decimal, _unit = _[0]
-        else:
-            return 0, 0
-        number = float(_number)
-        uncertain = 0.5
-
-        if _decimal:
-            for i in range(0, len(_decimal)):
-                uncertain /= 10
-
-        unit = 1
-        if _unit == 'KiB' or _unit == 'KB':
-            unit *= 1024
-        elif _unit == 'MiB' or _unit == 'MB':
-            unit *= 1048576
-        return (number - uncertain) * unit, (number + uncertain) * unit
-
-    def check_size_range(self, test_file_path, file_size_text):
-        if not file_size_text:
-            return True
-        size_bottom, size_top = self.get_size_range(file_size_text)
-        existed_file_size = os.stat(test_file_path).st_size
-        return size_bottom <= existed_file_size < size_top
-
     def set_fid_done(self, fid):
-        self._cnt_lock.acquire()
-        self._flist_done.add(int(fid))
-        self.meta.finished = len(self._flist_done)
-        self._cnt_lock.release()
+        with self._cnt_lock:
+            self._flist_done.add(int(fid))
+            self.meta.finished = len(self._flist_done)
 
-    def _build_fid_file_name(self, fid:str, ext='.jpg'):
-        fid = int(fid)
-        _ = "%%0%dd%%s" % len(str(self.meta.total))
-        return _ % (fid, ext)
+    def _build_saving_file_name(self, fid:str, ext):
+        return fid.zfill(len(str(self.meta.total))) + ext
 
     def _content_type_to_ext(self, content_type):
         content_type = (content_type or '').strip().lower()
@@ -439,45 +370,8 @@ class Task(object):
         }
         return content_type_map.get(content_type)
 
-    def _infer_ext_from_url(self, url):
-        if not url:
-            return None
-        _ = RE_IMGHASH.findall(url)
-        if _ and _[-1] and _[-1][4]:
-            return '.%s' % _[-1][4].lower()
-        _ = re.findall(r"/([^/\?]+)(?:\?|$)", url)
-        if _:
-            ext = os.path.splitext(_[0])[1].lower()
-            if ext:
-                return ext
-        return None
-
-    def _resolve_download_ext(self, fid, content_type=None, redirect_url=None, fallback_name=None):
-        ext = self._content_type_to_ext(content_type)
-        if ext:
-            return ext
-        ext = self._infer_ext_from_url(redirect_url)
-        if ext:
-            return ext
-        if fallback_name:
-            ext = os.path.splitext(fallback_name)[1].lower()
-            if ext:
-                return ext
-        if fid in self.fid_2_file_ext_map:
-            ext = self.fid_2_file_ext_map[fid].lower()
-            if ext:
-                return ext
-        return '.jpg'
-
-    def _set_final_file_ext(self, fid:str, ext:str) -> str:
-        ext = ext or '.jpg'
-        file_name = self._build_fid_file_name(fid, ext)
-        self.fid_2_file_ext_map[fid] = ext
-        self.fid_2_file_name_map[fid] = file_name
-        return file_name
-
-    def _build_fid_filename_map(self, file_names):
-        fid_name_map = {}
+    def _fid_ext_map_from_archive_names(self, file_names):
+        """Build mapping of fid to file extension from a list of file names."""
         fid_ext_map = {}
         for file_name in file_names:
             if not file_name or file_name.endswith('/'):
@@ -487,16 +381,8 @@ class Task(object):
             if not name.isdigit():
                 continue
             fid = str(int(name))
-            fid_name_map[fid] = _
             fid_ext_map[fid] = ext or '.jpg'
-        return fid_name_map, fid_ext_map
-
-    def set_file_size(self, this_fid:str, filesize: Optional[str]):
-        if filesize:
-            if this_fid not in self.fid_2_file_size_map:
-                self.fid_2_file_size_map.setdefault(this_fid, filesize)
-            else:
-                self.fid_2_file_size_map[this_fid] = filesize
+        return fid_ext_map
                 
     def set_file_dumplicated(self, fhash:str, this_fid:str, existed_fid:str, real_file_name:str, existed_file_name:str):
         if fhash not in self.dumplicated_file_map:
@@ -507,104 +393,6 @@ class Task(object):
             file_name=real_file_name,
             existed_file_name=existed_file_name,
         ))
-
-    def set_reload_url(self, image_url, reload_url, fname, filesize):
-        """Register image reload metadata and try local/related-archive reuse before download.
-
-        Reuse priority:
-        1) same-task existing file checks (legacy behavior)
-        2) related gallery archives discovered from #gnd, matched by page hash and verified by size
-        3) fallback to queue download
-        """
-        # if same file occurs several times in a gallery
-        # to be done with new rename logic
-
-        this_fid:str = RE_GALLERY.findall(reload_url)[0][1]
-        original_file_name:str = self.fid_2_original_file_name_map[this_fid]
-
-        ext:str = os.path.splitext(original_file_name)[1] if self.config['download_ori'] else os.path.splitext(fname)[1]
-
-        real_file_name = self._set_final_file_ext(this_fid, ext or '.jpg')
-
-        if filesize:
-            if this_fid not in self.fid_2_file_size_map:
-                self.fid_2_file_size_map.setdefault(this_fid, filesize)
-            else:
-                self.fid_2_file_size_map[this_fid] = filesize
-
-        # two files have same url
-        if image_url in self.reload_map:
-            existed_reload_url, existed_file_name = self.reload_map[image_url]
-            folder_path = self.get_task_dir()
-            existed_file = os.path.join(folder_path, existed_file_name)
-            file_existed = False
-            unexpected_file = False
-            
-            match:Tuple[str,str] = RE_GALLERY.findall(existed_reload_url)[0]
-            fhash, existed_fid = match
-            if os.path.exists(existed_file):
-                file_existed = True
-                unexpected_file = not self.check_size_range(
-                    existed_file, filesize)
-
-            if file_existed:
-                if unexpected_file:
-                    # target file is not what we wanted
-                    # download it again
-                    self.img_q.put(image_url)
-                else:
-                    new_file = os.path.join(folder_path, real_file_name)
-                    # we can just copy old file if already downloaded
-                    if not existed_file == new_file:
-                        self._f_lock.acquire()
-                        shutil.copy2(existed_file, new_file)
-                        self._f_lock.release()
-                    self.set_fid_done(this_fid)
-                    return
-            else:
-                # target file does not exist, set a dumplicated file map for later check
-                # copy them in save_file if we finally get the file
-                if fhash not in self.dumplicated_file_map:
-                    self.dumplicated_file_map[fhash] = []
-                self.dumplicated_file_map[fhash].append(DumplicatedFileInfo(
-                    fid=this_fid,
-                    existed_fid=existed_fid,
-                    file_name=real_file_name,
-                    existed_file_name=existed_file_name,
-                ))
-        else:
-            self.reload_map.setdefault(image_url, [reload_url, real_file_name])
-
-            # check file size for downloaded file
-            # i would like a hash check
-            # but i cant get a hash before downloading the file
-            file_existed = False
-            unexpected_file = False
-            folder_path = self.get_task_dir()
-            target_file_path = os.path.join(folder_path, real_file_name)
-            if os.path.exists(target_file_path):
-                file_existed = True
-                unexpected_file = not self.check_size_range(
-                    target_file_path, filesize)
-
-            if file_existed and not unexpected_file:
-                # well that's definitely the file we need
-                self.set_fid_done(this_fid)
-                return
-
-            page_hash = self.fid_2_page_hash_map.get(this_fid)
-            if page_hash and self._try_reuse_from_related_archive(page_hash, real_file_name, filesize):
-                self.set_fid_done(this_fid)
-                return
-
-            # otherwise add it to download queue
-            self.img_q.put(image_url)
-
-    def get_reload_url(self, imgurl):
-        """Return queued reload URL for an image URL, if present."""
-        if not imgurl or imgurl not in self.reload_map:
-            return
-        return self.reload_map[imgurl][0]
 
     def _get_gid_bucket_dir(self, gid: str) -> Optional[str]:
         """Return the 3+3 bucket directory path for a numeric gallery id."""
@@ -650,14 +438,14 @@ class Task(object):
                     if not metadata or not metadata.fid_page_hash_map:
                         continue
 
-                    member_name_map, _ = self._build_fid_filename_map(zf.namelist())
+                    fid_ext_map = self._fid_ext_map_from_archive_names(zf.namelist())
 
                     for src_fid, src_hash in metadata.fid_page_hash_map.items():
-                        member_name = member_name_map.get(str(src_fid))
-                        if not member_name:
+                        ext = fid_ext_map.get(str(src_fid))
+                        if not ext:
                             continue
                         if src_hash not in idx:
-                            idx[src_hash] = (arc, member_name)
+                            idx[src_hash] = (arc, ext)
             except (zipfile.BadZipFile, OSError, RuntimeError):
                 continue
 
@@ -723,10 +511,6 @@ class Task(object):
             elif source_type == 'file':
                 shutil.copyfile(source_path, tmp_path)
             else:
-                return False
-
-            if not self.check_size_range(tmp_path, size_text):
-                os.remove(tmp_path)
                 return False
 
             if os.path.exists(target_path):
@@ -838,7 +622,7 @@ class Task(object):
             return False, None
         
         folder_path = self.get_task_dir()
-        arc = "%s.zip" % folder_path
+        archive_path = f"{folder_path}.zip"
         
         def _check_exact_match(zipfile_target):
             """Check if zip is an exact gid+hash match with valid metadata."""
@@ -878,11 +662,6 @@ class Task(object):
                             if len(metadata.fid_page_hash_map) != metadata.total:
                                 return False, None
                         
-                        # Load metadata from the exact match
-                        member_name_map, member_ext_map = self._build_fid_filename_map(zipfile_target.namelist())
-                        self._flist_done.update(range(1, metadata.total + 1))
-                        self.fid_2_file_name_map = member_name_map
-                        self.fid_2_file_ext_map = member_ext_map
                         # Preserve existing populated hash map from page scan; only load from archive if currently empty
                         if not self.fid_2_page_hash_map:
                             self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
@@ -893,18 +672,18 @@ class Task(object):
             except Exception:
                 return False, None
         
-        current_arc_abs = os.path.abspath(arc)
+        current_arc_abs = os.path.abspath(archive_path)
         
         # Check current task directory zip
-        if os.path.exists(arc):
+        if os.path.exists(archive_path):
             try:
-                with zipfile.ZipFile(arc, 'r') as current_zip:
+                with zipfile.ZipFile(archive_path, 'r') as current_zip:
                     is_exact, metadata = _check_exact_match(current_zip)
                     if is_exact:
-                        return True, arc
+                        return True, archive_path
             except zipfile.BadZipFile:
                 try:
-                    os.remove(arc)
+                    os.remove(archive_path)
                 except:
                     pass
         
@@ -922,159 +701,7 @@ class Task(object):
                     pass
         
         return False, None
-
-    def scan_downloaded(self, fid_2_page_url_map, scaled=True):
-        """Scan existing download folder and mark already-valid files as finished."""
-        folder_path = self.get_task_dir()
-        is_done_file = False
-        _range_idx = 0
-
-        scanning_zip = False
-        scanning_folder = False
-
-        # scan folder only
-        # if there is any problem in zip
-        # prescan should have extracted it
-
-        self.page_q.queue.clear()  # Clear any pre-populated page URLs before scanning
-
-        if os.path.exists(folder_path):
-            scanning_folder = True
-        else:
-            for _fid, _page_url in fid_2_page_url_map.items():
-                self.page_q.put(_page_url)
-            return False
-
-        file_name = ''
-
-        guess_fid_2_file_name_map = {}
-
-        re_name_filter = re.compile(
-            r'^(\d{%d})\..+$' % len(str(self.meta.total)))
-        self._file_in_download_folder = []
-
-        for _file_name in os.listdir(folder_path):
-            _ext = os.path.splitext(_file_name)[1]
-            if _ext == '.xeh':
-                self._f_lock.acquire()
-                os.remove(os.path.join(folder_path, _file_name))
-                self._f_lock.release()
-            else:
-                self._file_in_download_folder.append(_file_name)
-
-        for _file_name in self._file_in_download_folder:
-            _ = re_name_filter.findall(_file_name)
-            if _:
-                guess_fid_2_file_name_map.setdefault(
-                    str(int(_[0])), _file_name)
-
-        for _fid, _file_name in self.fid_2_original_file_name_map.items():
-            if _fid not in guess_fid_2_file_name_map and os.path.exists(os.path.join(folder_path, _file_name)):
-                guess_fid_2_file_name_map.setdefault(_fid, _file_name)
-
-        for _fid, _url in fid_2_page_url_map.items():
-            image_done_file = False
-            if _fid in self.fid_2_file_size_map\
-                    and _fid in guess_fid_2_file_name_map:
-                size_text = self.fid_2_file_size_map[_fid]
-                guess_file_name = guess_fid_2_file_name_map[_fid]
-                if size_text:
-                    bottom, top = self.get_size_range(size_text)
-                    size = os.stat(os.path.join(
-                        folder_path, guess_file_name)).st_size
-                    if bottom <= size < top:
-                        file_name = guess_file_name
-                        image_done_file = True
-                else:
-                    file_name = guess_file_name
-                    image_done_file = True
-
-            if not image_done_file:
-                self.page_q.put(_url)
-            else:
-                file_ext = os.path.splitext(file_name)[1] or '.jpg'
-                final_file_name = self._build_fid_file_name(_fid, file_ext)
-                if file_name != final_file_name:
-                    src_path = os.path.join(folder_path, file_name)
-                    dst_path = os.path.join(folder_path, final_file_name)
-                    if not os.path.exists(dst_path):
-                        os.rename(src_path, dst_path)
-                    file_name = final_file_name
-                self.fid_2_file_name_map[_fid] = file_name
-                self.fid_2_file_ext_map[_fid] = os.path.splitext(file_name)[1] or '.jpg'
-                self._flist_done.add(int(_fid))
-
-        self.meta.finished = len(self._flist_done)
-        if self.config['download_range']:
-            self.meta.finished += (self.meta.total -
-                                      len(self.download_range))
-        if self.meta.finished == self.meta.total:
-            return True
-        return False
-
-    def queue_wrapper(self, callback_page_url_setdefault, pichash=None, img_tuble=None):
-        """Normalize per-page tuple and capture fid->page_hash for later reuse matching."""
-        # if url is not finished, call callback to put into queue
-        # type 1: normal file; type 2: resampled url
-        # if pichash:
-        #     fid = int(self.meta['filelist'][pichash][0])
-        #     if fid not in self._flist_done:
-        #         callback(self.get_picpage_url(pichash))
-        # elif url:
-        # fhash, fid = RE_GALLERY.findall(img_tuble[0])[0]
-
-        # if fhash not in self.meta['filelist']:
-        #     self.meta['resampled'][fhash] = int(fid)
-        #     self.has_ori = True]
-        # if int(fid) not in self._flist_done:
-        #    callback1(img_tuble[0])
-
-        _page_url, _fid, _original_file_name = img_tuble
-
-        _match = RE_GALLERY.findall(_page_url)
-        if _match:
-            self.fid_2_page_hash_map.setdefault(_fid, _match[0][0])
-
-        if self.config['download_range']:
-            if not int(_fid) in self.download_range:
-                return
-
-        # assuming image files are not changed
-        # image file may have changed
-        # if int(_fid) in self._flist_done:
-        #    self._cnt_lock.acquire()
-        #    self._flist_done.remove(int(_fid))
-        #    self.meta['finished'] = len(self._flist_done)
-        #    self._cnt_lock.release()
-
-        if _fid not in self.fid_2_original_file_name_map:
-            _is_crashed = False
-            for fid_in_list, file_name_in_list in self.fid_2_original_file_name_map.items():
-                if _original_file_name == file_name_in_list:
-                    _is_crashed = True
-                    break
-
-            # if same original name occurs several times
-            # this will solve it
-            if _is_crashed:
-                _file_name, _ext = os.path.splitext(_original_file_name)
-                _append_quote = 1
-                _assume_file_name = _original_file_name
-                while _is_crashed:
-                    _is_crashed = False
-                    _assume_file_name = '%s_%d%s' % (
-                        _file_name, _append_quote, _ext)
-                    for fid_in_list, file_name_in_list in self.fid_2_original_file_name_map.items():
-                        if _assume_file_name == file_name_in_list:
-                            _is_crashed = True
-                            break
-                    if _is_crashed:
-                        _append_quote += 1
-                _original_file_name = _assume_file_name
-            self.fid_2_original_file_name_map.setdefault(
-                _fid, _original_file_name)
-
-        callback_page_url_setdefault(_fid, _page_url)
+    
 
     def save_file(self, 
                   imgurl:str, 
@@ -1095,9 +722,10 @@ class Task(object):
 
         pageurl, fname = self.reload_map[imgurl]
         _, fid = RE_GALLERY.findall(pageurl)[0]
-        ext = self._resolve_download_ext(fid, content_type=content_type, redirect_url=redirect_url, fallback_name=fname)
-        fname = self._set_final_file_ext(fid, ext)
-        self.reload_map[imgurl][1] = fname
+        ext = self._content_type_to_ext(content_type)
+        if ext:
+            fname = self._build_saving_file_name(fid, ext)
+            self.reload_map[imgurl][1] = fname
 
         # if a same file exists
         # assuming that file is downloaded by other means
@@ -1125,8 +753,7 @@ class Task(object):
 
         with self._f_lock:
             os.rename(fn_tmp, fn)
-            with self._cnt_lock:
-                self.meta.finished += 1
+            self.set_fid_done(fid)
             
             fhash = original_hash[0:10]
             if fhash in self.dumplicated_file_map:
@@ -1134,19 +761,13 @@ class Task(object):
                     # if a file download is interrupted, it will appear in self.dumplicated_file_map as well
                     if int(info.fid) == int(fid):
                         continue
-                    rep_name = self._set_final_file_ext(info.fid, ext)
+                    rep_name = self._build_saving_file_name(info.fid, ext)
                     fn_rep = os.path.join(fpath, rep_name)
                     if not fn == fn_rep:
                         shutil.copyfile(fn, fn_rep)
-                        with self._cnt_lock:
-                            self.meta.finished += 1
+                        self.set_fid_done(info.fid)
                 del self.dumplicated_file_map[fhash]
         return True
-
-    def get_fname(self, imgurl):
-        pageurl, fname = self.reload_map[imgurl]
-        _, fid = RE_GALLERY.findall(pageurl)[0]
-        return int(fid), self.fid_2_file_name_map.get(fid, self.get_fidpad(fid))
 
     def get_task_dir(self) -> str:
         """
@@ -1161,17 +782,12 @@ class Task(object):
             id_str = gallery_id.zfill(9)
             dir1 = id_str[:3]
             dir2 = id_str[3:6]
-            base_dir = os.path.join(self.config['dir'], dir1, dir2)
+            base_dir = os.path.join(self.config.get("dir"), dir1, dir2)
             folder_name = f"{gallery_id} - {util.legalpath(self.meta.title)}"
             return os.path.join(base_dir, folder_name)
         else:
             # fallback for unknown/non-numeric id
-            return os.path.join(self.config['dir'], f"{gallery_id} - {util.legalpath(self.meta.title)}")
-
-    def get_fidpad(self, fid, ext='.jpg'):
-        if fid in self.fid_2_file_ext_map:
-            ext = self.fid_2_file_ext_map[fid]
-        return self._build_fid_file_name(fid, ext)
+            return os.path.join(self.config.get("dir"), f"{gallery_id} - {util.legalpath(self.meta.title)}")
 
     def make_archive(self, remove=True):
         dpath = self.get_task_dir()
@@ -1188,6 +804,11 @@ class Task(object):
             # but zipfile module does not support editing comment, we need to rewrite the zip file
             with zipfile.ZipFile(arc, 'a') as zipfile_target:
                 zipfile_target.comment = self.encode_meta()
+            if remove:
+                if os.path.exists(dpath):
+                    with self._f_lock:
+                        shutil.rmtree(dpath)
+                    
             return arc
 
         with zipfile.ZipFile(arc, 'w') as zipfile_target:
@@ -1196,23 +817,29 @@ class Task(object):
             # thus metadata can be packed with comic it self in a single file
             zipfile_target.comment = self.encode_meta()
 
-            for _i in range(1, len(self.fid_2_file_ext_map)+1):
-                t_fid = "%d" % _i
-                _f_name = self.get_fidpad(t_fid)
-                full_path = os.path.join(dpath, _f_name)
-                zipfile_target.write(full_path, _f_name, zipfile.ZIP_STORED)
+            for fid, name in self.fid_2_file_name_map.items():
+                full_path = os.path.join(dpath, name)
+                zipfile_target.write(full_path, name, zipfile.ZIP_STORED)
 
         if remove:
-            with self._f_lock:
-                shutil.rmtree(dpath)
+            if os.path.exists(dpath):
+                with self._f_lock:
+                    shutil.rmtree(dpath)
         return arc
 
-    def from_dict(self, j):
+    def from_dict(self, j, core_config=None):
         for k in self.__dict__:
             if k not in j:
                 continue
             if k == 'meta':
                 setattr(self, k, GalleryMeta.from_dict(j[k]))
+                continue
+            if k == 'config':
+                cfg = j[k] if isinstance(j[k], dict) else {}
+                if core_config is not None:
+                    setattr(self, k, core_config.create_task_config(cfg))
+                else:
+                    setattr(self, k, TaskConfig(cfg))
                 continue
             if k == 'dumplicated_file_map':
                 raw_map = j[k] if isinstance(j[k], dict) else {}
@@ -1232,20 +859,21 @@ class Task(object):
                 [getattr(self, k).put(e, False) for e in j[k]]
             else:
                 setattr(self, k, j[k])
-        _ = RE_INDEX.findall(self.url)
-        if _:
-            self.gid, self.sethash = _[0]
         return self
 
     def to_dict(self):
         d = dict({k: v for k, v in self.__dict__.items()
                   if not k.endswith('_q') and not k.startswith("_")})
         d['meta'] = self.meta.to_dict()
+        if hasattr(self.config, 'to_local_dict'): 
+            d['config'] = self.config.to_local_dict()
         d['dumplicated_file_map'] = {
             fhash: [info.to_dict() for info in infos if isinstance(info, DumplicatedFileInfo)]
             for fhash, infos in self.dumplicated_file_map.items()
         }
-        for k in ['img_q', 'page_q', 'list_q']:
+        
+        queues = [k for k in self.__dict__.keys() if k.endswith('_q')]
+        for k in queues:
             if getattr(self, k):
                 d[k] = [e for e in getattr(self, k).queue]
         return d

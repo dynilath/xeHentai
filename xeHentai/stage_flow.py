@@ -64,13 +64,16 @@ class TaskAbort(TaskControlFlow):
     """Signal non-failure abort flow (pause/shutdown/migration control)."""
 
 
-class TaskSkip(TaskControlFlow):
+class StageSkip(TaskControlFlow):
     """Signal a local skip in stage-level flow."""
 
 
 class ScanDownloadRetry(TaskControlFlow):
     """Retry the combined scan-download pipeline step with refreshed context."""
 
+
+class ScanDownloadSkip(TaskControlFlow):
+    """Skip the combined scan-download pipeline step, usually due to dumplicated or existing files."""
 
 @dataclass
 class GetMetaResult:
@@ -84,6 +87,7 @@ class ScanPageResult:
 
 @dataclass
 class ScanImageResult:
+    fid: str
     page_url: str
     img_url: Optional[str] = None
     reload_url: Optional[str] = None
