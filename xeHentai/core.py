@@ -33,7 +33,7 @@ sys.path.pop(1)
 
 class xeHentai(HostInterface):
     _TASK_CONFIG_KEYS = (
-        "download_ori", "rename_ori", "make_archive",
+        "download_ori", "make_archive",
         "delete_task_files", "jpn_title", "download_range"
     )
 

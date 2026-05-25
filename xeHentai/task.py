@@ -334,7 +334,6 @@ class Task(object):
             tags=self.meta.tags,
             total=self.meta.total,
             title=self.meta.title,
-            rename_ori=self.config['rename_ori'],
             download_ori=self.config['download_ori'],
             url=self.url,
             fid_page_hash_map=self.fid_2_page_hash_map,
