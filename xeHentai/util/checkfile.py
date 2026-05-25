@@ -39,7 +39,7 @@ def check_file(path:str, sha1:str)->bool:
         data = f.read()
         h = hashlib.sha1()
         h.update(data)
-        return h.hexdigest() == sha1
+        return h.hexdigest()[:len(sha1)] == sha1
 
 
 def extract_img_url_info(img_url:str)->ImgUrlInfo|None:

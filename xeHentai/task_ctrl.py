@@ -4,26 +4,26 @@ import shutil
 import time
 import traceback
 import asyncio
-from types import CoroutineType, SimpleNamespace
+from types import CoroutineType
 from collections import deque
 from functools import wraps
 
 from queue import Empty, Queue
-from typing import Any, Callable, Generator, List, Optional
+from typing import Any, List
 
 import requests
 
 from .scheduler import Scheduler
-from . import filters, reuse_index, util
-from .const import ERR_CANNOT_MAKE_ARCHIVE, ERR_GALLERY_REMOVED, ERR_IP_BANNED, ERR_ONLY_VISIBLE_EXH, RE_IMGHASH
+from . import filters, reuse_index
+from .const import ERR_CANNOT_MAKE_ARCHIVE, ERR_GALLERY_REMOVED, ERR_IP_BANNED, ERR_ONLY_VISIBLE_EXH
 from .const import TASK_STATE_FAILED, TASK_STATE_FINISHED, TASK_STATE_GET_META, TASK_STATE_MAKE_ARCHIVE, TASK_STATE_PAUSED, TASK_STATE_SCAN_IMG, TASK_STATE_SCAN_PAGE, TASK_STATE_WAITING, XEH_STATE_FULL_EXIT
 from .const import RE_GALLERY
-from .util.checkfile import extract_img_url_info, check_file
+from .util.checkfile import check_file
 from .host_interface import HostInterface
 from .i18n import i18n
 from .task import DumplicatedFileInfo, Task
 from .request_wrapper import HttpRequest
-from .exceptions import FilterException, ImageFileNotFoundException, ImagePageInfoParseException
+from .exceptions import FilterException, ImageFileNotFoundException
 from .exceptions import map_exception_policy
 from .stage_flow import StageAction
 from .stage_flow import GetMetaResult, ScanPageResult, ScanImageResult, DownloadResult
@@ -263,23 +263,6 @@ class TaskControl:
             raise TaskFinished('phase2 exact-match completed',
                                result=ScanPageResult(page_count=page_count))
 
-        
-        # start rebuild page queue for later stages
-        task.page_q.queue.clear()
-        task_dir = task.get_task_dir()
-        for fid, page_url in temp_fid_2_page_url_map.items():
-            expected_file_name = task.fid_2_file_name_map.get(fid)
-            expected_file_hash = task.fid_2_img_hash_map.get(fid)
-            if expected_file_hash and expected_file_name:
-                expected_path = os.path.join(task_dir, expected_file_name)
-                if check_file(expected_path, expected_file_hash):
-                    # file exists and matches expected hash, skip adding to page queue
-                    task.set_fid_done(fid)
-                    continue
-            
-            # file not found or hash mismatch, add to page queue for scanning and downloading
-            task.page_q.put(page_url)
-
         return ScanPageResult(page_count=page_count)
 
     @stage_retry_skip_scope
@@ -314,7 +297,8 @@ class TaskControl:
                 other = os.path.join(task.get_task_dir(), other_file_name)
                 if os.path.exists(other):
                     # 文件存在，说明之前下载过了，设置这个文件下载完成
-                    shutil.copy(other, expected)
+                    if not other == expected:
+                        shutil.copy(other, expected)
                     task.set_fid_done(unpad_fid)
                 else:
                     # 文件不存在，可能还没下载，添加到 dumpicated map
@@ -518,6 +502,11 @@ class TaskControl:
 
         if task.state == TASK_STATE_GET_META:
             task.state = TASK_STATE_SCAN_PAGE
+        else:
+            missing = [str(i+1) for i in range(task.meta.total) if str(i+1) not in task.fid_2_page_hash_map or str(i+1) not in task.fid_2_file_name_map]
+            if len(missing) > 0:
+                self.logger.warning("# %s Some pages are missing in task data, continue to scan pages, previous state: %s\n missing pages: %s" % (task_guid, task.state, missing))
+                task.state = TASK_STATE_GET_META
 
         if task.state <= TASK_STATE_SCAN_PAGE:
             self.logger.info(i18n.DF_STATE_START_SCAN_PAGE % task_guid)
@@ -528,7 +517,10 @@ class TaskControl:
             self._host.save_session()
 
             task.state = TASK_STATE_SCAN_IMG
-
+        
+        # build page queue for later stages, do this after scan_page to ensure the queue is up to date with scanned pages
+        task.build_page_queue()
+            
         if task.state <= TASK_STATE_SCAN_IMG and not task.page_q.empty():
             # Stage 4: SCAN_IMG
             # Stage 5: DOWNLOAD

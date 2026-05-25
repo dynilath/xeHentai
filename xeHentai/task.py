@@ -6,23 +6,23 @@
 import os
 import re
 import json
-import time
 import traceback
 import uuid
 import shutil
 import zipfile
-from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from threading import RLock
 from dataclasses import dataclass, asdict, field
 
 import requests
+from .util.checkfile import check_file
 from .util.logger import Logger
 from . import util
 from . import reuse_index
 from .task_config import TaskConfig
 from .const import *
 from .const import __version__
-from queue import Queue, Empty
+from queue import Queue
 
 
 @dataclass
@@ -216,6 +216,7 @@ class Task(object):
         # map fid to file name (without path)
         # just like fid_2_img_hash_map, this will help when the task is restarted
         # and we can check file existence by name before page scan
+        # Also, this map is used in making archive for collecting files
         # this map should not be in archive meta too
         self.fid_2_file_name_map: Dict[str, str] = {}
         
@@ -330,12 +331,12 @@ class Task(object):
         return re.findall(RESTR_SITE, self.url)[0]
 
 
-    def set_fid_done(self, fid):
+    def set_fid_done(self, fid: str):
         with self._cnt_lock:
             self._flist_done.add(int(fid))
             self.meta.finished = len(self._flist_done)
 
-    def _build_saving_file_name(self, fid:str, ext):
+    def _build_saving_file_name(self, fid: str, ext: str):
         return f"{fid.zfill(len(str(self.meta.total)))}{ext}"
 
     def _content_type_to_ext(self, content_type):
@@ -731,6 +732,33 @@ class Task(object):
             return os.path.join(self.config.get("dir"), f"{gallery_id} - {util.legalpath(self.meta.title)}")
 
 
+    def build_page_queue(self):
+        """Build the page queue based on fid_page_hash_map and existing files."""
+        
+        missing = [str(i+1) for i in range(self.meta.total) if str(i+1) not in self.fid_2_page_hash_map]
+        if len(missing) > 0:
+            self.logger.error("Missing page hash for fids: %s", ", ".join(missing))
+            raise ValueError("Missing page hash for some fids, cannot build page queue")
+        
+        self.page_q = Queue()  # per image page queue
+        # start rebuild page queue for later stages
+        self.page_q.queue.clear()
+        task_dir = self.get_task_dir()
+        for fid, page_hash in self.fid_2_page_hash_map.items():
+            expected_file_name = self.fid_2_file_name_map.get(fid)
+            expected_file_hash = self.fid_2_img_hash_map.get(fid)
+            if expected_file_hash and expected_file_name:
+                expected_path = os.path.join(task_dir, expected_file_name)
+                if check_file(expected_path, expected_file_hash):
+                    # file exists and matches expected hash, skip adding to page queue
+                    self.set_fid_done(fid)
+                    continue
+            
+            base_site = self.url.split(".org/")[0] + ".org"
+            page_url = f"{base_site}/s/{page_hash}/{self.gid}-{fid}"
+            # file not found or hash mismatch, add to page queue for scanning and downloading
+            self.page_q.put(page_url)
+
     def save_image_response_content(self, res: requests.Response, img_url:str) -> str:
         """Save the content of a response to the appropriate file path based on the image URL and fid.
 
@@ -756,6 +784,7 @@ class Task(object):
         if ext:
             fname = self._build_saving_file_name(fid, ext)
             self.reload_map[img_url][1] = fname
+            self.fid_2_file_name_map[fid] = fname
             
         fn = os.path.join(fpath, fname)
         fn_tmp = os.path.join(fpath, ".%s.xeh" % fname)
@@ -852,9 +881,8 @@ class Task(object):
                 }
                 setattr(self, k, restored_map)
                 continue
-            if k.endswith('_q') and j[k]:
-                setattr(self, k, Queue())
-                [getattr(self, k).put(e, False) for e in j[k]]
+            if k.endswith('_q'):
+                pass
             else:
                 setattr(self, k, j[k])
         return self
