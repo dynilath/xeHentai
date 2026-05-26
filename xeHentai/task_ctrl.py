@@ -288,32 +288,48 @@ class TaskControl:
             
             # STEP 1: Check if this image URL has been scanned before (dumplicated with another page)
             if image_url in task.reload_map:
-                # 已经存在，说明之前扫描过这个图片了
                 other_reload_url, other_file_name = task.reload_map[image_url]
 
                 _, other_unpad_fid = RE_GALLERY.findall(other_reload_url)[0]
 
-                # 先检查文件是否存在
                 other = os.path.join(task.get_task_dir(), other_file_name)
-                if os.path.exists(other):
-                    # 文件存在，说明之前下载过了，设置这个文件下载完成
-                    if not other == expected:
-                        shutil.copy(other, expected)
-                    task.set_fid_done(unpad_fid)
-                else:
-                    # 文件不存在，可能还没下载，添加到 dumpicated map
-                    task.dumplicated_file_map.setdefault(page_hash, []).append(DumplicatedFileInfo(
-                        fid=unpad_fid,
-                        existed_fid=other_unpad_fid,
-                        file_name=expected_saved,
-                        existed_file_name=other_file_name,
-                    ))
                 
-                raise ScanDownloadSkip(i18n.CF_SCANDOWNLOADSKIP_DUPLICATE, result=ScanImageResult(
-                    fid=unpad_fid, page_url=page_url, reload_url=reload_url))
+                if not other == expected:
+                    # the same file exists with different name
+                    # this is from dumplicated images in a gallery
+                    if os.path.exists(other):
+                        # copy the file to expected path
+                        # and mark fid done, so later scan/download stages will skip this image
+                        shutil.copy(other, expected)
+                        task.set_fid_done(unpad_fid)
+                    else:
+                        # the file from other page is not downloaded yet
+                        # add to dumplicated_file_map for later handling in download stage
+                        task.dumplicated_file_map.setdefault(page_hash, []).append(DumplicatedFileInfo(
+                            fid=unpad_fid,
+                            existed_fid=other_unpad_fid,
+                            file_name=expected_saved,
+                            existed_file_name=other_file_name,
+                        ))
+                    self.logger.debug(f"{task_guid}: found dumplicated image URL:  \nsrc {other} <-> \ntarger: {expected}\n URL: {image_url}")
+                    
+                    raise ScanDownloadSkip(i18n.CF_SCANDOWNLOADSKIP_DUPLICATE, result=ScanImageResult(
+                        fid=unpad_fid, page_url=page_url, reload_url=reload_url))
                 
             # STEP 2: Check if the file for this image URL already exists with correct hash
             # Might be downloaded restored from previous runs, or reuse other downloaded archives with same file (hash) but different URLs
+            # Some previous download might mistakenly set the file ext to .jpg/.png, so check them as well
+            for ext in [".jpg", ".png"]:
+                wf_expected_file = task._build_saving_file_name(unpad_fid, ext)
+                wf_expected = os.path.join(task.get_task_dir(), wf_expected_file)
+                if wf_expected == expected:
+                    break
+                if check_file(wf_expected, file_hash):
+                    shutil.copy(wf_expected, expected) 
+                    task.set_fid_done(unpad_fid)
+                    raise ScanDownloadSkip(i18n.CF_SCANDOWNLOADSKIP_EXISTING, result=ScanImageResult(
+                        fid=unpad_fid, page_url=page_url, reload_url=reload_url))
+            
             if check_file(expected, file_hash):
                 task.set_fid_done(unpad_fid)
                 raise ScanDownloadSkip(i18n.CF_SCANDOWNLOADSKIP_EXISTING, result=ScanImageResult(
@@ -412,7 +428,7 @@ class TaskControl:
                         task_guid, ex.result.fid, ex.reason))
                     return
                 except ScanDownloadRetry as ex:
-                    log_task_state('scan_download_retry')
+                    self.logger.info(f"{task_guid}: scan/download retry for page {current_page_url}")
                     current_page_url = ex.result.reload_url if ex.result and ex.result.reload_url else current_page_url
                     if ex.delay:
                         await asyncio.sleep(ex.delay)
