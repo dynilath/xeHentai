@@ -6,6 +6,7 @@
 import os
 import re
 import json
+import hashlib
 import traceback
 import uuid
 import shutil
@@ -23,6 +24,8 @@ from .task_config import CoreConfig, TaskConfig
 from .const import *
 from .const import __version__
 from queue import Queue
+
+from .util import checkfile
 
 
 @dataclass
@@ -108,9 +111,6 @@ class GalleryMeta:
             if key not in known_keys:
                 self.extra[key] = value
 
-    def has_title(self) -> bool:
-        return bool(self.title)
-
     def select_display_title(self, use_japanese_title: bool) -> None:
         if use_japanese_title and self.title_japanese:
             self.title = self.title_japanese
@@ -168,6 +168,24 @@ class ArchiveMeta:
         data["gnname"] = self.title_primary
         return data
 
+    @staticmethod
+    def decode_meta(comment_str: str) -> Optional[ArchiveMeta]:
+        """Decode and validate metadata from zip file comment"""
+        lbrace = comment_str.find("{")
+        rbrace = comment_str.rfind("}")
+        if lbrace == -1 or rbrace == -1 or lbrace > rbrace:
+            return None
+
+        meta_str = comment_str[lbrace : rbrace + 1]
+        if not meta_str:
+            return None
+
+        try:
+            data = json.loads(meta_str)
+            return ArchiveMeta.from_dict(data)
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+            return None
+
 
 @dataclass
 class DumplicatedFileInfo:
@@ -189,10 +207,148 @@ class DumplicatedFileInfo:
         )
 
 
+@dataclass
+class TaskReuseResources:
+    """Task reuse resources.
+
+    Attributes:
+        page_hash_file_map: A mapping from page hash to file path.
+        pending_archives: A list of pending archive reuse candidates that require page hash crawling.
+    """
+
+    page_hash_file_map: Dict[str, str] = field(default_factory=dict)
+    pending_archives: List[reuse_index.ArchiveReuseCandidate] = field(
+        default_factory=list
+    )
+
+    def reset(self) -> None:
+        self.page_hash_file_map.clear()
+        self.pending_archives.clear()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "page_hash_file_map": dict(self.page_hash_file_map),
+            "pending_archives": [item.to_dict() for item in self.pending_archives],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "TaskReuseResources":
+        payload = data if isinstance(data, dict) else {}
+        return cls(
+            page_hash_file_map={
+                str(page_hash): str(file_path)
+                for page_hash, file_path in dict(
+                    payload.get("page_hash_file_map", {}) or {}
+                ).items()
+                if page_hash and file_path
+            },
+            pending_archives=[
+                reuse_index.ArchiveReuseCandidate.from_dict(item)
+                for item in list(payload.get("pending_archives", []) or [])
+                if isinstance(item, dict)
+            ],
+        )
+
+    def register_page_hash_file(self, page_hash: str, file_path: str) -> bool:
+        self.page_hash_file_map[page_hash] = file_path
+        return True
+
+    def add_pending_archive(
+        self, archive_info: reuse_index.ArchiveReuseCandidate
+    ) -> None:
+        self.pending_archives.append(archive_info)
+
+    @staticmethod
+    def _reuse_file_path(
+        target_dir: str, candidate_gid: str, archive_file_name: str
+    ) -> str:
+        return os.path.join(target_dir, "%s - %s" % (candidate_gid, archive_file_name))
+
+
+    def _materialize_reuse_file(
+        self, target_dir:str, page_hash: str, total: int, fid: str, *, logger: Optional[Logger] = None
+    ) -> Optional[str]:
+        """Copy a matched reuse file into the current fid slot before page queue build.
+        Returns:
+            The target file path if materialization is done, otherwise None.
+        """
+        source_path = self.page_hash_file_map.get(page_hash)
+        if not source_path or not os.path.exists(source_path):
+            return None
+        ext = checkfile.detect_image_ext(source_path)
+        if not ext:
+            return None
+        target_fname = Task._build_saving_file_name(total, fid, ext)
+        target_path = os.path.join(target_dir, target_fname)
+
+        if os.path.exists(target_path):
+            return None
+        if source_path == target_path:
+            return None
+        shutil.copyfile(source_path, target_path)
+        return target_path
+
+    @staticmethod
+    def _build_archive_fid_to_path_map(
+        target_dir: str, candidate_gid: str, archive_path: str
+    ) -> Tuple[Optional[ArchiveMeta], List[str], Dict[str, str]]:
+        """Extract a candidate archive into the task directory and map fid to local file.
+        Arguments:
+            candidate_gid: The gid of the candidate archive
+            archive_path: The file path to the candidate archive zip.
+        Returns:
+            Tuple of (metadata, list of extracted file paths, fid to file path map)
+        """
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
+
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            comment_str = zf.comment.decode("UTF-8", errors="ignore")
+            metadata = ArchiveMeta.decode_meta(comment_str)
+            if metadata is None:
+                return None, [], {}
+
+            path_list: List[str] = []
+            fid_to_path: Dict[str, str] = {}
+            for member in zf.namelist():
+                if member.endswith("/"):
+                    continue
+
+                basename = os.path.basename(member)
+                if not basename:
+                    continue
+
+                local_name = "%s - %s" % (candidate_gid, basename)
+                local_path = os.path.join(target_dir, local_name)
+                tmp_path = "%s.xeh" % local_path
+
+                with zf.open(member, "r") as src, open(tmp_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                os.rename(tmp_path, local_path)
+
+                path_list.append(local_path)
+
+                stem, _ = os.path.splitext(basename)
+                if stem.isdigit():
+                    # "01" -> "1"
+                    fid_to_path[str(int(stem))] = local_path
+
+            # some metadata may have fid_fname_map
+            # it can be used to map fid to file
+            fid_fname_map = metadata.fid_page_hash_map or {}
+            for fid, archive_file_name in fid_fname_map.items():
+                archive_file_path = TaskReuseResources._reuse_file_path(
+                    target_dir, candidate_gid, archive_file_name
+                )
+                if os.path.exists(archive_file_path):
+                    fid_to_path[str(fid)] = archive_file_path
+
+            return metadata, path_list, fid_to_path
+
+
 class Task(object):
-    PRESCAN_STATUS_NONE = 0
-    PRESCAN_STATUS_COMPLETE = 1
-    PRESCAN_STATUS_COMPLETE_EXACT = 2
 
     def __init__(
         self, url: str, cfgdict: Dict[str, Any], logger: Logger, core_config=None
@@ -250,12 +406,11 @@ class Task(object):
         # thus we don't need to download the same file twice
         self.dumplicated_file_map: Dict[str, List[DumplicatedFileInfo]] = {}
 
-        # lazy-loaded mapping: page_hash -> (archive_path, archive_member_name)
-        self._related_archive_hash_index: Dict[str, Tuple[str, str]] = {}
-        self._related_archive_hash_index_ready: bool = False
-
         # shared, process-level reuse index injected by core
-        self._reuse_index: Optional[Dict[str, Any]] = None
+        self._reuse_index: Optional[reuse_index.ReuseIndexHandle] = None
+
+        # task-local reuse cache built after SCAN_PAGE
+        self.reuse: TaskReuseResources = TaskReuseResources()
 
         # and, the fid in these map will all be str
         # when int key dumps into files by python, it is somehow transformed into str
@@ -278,7 +433,7 @@ class Task(object):
             if (
                 "delete_task_files" in self.config
                 and self.config["delete_task_files"]
-                and self.meta.has_title()
+                and self.meta.title
             ):  # maybe it's a error task and meta is empty
                 fpath = self.get_task_dir()
                 # TODO: ascii can't decode? locale not enus, also check save_file
@@ -290,10 +445,6 @@ class Task(object):
         elif self.state in (TASK_STATE_FINISHED, TASK_STATE_FAILED):
             self.page_q = None
             self.reload_map = {}
-
-            if self.state == TASK_STATE_FAILED:
-                self._related_archive_hash_index = {}
-                self._related_archive_hash_index_ready = False
             # if 'filelist' in self.meta:
             #     del self.meta['filelist']
             # if 'resampled' in self.meta:
@@ -334,24 +485,6 @@ class Task(object):
             "UTF-8"
         )
 
-    @staticmethod
-    def decode_meta(comment_str: str) -> Optional[ArchiveMeta]:
-        """Decode and validate metadata from zip file comment"""
-        lbrace = comment_str.find("{")
-        rbrace = comment_str.rfind("}")
-        if lbrace == -1 or rbrace == -1 or lbrace > rbrace:
-            return None
-
-        meta_str = comment_str[lbrace : rbrace + 1]
-        if not meta_str:
-            return None
-
-        try:
-            data = json.loads(meta_str)
-            return ArchiveMeta.from_dict(data)
-        except (json.JSONDecodeError, ValueError, KeyError, TypeError):
-            return None
-
     def update_meta(self, meta: Dict[str, Any]) -> None:
         """Update metadata with type validation for critical fields"""
         self.meta.update_from_dict(meta)
@@ -365,8 +498,9 @@ class Task(object):
             self._flist_done.add(int(fid))
             self.meta.finished = len(self._flist_done)
 
-    def _build_saving_file_name(self, fid: str, ext: str):
-        return f"{fid.zfill(len(str(self.meta.total)))}{ext}"
+    @staticmethod
+    def _build_saving_file_name(total: int, fid: str, ext: str):
+        return f"{fid.zfill(len(str(total)))}{ext}"
 
     def _content_type_to_ext(self, content_type):
         """Map HTTP content type to file extension, result contains leading dot."""
@@ -380,20 +514,6 @@ class Task(object):
             "image/webp": ".webp",
         }
         return content_type_map.get(content_type)
-
-    def _fid_ext_map_from_archive_names(self, file_names):
-        """Build mapping of fid to file extension from a list of file names."""
-        fid_ext_map = {}
-        for file_name in file_names:
-            if not file_name or file_name.endswith("/"):
-                continue
-            _ = os.path.basename(file_name)
-            name, ext = os.path.splitext(_)
-            if not name.isdigit():
-                continue
-            fid = str(int(name))
-            fid_ext_map[fid] = ext or ".jpg"
-        return fid_ext_map
 
     def set_file_dumplicated(
         self,
@@ -434,226 +554,90 @@ class Task(object):
                 return os.path.join(bucket_dir, name)
         return None
 
-    def _build_related_archive_hash_index(self) -> None:
-        """Build a fallback hash index from #gnd-related archives.
+    def _file_sha1_prefix(self, file_path: str, length: int = 10) -> str:
+        with open(file_path, "rb") as handle:
+            digest = hashlib.sha1()
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()[:length]
 
-        This index is optional. Primary lookup should use global by_page_hash index.
-        """
-        if self._related_archive_hash_index_ready:
-            return
+    def prepare_reuse_files(self) -> Tuple[Set[str], int, int]:
+        """Build a task-local page_hash -> local file map from candidate archives."""
+        self.reuse.reset()
 
-        idx: Dict[str, Tuple[str, str]] = {}
-        for version in reversed(self.meta.newer_versions):
-            gid = str(version.get("gid", ""))
-            if not gid or gid == str(getattr(self, "gid", "")):
-                continue
-            arc = self._find_archive_by_gid(gid)
-            if not arc or not os.path.exists(arc):
-                continue
+        if self._reuse_index is None:
+            raise RuntimeError("Reuse index not available for task %s" % self.guid)
 
-            try:
-                with zipfile.ZipFile(arc, "r") as zf:
-                    metadata = self.decode_meta(
-                        zf.comment.decode("UTF-8", errors="ignore")
-                    )
-                    if not metadata or not metadata.fid_page_hash_map:
-                        continue
-
-                    fid_ext_map = self._fid_ext_map_from_archive_names(zf.namelist())
-
-                    for src_fid, src_hash in metadata.fid_page_hash_map.items():
-                        ext = fid_ext_map.get(str(src_fid))
-                        if not ext:
-                            continue
-                        if src_hash not in idx:
-                            idx[src_hash] = (arc, ext)
-            except (zipfile.BadZipFile, OSError, RuntimeError):
-                continue
-
-        self._related_archive_hash_index = idx
-        self._related_archive_hash_index_ready = True
-
-    def _iter_global_hash_candidates(self, page_hash: str):
-        """Yield valid source candidates from shared global index for a page hash."""
-        if not self._reuse_index:
-            return
-
-        # SQLite mode
-        if self._reuse_index.get("_sqlite"):
-            import sqlite3
-
-            db_path = self._reuse_index.get("_db_path", "h.reuse.db")
-            try:
-                conn = sqlite3.connect(db_path)
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(
-                    """
-                    SELECT gid, fid, source_type, source_path, member_name, size_text, updated_at
-                    FROM page_hashes
-                    WHERE page_hash = ?
-                    ORDER BY updated_at DESC
-                """,
-                    (page_hash,),
-                ).fetchall()
-                conn.close()
-
-                for row in rows:
-                    source_path = row["source_path"]
-                    if source_path and os.path.exists(source_path):
-                        yield {
-                            "gid": row["gid"],
-                            "fid": row["fid"],
-                            "source_type": row["source_type"],
-                            "source_path": source_path,
-                            "member_name": row["member_name"],
-                            "size_text": row["size_text"],
-                            "updated_at": row["updated_at"],
-                        }
-            except Exception:
-                pass
-        else:
-            # Legacy JSON mode
-            by_hash = self._reuse_index.get("by_page_hash", {})
-            entries = by_hash.get(page_hash, [])
-            entries = sorted(
-                entries, key=lambda x: int(x.get("updated_at", 0)), reverse=True
-            )
-            for entry in entries:
-                source_path = entry.get("source_path")
-                if source_path and os.path.exists(source_path):
-                    yield entry
-
-    def _try_copy_from_source(
-        self, entry: Dict[str, Any], target_path: str, size_text: str
-    ) -> bool:
-        """Copy from a source entry (zip member or plain file) and verify size range."""
-        source_type = entry.get("source_type")
-        source_path = entry.get("source_path")
-        member_name = entry.get("member_name")
-
-        if (
-            not source_type
-            or not source_path
-            or not os.path.exists(source_path)
-            or not member_name
-        ):
-            return False
-
-        tmp_path = "%s.xeh" % target_path
-        try:
-            if source_type == "zip":
-                with zipfile.ZipFile(source_path, "r") as zf:
-                    with zf.open(member_name, "r") as src, open(tmp_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-            elif source_type == "file":
-                shutil.copyfile(source_path, tmp_path)
-            else:
-                return False
-
-            if os.path.exists(target_path):
-                os.remove(target_path)
-            os.rename(tmp_path, target_path)
-            return True
-        except (KeyError, OSError, zipfile.BadZipFile):
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-            return False
-
-    def _try_reuse_from_related_archive(
-        self, page_hash: str, target_name: str, size_text: str
-    ) -> bool:
-        """Try to reuse by hash from global index first, then #gnd fallback."""
-        target_dir = self.get_task_dir()
-        if not os.path.exists(target_dir):
-            os.makedirs(target_dir)
-        target_path = os.path.join(target_dir, target_name)
-
-        for entry in self._iter_global_hash_candidates(page_hash) or []:
-            if self._try_copy_from_source(entry, target_path, size_text):
-                return True
-
-        self._build_related_archive_hash_index()
-        source = self._related_archive_hash_index.get(page_hash)
-        if not source:
-            return False
-        archive_path, member_name = source
-        return self._try_copy_from_source(
-            {
-                "source_type": "zip",
-                "source_path": archive_path,
-                "member_name": member_name,
-            },
-            target_path,
-            size_text,
-        )
-
-    def _collect_prescan_archive_candidates(
-        self, current_arc: str
-    ) -> List[Dict[str, Any]]:
-        """Collect archive candidates for prescan from the shared search index."""
-        return reuse_index.collect_prescan_candidates(
+        candidates = reuse_index.collect_archive_reuse_candidates(
             self._reuse_index,
-            current_arc,
             self.meta.title,
-            str(getattr(self, "gid", "")),
-            self.meta.newer_versions,
+            self.gid,
         )
 
-    def prescan_extract_series_files(self) -> Dict[str, Any]:
-        """Prescan and extract matching files from series archives before download.
+        archives_considered = set()
+        for candidate in candidates:
+            if candidate.gid == str(self.gid):
+                continue
+            if not os.path.exists(candidate.archive_path):
+                continue
 
-        Returns:
-            Dict with 'extracted_count' and 'sources' list
-        """
-        if not self.meta or not self.meta.has_title():
-            return {"extracted_count": 0, "sources": []}
+            try:
+                metadata, path_list, fid_to_path = (
+                    TaskReuseResources._build_archive_fid_to_path_map(
+                        self.get_task_dir(), candidate.gid, candidate.archive_path
+                    )
+                )
+            except (OSError, zipfile.BadZipFile, RuntimeError) as ex:
+                self.logger.warning(
+                    "%s: cannot reuse archive %s: %s",
+                    self.guid,
+                    candidate.archive_path,
+                    str(ex),
+                )
+                continue
 
-        folder_path = self.get_task_dir()
-        current_arc = "%s.zip" % folder_path
+            archives_considered.add(candidate.archive_path)
 
-        # Collect candidates via title matching and version graph
-        candidates = self._collect_prescan_archive_candidates(current_arc)
+            if metadata is None or not metadata.url:
+                self.logger.warning(
+                    "%s: cannot reuse archive %s: unparseable archive comment",
+                    self.guid,
+                    candidate.archive_path,
+                )
+                continue
 
-        if not candidates or len(candidates) <= 1:  # Only current archive
-            return {"extracted_count": 0, "sources": []}
+            if metadata.fid_page_hash_map:
+                for fid, page_hash in metadata.fid_page_hash_map.items():
+                    fpath = fid_to_path.get(str(fid))
+                    if fpath:
+                        self.reuse.register_page_hash_file(page_hash, fpath)
+                continue
 
-        # Extract matching files from candidates
-        result = reuse_index.prescan_extract_from_candidates(
-            self._reuse_index,
-            candidates,
-            self,
-            require_relation=False,  # Allow series_title matches for better coverage
-        )
+            if metadata.download_ori:
+                for path in path_list:
+                    self.reuse.register_page_hash_file(checkfile.file_hash(path), path)
+                continue
 
-        return result
+            if not metadata.download_ori and metadata.fid_page_hash_map is None:
+                # if the archive doesn't have page hash map and also doesn't download ori
+                # we can still try recover page hash by page scan
+                # this is not very efficient but better than nothing
+                self.reuse.add_pending_archive(candidate)
 
-    def _can_extract_foreign_archive(
-        self, metadata: Optional[ArchiveMeta], candidate: Dict[str, Any]
-    ) -> bool:
-        """Validate whether a foreign archive can seed the current task directory."""
-        if metadata is None:
-            return False
-
-        candidate_url = metadata.url or str(candidate.get("candidate_url", ""))
-        candidate_gid = reuse_index.extract_gid_from_url(candidate_url) or str(
-            candidate.get("candidate_gid", "")
-        )
-        if not candidate_url and not candidate_gid:
-            return False
-
-        return reuse_index.is_known_related(
-            self._reuse_index,
-            self.url,
-            str(getattr(self, "gid", "")),
-            candidate_url,
-            candidate_gid,
-            self.meta.newer_versions,
+        return (
+            archives_considered,
+            len(self.reuse.pending_archives),
+            len(self.reuse.page_hash_file_map),
         )
 
     # scan folder or zip file before all worker start working
     # it is designed mainly to remove truncated file and extract those outdated zip files
     def exact_downloaded_exits(
-        self, require_fid_page_hash_map: bool = False
+        self, require_fid_page_hash_map: bool = False,
+        extract_non_exact_match: bool = False
     ) -> Tuple[Literal[True], str] | Tuple[Literal[False], Optional[str]]:
         """Check if an exact matching archive exists (by gid/hash).
 
@@ -664,13 +648,14 @@ class Task(object):
             require_fid_page_hash_map: If True (Phase 1), requires the found archive to have
                                       fid_page_hash_map in its metadata. If False (Phase 2),
                                       accepts match regardless of fid_page_hash_map presence.
+            extract_non_exact_match: If True, allows extraction of files from non-exact matching archives.
 
         Returns:
             (bool, archive_path or None): (True, path) if exact match found, (False, None) for
                                           no match, (False, path) for non-exact match.
         """
         # fpath requires title
-        if not self.meta.has_title():
+        if not self.meta.title:
             return False, None
 
         folder_path = self.get_task_dir()
@@ -680,7 +665,7 @@ class Task(object):
             """Check if zip is an exact gid+hash match with valid metadata."""
             try:
                 comment_str = zipfile_target.comment.decode("UTF-8", errors="ignore")
-                metadata = self.decode_meta(comment_str)
+                metadata = ArchiveMeta.decode_meta(comment_str)
 
                 # Check marker, url, and file count
                 marker_ok = comment_str.startswith("xeHentai Archiver v")
@@ -695,17 +680,11 @@ class Task(object):
 
                 # Check gid+hash match
                 assert metadata is not None
-                arc_index = RE_INDEX.findall(metadata.url)
-                current_gid = str(getattr(self, "gid", "") or "")
-                current_hash = str(getattr(self, "sethash", "") or "")
-                if not current_gid or not current_hash:
-                    cur_index = RE_INDEX.findall(self.url)
-                    if cur_index:
-                        current_gid, current_hash = cur_index[0]
 
-                if arc_index and current_gid and current_hash:
+                arc_index = RE_INDEX.findall(metadata.url)
+                if arc_index and self.gid and self.sethash:
                     arc_gid, arc_hash = arc_index[0]
-                    if arc_gid == current_gid and arc_hash == current_hash:
+                    if arc_gid == self.gid and arc_hash == self.sethash:
                         # Phase 1: Require fid_page_hash_map in archive metadata
                         if require_fid_page_hash_map:
                             if not metadata.fid_page_hash_map:
@@ -744,6 +723,13 @@ class Task(object):
                         os.remove(member_path)
                     with zf.open(member, "r") as src, open(member_path, "wb") as dst:
                         shutil.copyfileobj(src, dst)
+                    ext = checkfile.detect_image_ext(member_path)
+                    if ext:
+                        stem = os.path.splitext(os.path.basename(member))[0]
+                        reexted_name = f"{stem}{ext}"
+                        reexted_path = os.path.join(task_dir, reexted_name)
+                        if member_path != reexted_path:
+                            os.rename(member_path, reexted_path)
 
             os.remove(arc_path)
 
@@ -756,7 +742,8 @@ class Task(object):
                     is_exact, metadata = _check_exact_match(current_zip)
                     if is_exact:
                         return True, archive_path
-                _reuse_not_exact_zip(archive_path)
+                if extract_non_exact_match:
+                    _reuse_not_exact_zip(archive_path)
                 return False, archive_path
             except zipfile.BadZipFile:
                 try:
@@ -778,7 +765,8 @@ class Task(object):
                         is_exact, metadata = _check_exact_match(gid_zip)
                         if is_exact:
                             return True, gid_arc
-                    _reuse_not_exact_zip(gid_arc)
+                    if extract_non_exact_match:
+                        _reuse_not_exact_zip(gid_arc)
                     return False, gid_arc
                 except zipfile.BadZipFile:
                     pass
@@ -825,6 +813,18 @@ class Task(object):
         self.page_q.queue.clear()
         task_dir = self.get_task_dir()
         for fid, page_hash in self.fid_2_page_hash_map.items():
+            # first try to materialize reuse file for this page hash, if hit, we can skip page scan and directly mark fid done
+            target_path = self.reuse._materialize_reuse_file(
+                task_dir, page_hash, self.meta.total, fid, logger=self.logger
+            )
+            if target_path:
+                basename = os.path.basename(target_path)
+                self.fid_2_file_name_map[fid] = basename
+                self.set_fid_done(fid)
+                continue
+
+            # if reuse not hit, then check if the file already exists by name and hash, if hit, we can also skip page scan and mark fid done
+            # this is for the case when the task is restarted and files are already downloaded, we can avoid re-downloading and just check file existence and integrity by hash
             expected_file_name = self.fid_2_file_name_map.get(fid)
             expected_file_hash = self.fid_2_img_hash_map.get(fid)
             if expected_file_hash and expected_file_name:
@@ -862,7 +862,7 @@ class Task(object):
         _, fid = RE_GALLERY.findall(pageurl)[0]
         ext = self._content_type_to_ext(content_type)
         if ext:
-            fname = self._build_saving_file_name(fid, ext)
+            fname = Task._build_saving_file_name(self.meta.total, fid, ext)
             self.reload_map[img_url] = (pageurl, fname)
             self.fid_2_file_name_map[fid] = fname
         else:
@@ -892,7 +892,7 @@ class Task(object):
             for info in self.dumplicated_file_map[page_hash]:
                 if int(info.fid) == int(fid):
                     continue
-                rep_name = self._build_saving_file_name(info.fid, ext)
+                rep_name = Task._build_saving_file_name(self.meta.total, info.fid, ext)
                 fn_rep = os.path.join(fpath, rep_name)
                 if not fn == fn_rep:
                     shutil.copyfile(fn, fn_rep)
@@ -963,6 +963,9 @@ class Task(object):
                 }
                 setattr(self, k, restored_map)
                 continue
+            if k == "reuse":
+                setattr(self, k, TaskReuseResources.from_dict(j[k]))
+                continue
             if k.endswith("_q"):
                 pass
             else:
@@ -980,6 +983,7 @@ class Task(object):
         d["meta"] = self.meta.to_dict()
         if hasattr(self.config, "to_local_dict"):
             d["config"] = self.config.to_local_dict()
+        d["reuse"] = self.reuse.to_dict()
         d["dumplicated_file_map"] = {
             fhash: [
                 info.to_dict()

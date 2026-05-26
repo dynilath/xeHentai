@@ -67,7 +67,7 @@ class xeHentai(HostInterface):
             "Connection": "keep-alive",
         }
         self.has_login = False
-        self.global_reuse_index = reuse_index.ensure_reuse_index({})
+        self.global_reuse_index = reuse_index.ensure_reuse_index()
         self._task_control = TaskControl(self)
         self.load_session()
         self.rpc = None
@@ -79,10 +79,6 @@ class xeHentai(HostInterface):
     @_exit.setter
     def _exit(self, value):
         self._task_control._exit = value
-
-    def _update_task_reuse_index(self, task):
-        """Upsert reusable page-hash mappings from a task into global_reuse_index."""
-        self._task_control._update_task_reuse_index(task)
 
     def _load_proxy_store(self):
         try:
@@ -215,7 +211,7 @@ class xeHentai(HostInterface):
             t.set_fail(ERR_CANT_DOWNLOAD_EXH)
         else:
             self.tasks.put(t.guid)
-            self.save_session()
+            self._save_session(task=True)
             return 0, t.guid
         self.logger.error(i18n.TASK_ERROR % (t.guid, i18n.c(t.failcode)))
         return t.failcode, None
@@ -262,7 +258,7 @@ class xeHentai(HostInterface):
     def _cleanup(self):
         tc = self._task_control
         tc._exit = tc._exit if tc._exit > 0 else XEH_STATE_SOFT_EXIT
-        self.save_session()
+        self._save_session(task=True)
         tc.join_all()
         self.logger.cleanup()
         # let's send a request to rpc server to unblock it
@@ -278,50 +274,39 @@ class xeHentai(HostInterface):
                 pass
             self.rpc.join()
         # save it again in case we miss something
-        self.save_session()
+        self._save_session(task=True)
         tc._exit = XEH_STATE_CLEAN
 
-    def _save_session(self):
+    def _save_session(self,*, task=False, proxy_store=False, cookies=False):
         errors = []
-        try:
-            session_store.save_tasks(
-                {}
-                if not self.config["save_tasks"]
-                else {k: v.to_dict() for k, v in self._all_tasks.items()}
-            )
-        except Exception as ex:
-            errors.append(str(ex))
-            self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
+        if task:
+            try:
+                session_store.save_tasks(
+                    {}
+                    if not self.config["save_tasks"]
+                    else {k: v.to_dict() for k, v in self._all_tasks.items()}
+                )
+            except Exception as ex:
+                errors.append(str(ex))
+                self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
 
-        try:
-            session_store.save_cookies(self.cookies)
-        except Exception as ex:
-            errors.append(str(ex))
-            self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
-
-        try:
-            reuse_index.save_reuse_index(self.global_reuse_index)
-        except Exception as ex:
-            errors.append(str(ex))
-            self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
-
-        try:
-            self._save_proxy_store(self._merge_proxy_store())
-        except Exception as ex:
-            errors.append(str(ex))
-            self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
+        if cookies:
+            try:
+                session_store.save_cookies(self.cookies)
+            except Exception as ex:
+                errors.append(str(ex))
+                self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
+        
+        if proxy_store and self.proxy: 
+            try:
+                self._save_proxy_store(self._merge_proxy_store())
+            except Exception as ex:
+                errors.append(str(ex))
+                self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
         
         return errors
 
     
-    def save_session(self):
-        ret = self._save_session()
-        if ret:
-            return ERR_SAVE_SESSION_FAILED, "\n\n".join(ret)
-        return ERR_NO_ERROR, None
-
-        
-
     def system_status(self):
         state_2_names = {
             TASK_STATE_PAUSED: "paused",
@@ -445,7 +430,7 @@ class xeHentai(HostInterface):
         self.cookies.update({'ipb_member_id': cooid, 'ipb_pass_hash': coopw})
         self.headers.update({"Cookie": util.make_cookie(self.cookies)})
         self.has_login = True
-        self.save_session()
+        self._save_session(cookies=True)
         self.logger.info(i18n.XEH_LOGIN_OK)
         
         return ERR_NO_ERROR, self.has_login

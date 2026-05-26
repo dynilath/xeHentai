@@ -134,7 +134,7 @@ PROXY_DISABLE_BANNED = "disable a banned proxy, expire in about %ss"
 # forked i18n items
 DF_FULLY_MATCHED = "task #%s found fully-matched zip (same gid/hash) at %s"
 DF_FULLY_MATCHED_UPDATED = "task #%s archive metadata updated, new archive at %s"
-PRESCAN_EXTRACTED = "task #%s prescan extracted %d files from %d series archive(s)"
+ARCHIVE_REUSE_EXTRACTED = "task #%s extracted %d files from %d series archive(s)"
 DF_STATE_START_SCAN_PAGE = "task #%s start scanning pages"
 DF_FILE_DOWNLOADED_SKIPPED = "task {} skipped downloading image #{} {}"
 

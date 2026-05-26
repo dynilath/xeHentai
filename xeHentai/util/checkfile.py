@@ -65,3 +65,56 @@ def extract_img_url_info(img_url: str) -> ImgUrlInfo | None:
             format=format,
         )
     return None
+
+def file_hash(path: str, length: int = 10) -> str:
+    """Calculate the SHA-1 hash of a file.
+
+    Args:
+        path: Path to the file to be hashed.
+        length: Length of the hash digest to return (default is 10).
+    Returns:
+        The SHA-1 hash digest of the file, truncated to the specified length.
+    """
+    with open(path, "rb") as handle:
+        digest = hashlib.sha1()
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()[:length]
+
+from pathlib import Path
+
+
+def detect_image_ext(path: str) -> str | None:
+    """Detect the image file type based on its header bytes."""
+    
+    with open(path, "rb") as f:
+        header = f.read(32)
+
+    # JPEG
+    if header.startswith(b"\xFF\xD8\xFF"):
+        return ".jpg"
+
+    # PNG
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+
+    # GIF
+    if header.startswith(b"GIF87a") or header.startswith(b"GIF89a"):
+        return ".gif"
+
+    # BMP
+    if header.startswith(b"BM"):
+        return ".bmp"
+
+    # WEBP
+    if (
+        len(header) >= 12
+        and header[:4] == b"RIFF"
+        and header[8:12] == b"WEBP"
+    ):
+        return ".webp"
+
+    return None

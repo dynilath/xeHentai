@@ -5,6 +5,7 @@
 from typing import List, Protocol, Any, Dict, Optional
 from queue import Queue
 
+from .reuse_index import ReuseIndexHandle
 from .task import Task
 
 from .util.logger import Logger
@@ -30,7 +31,7 @@ class HostInterface(Protocol):
     has_login: bool
     """Whether the host is logged in."""
 
-    global_reuse_index: Dict[str, Any]
+    global_reuse_index: ReuseIndexHandle
     """Global reuse index for task optimization."""
 
     tasks: Queue[str]
@@ -43,7 +44,7 @@ class HostInterface(Protocol):
     """Dictionary of all tasks by GUID."""
 
     # Methods
-    def _save_session(self) -> List[str]:
+    def _save_session(self,*, task=False, proxy_store=False, cookies=False) -> List[str]:
         """Save the current session state."""
         ...
 

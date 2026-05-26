@@ -134,7 +134,7 @@ PROXY_DISABLE_BANNED = "禁用了一个被ban的代理，将在约%s秒后恢复
 # forked i18n items
 DF_FULLY_MATCHED = "任务 #%s 找到完全匹配的压缩包 (相同的 gid/hash)，位于 %s"
 DF_FULLY_MATCHED_UPDATED = "任务 #%s 压缩包元数据已更新，新压缩包位于 %s"
-PRESCAN_EXTRACTED = "任务 #%s 预扫描从 %d 个系列压缩包中提取了 %d 个文件"
+ARCHIVE_REUSE_EXTRACTED = "任务 #%s 从 %d 个同系列压缩包中提取了 %d 个文件"
 DF_STATE_START_SCAN_PAGE = "任务 #%s 开始扫描页面"
 DF_FILE_DOWNLOADED_SKIPPED = "任务 {} 跳过下载图片 #{} {}"
 

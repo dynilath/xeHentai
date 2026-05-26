@@ -6,11 +6,16 @@ import traceback
 from typing import Iterable, Optional, Set
 
 from .const import (
+    ERR_CONNECTION_ERROR,
+    ERR_GALLERY_NOT_FOUND,
+    ERR_GALLERY_REMOVED,
     ERR_HATH_NOT_FOUND,
     ERR_IMAGE_BROKEN,
     ERR_IMAGE_RESAMPLED,
+    ERR_IP_BANNED,
     ERR_KEY_EXPIRED,
     ERR_NO_PAGEURL_FOUND,
+    ERR_ONLY_VISIBLE_EXH,
     ERR_QUOTA_EXCEEDED,
     ERR_SCAN_REGEX_FAILED,
     ERR_STREAM_NOT_IMPLEMENTED,
@@ -32,6 +37,49 @@ class FilterException(Exception):
         self.code = code
         self.url = url
         self.reason = reason
+
+class GalleryRemovedException(FilterException):
+    """Raised when the gallery is removed, e.g. due to DMCA takedown.
+    Should abort the entire gallery crawl.
+    """
+
+    def __init__(self, url):
+        FilterException.__init__(self, ERR_GALLERY_REMOVED, url)
+
+class GalleryNotFoundException(FilterException):
+    """Raised when the gallery is not found, e.g. due to deletion or pending availability.
+    Should abort the entire gallery crawl.
+    """
+
+    def __init__(self, url):
+        FilterException.__init__(self, ERR_GALLERY_NOT_FOUND, url)
+        
+class VisibleOnlyInExhentaiException(FilterException):
+    """Raised when the gallery is only visible in exhentai.org, e.g. due to content sensitivity.
+    Should abort the entire gallery crawl.
+    """
+
+    def __init__(self, url):
+        FilterException.__init__(self, ERR_ONLY_VISIBLE_EXH, url)
+
+
+class IPBannedException(FilterException):
+    """Raised when the server reports the client's IP address has been temporarily banned.
+    Should switch to the next proxy and retry the request with reloaded URL.
+    The necessary waiting is handled by the proxy control logic.
+    """
+
+    def __init__(self, url, reason=None):
+        FilterException.__init__(self, ERR_IP_BANNED, url, reason)
+
+
+class MetaDataParseException(FilterException):
+    """Raised when the gallery metadata parsing fails, e.g. due to site structure change.
+    Should abort the entire gallery crawl.
+    """
+
+    def __init__(self, url, reason=None):
+        FilterException.__init__(self, ERR_CONNECTION_ERROR, url, reason)
 
 
 class QuotaExceededException(FilterException):
@@ -228,6 +276,11 @@ def map_exception_policy(
             ImagePageInfoParseException,
             ImagePageInvalidException,
             ImageFileStreamException,
+            GalleryRemovedException,
+            GalleryNotFoundException,
+            VisibleOnlyInExhentaiException,
+            IPBannedException,
+            MetaDataParseException
         ),
     ):
         return ExceptionPolicy(
