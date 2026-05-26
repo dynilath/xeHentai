@@ -2,10 +2,10 @@ from collections.abc import MutableMapping
 from typing import Any, Dict, Iterator, Mapping, Optional
 
 
-class TaskConfig(MutableMapping[str, Any]):
+class TaskConfig:
 	"""Task-level config view with parent fallback."""
 
-	def __init__(self, local: Optional[Mapping[str, Any]] = None, parent: Optional[Mapping[str, Any]] = None):
+	def __init__(self, local: Optional[Mapping[str, Any]] = None, parent: Optional[CoreConfig] = None):
 		self._local: Dict[str, Any] = dict(local or {})
 		self._parent = parent
 
@@ -60,10 +60,7 @@ class TaskConfig(MutableMapping[str, Any]):
 	def to_dict(self) -> Dict[str, Any]:
 		merged: Dict[str, Any] = {}
 		if self._parent is not None:
-			if hasattr(self._parent, 'to_dict'):
-				merged.update(self._parent.to_dict())
-			else:
-				merged.update(dict(self._parent))
+			merged.update(dict(self._parent))
 		merged.update(self._local)
 		return merged
 

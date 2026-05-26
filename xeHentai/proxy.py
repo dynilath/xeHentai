@@ -35,31 +35,35 @@ class ProxyPoolDepleted(ProxyPoolException):
     def __init__(self, message="proxy pool depleted", retry_after=0.0):
         ProxyPoolException.__init__(self, message, retry_after=retry_after)
 
+
 @dataclass
 class ProxyState:
     score: float = 1.0
     cooldown_until: float = 0
     disabled: bool = False
     last_update: float = 0
-    
+
+
 DEFAULT_HALF_LIFE = 600
 DEFAULT_FAIL_PENALTY = 0.3
 DEFAULT_SUCCESS_REWARD = 0.05
 DEFAULT_DISABLE_THRESHOLD = 0.15
 
-class ProxyControl(object):    
+
+class ProxyControl(object):
     def __init__(
-            self,
-            handle: Callable[[requests.Session], Callable[..., requests.Response]],
-            addr: str = "",
-            half_life: float = DEFAULT_HALF_LIFE,
-            fail_penalty: float = DEFAULT_FAIL_PENALTY,
-            success_reward: float = DEFAULT_SUCCESS_REWARD,
-            disable_threshold: float = DEFAULT_DISABLE_THRESHOLD):
-        
+        self,
+        handle: Callable[[requests.Session], Callable[..., requests.Response]],
+        addr: str = "",
+        half_life: float = DEFAULT_HALF_LIFE,
+        fail_penalty: float = DEFAULT_FAIL_PENALTY,
+        success_reward: float = DEFAULT_SUCCESS_REWARD,
+        disable_threshold: float = DEFAULT_DISABLE_THRESHOLD,
+    ):
+
         def clamp(value: float) -> float:
             return min(max(float(value), 0.0), 1.0)
-        
+
         self.handle = handle
         self.addr = addr
         self.half_life = max(1e-3, float(half_life))
@@ -72,7 +76,7 @@ class ProxyControl(object):
         if not isinstance(data, dict):
             return
 
-        state = data.get('state', {})
+        state = data.get("state", {})
 
         def _to_float(value, default):
             try:
@@ -84,30 +88,43 @@ class ProxyControl(object):
             if isinstance(value, bool):
                 return value
             if isinstance(value, str):
-                return value.lower() in ('1', 'true', 'yes', 'on')
+                return value.lower() in ("1", "true", "yes", "on")
             return default
 
-        self.half_life = max(1e-3, _to_float(data.get('half_life'), self.half_life))
-        self.fail_penalty = min(max(_to_float(data.get('fail_penalty'), self.fail_penalty), 0.0), 1.0)
-        self.success_reward = min(max(_to_float(data.get('success_reward'), self.success_reward), 0.0), 1.0)
-        self.disable_threshold = min(max(_to_float(data.get('disable_threshold'), self.disable_threshold), 0.0), 1.0)
+        self.half_life = max(1e-3, _to_float(data.get("half_life"), self.half_life))
+        self.fail_penalty = min(
+            max(_to_float(data.get("fail_penalty"), self.fail_penalty), 0.0), 1.0
+        )
+        self.success_reward = min(
+            max(_to_float(data.get("success_reward"), self.success_reward), 0.0), 1.0
+        )
+        self.disable_threshold = min(
+            max(_to_float(data.get("disable_threshold"), self.disable_threshold), 0.0),
+            1.0,
+        )
 
-        self.state.score = min(max(_to_float(state.get('score'), self.state.score), 0.0), 1.0)
-        self.state.cooldown_until = max(0.0, _to_float(state.get('cooldown_until'), self.state.cooldown_until))
-        self.state.disabled = _to_bool(state.get('disabled'), self.state.disabled)
-        self.state.last_update = max(0.0, _to_float(state.get('last_update'), self.state.last_update))
+        self.state.score = min(
+            max(_to_float(state.get("score"), self.state.score), 0.0), 1.0
+        )
+        self.state.cooldown_until = max(
+            0.0, _to_float(state.get("cooldown_until"), self.state.cooldown_until)
+        )
+        self.state.disabled = _to_bool(state.get("disabled"), self.state.disabled)
+        self.state.last_update = max(
+            0.0, _to_float(state.get("last_update"), self.state.last_update)
+        )
 
     def export_state(self) -> Dict[str, Any]:
         return {
-            'half_life': self.half_life,
-            'fail_penalty': self.fail_penalty,
-            'success_reward': self.success_reward,
-            'disable_threshold': self.disable_threshold,
-            'state': {
-                'score': self.state.score,
-                'cooldown_until': self.state.cooldown_until,
-                'disabled': self.state.disabled,
-                'last_update': self.state.last_update,
+            "half_life": self.half_life,
+            "fail_penalty": self.fail_penalty,
+            "success_reward": self.success_reward,
+            "disable_threshold": self.disable_threshold,
+            "state": {
+                "score": self.state.score,
+                "cooldown_until": self.state.cooldown_until,
+                "disabled": self.state.disabled,
+                "last_update": self.state.last_update,
             },
         }
 
@@ -123,10 +140,10 @@ class ProxyControl(object):
         now = time.time()
         dt = now - self.state.last_update
         self.state.last_update = now
-        
+
         decay = math.exp(-dt / self.half_life)
         self.state.score = 1 - (1 - self.state.score) * decay
-        
+
     def success(self):
         self._decay()
         self.state.score = min(
@@ -136,7 +153,7 @@ class ProxyControl(object):
 
     def fail(self):
         self._decay()
-        self.state.score *= (1 - self.fail_penalty)
+        self.state.score *= 1 - self.fail_penalty
 
     def cooldown(self, seconds):
         self.state.cooldown_until = time.time() + seconds
@@ -232,36 +249,26 @@ class ProxyPool(object):
 
 
 def socks_proxy(addr):
-    proxy_info = {
-        'http': addr,
-        'https': addr
-    }
+    proxy_info = {"http": addr, "https": addr}
 
     def handle(session: requests.Session):
         def f(*args, **kwargs):
-            kwargs.update({'proxies': proxy_info})
+            kwargs.update({"proxies": proxy_info})
             return session.request(*args, **kwargs)
+
         return f
+
     return handle
 
 
 def http_proxy(addr):
-    proxy_info = {
-        'http': addr,
-        'https': addr
-    }
+    proxy_info = {"http": addr, "https": addr}
 
     def handle(session: requests.Session):
         def f(*args, **kwargs):
-            kwargs.update({'proxies': proxy_info})
+            kwargs.update({"proxies": proxy_info})
             return session.request(*args, **kwargs)
+
         return f
+
     return handle
-
-
-if __name__ == '__main__':
-    import requests
-    p = ProxyPool()
-    p.add_proxy("sock5://127.0.0.1:16961")
-    print(p.proxied_request(requests.Session())(
-        "GET", "http://ipip.tk", headers={}, timeout=2).headers)

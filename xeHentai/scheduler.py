@@ -3,7 +3,7 @@ import queue
 import threading
 import inspect
 import time
-from typing import Callable, TypeVar, ParamSpec
+from typing import Callable, Optional, TypeVar, ParamSpec
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -16,7 +16,7 @@ class Scheduler:
     execute them, and complete asyncio futures on the event loop thread.
     """
 
-    def __init__(self, workers: int = 4, interval: float = None):
+    def __init__(self, workers: int = 4, interval: Optional[float] = None):
         """Create a scheduler and start worker threads.
 
         Args:

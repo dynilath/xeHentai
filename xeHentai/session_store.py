@@ -65,7 +65,8 @@ def _atomic_save_json(path: str, data: Dict[str, Any]) -> None:
     tmp_path = '%s.next' % path
     with open(tmp_path, 'w') as f:
         f.write(json.dumps(data))
-    os.path.exists(path) and os.remove(path)
+    if os.path.exists(path):
+        os.remove(path)
     os.rename(tmp_path, path)
 
 

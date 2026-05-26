@@ -64,6 +64,10 @@ class TaskAbort(TaskControlFlow):
     """Signal non-failure abort flow (pause/shutdown/migration control)."""
 
 
+class TaskRetry(TaskControlFlow):
+    """Trigger task-level retry handled by task entry loop."""
+
+
 class StageSkip(TaskControlFlow):
     """Signal a local skip in stage-level flow."""
 
@@ -89,8 +93,8 @@ class ScanPageResult:
 class ScanImageResult:
     fid: str
     page_url: str
-    img_url: Optional[str] = None
-    reload_url: Optional[str] = None
+    img_url: str
+    reload_url: str
 
 
 @dataclass

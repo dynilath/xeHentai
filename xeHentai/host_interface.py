@@ -2,7 +2,7 @@
 # coding:utf-8
 """Host interface for TaskControl - defines the contract that xeHentai must satisfy."""
 
-from typing import Protocol, Any, Dict, Optional
+from typing import List, Protocol, Any, Dict, Optional
 from queue import Queue
 
 from .task import Task
@@ -43,7 +43,7 @@ class HostInterface(Protocol):
     """Dictionary of all tasks by GUID."""
 
     # Methods
-    def save_session(self) -> None:
+    def _save_session(self) -> List[str]:
         """Save the current session state."""
         ...
 
