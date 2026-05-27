@@ -34,7 +34,6 @@ class GalleryMeta:
     title_primary: str = ""
     title: str = ""
     total: int = 0
-    finished: int = 0
     thumbnail_cnt: int = 0
     has_ori: bool = False
     tags: List[Any] = field(default_factory=list)
@@ -56,7 +55,6 @@ class GalleryMeta:
             "title_primary": self.title_primary,
             "title": self.title,
             "total": self.total,
-            "finished": self.finished,
             "thumbnail_cnt": self.thumbnail_cnt,
             "has_ori": self.has_ori,
             "tags": list(self.tags),
@@ -79,7 +77,6 @@ class GalleryMeta:
         )
         self.title = str(data.get("title", self.title) or "")
         self.total = int(data.get("total", self.total) or 0)
-        self.finished = int(data.get("finished", self.finished) or 0)
         self.thumbnail_cnt = int(data.get("thumbnail_cnt", self.thumbnail_cnt) or 0)
         self.has_ori = bool(data.get("has_ori", self.has_ori))
         self.tags = list(data.get("tags", self.tags) or [])
@@ -98,7 +95,6 @@ class GalleryMeta:
             "gnname",
             "title",
             "total",
-            "finished",
             "thumbnail_cnt",
             "has_ori",
             "tags",
@@ -499,7 +495,6 @@ class Task(object):
     def set_fid_done(self, fid: str):
         with self._cnt_lock:
             self._flist_done.add(int(fid))
-            self.meta.finished = len(self._flist_done)
 
     @staticmethod
     def _build_saving_file_name(total: int, fid: str, ext: str):
@@ -702,7 +697,6 @@ class Task(object):
                         # Preserve existing populated hash map from page scan; only load from archive if currently empty
                         if not self.fid_2_page_hash_map:
                             self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
-                        self.meta.finished = len(self._flist_done)
                         return True, metadata
 
                 return False, None

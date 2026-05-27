@@ -570,7 +570,7 @@ class TaskControl:
 
         def log_task_state(label: str):
             self.logger.verbose(
-                f"{task_guid}: {label} P={len(pending)} W={len(running)} {task.meta.finished}/{task.meta.total}"
+                f"{task_guid}: {label} P={len(pending)} W={len(running)} {len(task._flist_done)}/{task.meta.total}"
             )
 
         log_task_state("pipeline_start")
@@ -762,7 +762,7 @@ class TaskControl:
             # Stage 5: DOWNLOAD
             self.logger.info(
                 i18n.TASK_WILL_DOWNLOAD_CNT
-                % (task_guid, task.meta.total - task.meta.finished, task.meta.total)
+                % (task_guid, task.meta.total - len(task._flist_done), task.meta.total)
             )
             await self._image_scan_download_async(task, task_guid, req)
             if self._task_should_abort(task):
