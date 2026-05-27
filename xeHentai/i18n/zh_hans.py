@@ -88,14 +88,14 @@ PROXY_CANDIDATE_CNT = "代理池中有%d个代理"
 TASK_PUT_INTO_WAIT = "任务 #%s 已存在, 加入等待队列"
 TASK_ERROR = "任务 #%s 发生错误: %s"
 TASK_MIGRATE_EXH = "任务 #%s 使用里站地址重新下载"
-TASK_TITLE = "任务 #%s 标题 %s"
+TASK_TITLE = "任务 #{}(gid={}) 标题 {}"
 TASK_WILL_DOWNLOAD_CNT = "任务 #%s 将下载%d个文件，共%d个 "
 TASK_START = "任务 #%s 开始"
-TASK_FINISHED = "任务 #%s 下载完成"
+TASK_FINISHED = "任务 #{}(gid={}) 下载完成"
 TASK_START_PAGE_RESCAN = "任务 #%s 图片被缩放，进行完整扫描"
 # TASK_FAST_SCAN = "任务 #%s 使用快速扫描"
-TASK_START_MAKE_ARCHIVE = "任务 #%s 开始打包"
-TASK_MAKE_ARCHIVE_FINISHED = "任务 #%s 打包完成，保存在: %s, 用时%.1f秒"
+TASK_START_MAKE_ARCHIVE = "任务 #{}(gid={}) 开始打包"
+TASK_MAKE_ARCHIVE_FINISHED = "任务 #{}(gid={}) 打包完成，保存在: {}, 用时{:.1f}秒"
 TASK_STOP_QUOTA_EXCEEDED = "任务 #%s 配额超限"
 TASK_STUCK = "任务 #%s 卡住了, 可能是脚本有bug, 或者网络连接太慢了"
 
@@ -133,9 +133,10 @@ PROXY_DISABLE_BANNED = "禁用了一个被ban的代理，将在约%s秒后恢复
 
 # forked i18n items
 DF_FULLY_MATCHED = "任务 #%s 找到完全匹配的压缩包 (相同的 gid/hash)，位于 %s"
+DF_FULLY_MATCHED_UP_TO_DATE = "任务 #%s 压缩包已经是最新，无需更新，位于 %s"
 DF_FULLY_MATCHED_UPDATED = "任务 #%s 压缩包元数据已更新，新压缩包位于 %s"
 ARCHIVE_REUSE_EXTRACTED = "任务 #%s 从 %d 个同系列压缩包中提取了 %d 个文件"
-DF_STATE_START_SCAN_PAGE = "任务 #%s 开始扫描页面"
+DF_STATE_START_SCAN_PAGE = "任务 #{}(gid={}) 开始扫描页面"
 DF_FILE_DOWNLOADED_SKIPPED = "任务 {} 跳过下载图片 #{} {}"
 
 # control flows

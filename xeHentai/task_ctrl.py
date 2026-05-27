@@ -187,8 +187,11 @@ class TaskControl:
             shutil.move(found_archive, current_arc)
         self.logger.info(i18n.DF_FULLY_MATCHED % (task.guid, found_archive))
         try:
-            arc = task.make_archive()
-            self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED % (task.guid, arc))
+            arc, up_to_date = task.make_archive()
+            if up_to_date:
+                self.logger.info(i18n.DF_FULLY_MATCHED_UP_TO_DATE % (task.guid, arc))
+            else:
+                self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED % (task.guid, arc))
         except Exception as ex:
             self.logger.error(i18n.TASK_ERROR % (task.guid, traceback.format_exc()))
 
@@ -242,7 +245,7 @@ class TaskControl:
             archives_set, pending_count, page_map_count = task.prepare_reuse_files()
             if len(archives_set) > 0:
                 self.logger.debug(
-                    "%s: found %d candidate archive(s) for reuse, with %d pending archives and %d page hash mappings",
+                    "#%s: found %d candidate archive(s) for reuse, with %d pending archives and %d page hash mappings",
                     task_guid,
                     len(archives_set),
                     pending_count,
@@ -250,7 +253,7 @@ class TaskControl:
                 )
             else:
                 self.logger.debug(
-                    "%s: no candidate archive found for reuse", task_guid
+                    "#%s: no candidate archive found for reuse", task_guid
                 )
                 return None
 
@@ -261,32 +264,34 @@ class TaskControl:
                             task, req, candidate
                         )
                     )
-                    
+
                     target_dir = task.get_task_dir()
                     for fid, page_hash in fid_page_hash_map.items():
                         for ext in [".jpg", ".png", ".gif", ".bmp", ".webp"]:
-                            basename = Task._build_saving_file_name(candidate_total, fid, ext)
+                            basename = Task._build_saving_file_name(
+                                candidate_total, fid, ext
+                            )
                             file_path = TaskReuseResources._reuse_file_path(
                                 target_dir, candidate.gid, basename
                             )
                             if os.path.exists(file_path):
                                 task.reuse.register_page_hash_file(page_hash, file_path)
                             break
-            
+
                     self.logger.debug(
-                        "%s: crawled reuse archive %s",
+                        "#%s: crawled reuse archive %s",
                         task_guid,
                         os.path.basename(candidate.archive_path),
                     )
                 except Exception as ex:
                     self.logger.warning(
-                        "%s: failed to crawl reuse archive %s: %s",
+                        "#%s: failed to crawl reuse archive %s: %s",
                         task_guid,
                         os.path.basename(candidate.archive_path),
                         str(ex),
                     )
         except Exception as ex:
-            self.logger.warning("%s: try_reuse stage failed: %s", task_guid, str(ex))
+            self.logger.warning("#%s: try_reuse stage failed: %s", task_guid, str(ex))
 
     @stage_retry_skip_scope
     async def _get_meta_async(self, task: Task, task_guid: str, req: HttpRequest):
@@ -595,14 +600,12 @@ class TaskControl:
                 except ScanDownloadSkip as ex:
                     self.logger.info(
                         i18n.DF_FILE_DOWNLOADED_SKIPPED.format(
-                            task_guid, 
-                            ex.result.fid if ex.result else None,
-                            ex.reason
+                            task_guid, ex.result.fid if ex.result else None, ex.reason
                         )
                     )
                     return
                 except ScanDownloadRetry as ex:
-                    self.logger.info(
+                    self.logger.debug(
                         f"{task_guid}: scan/download retry for page {current_page_url}"
                     )
                     current_page_url = (
@@ -705,7 +708,7 @@ class TaskControl:
             raise TaskAbort("task aborted after stage_check_archive_phase1")
         self._host._save_session(task=True, proxy_store=True)
 
-        self.logger.info(i18n.TASK_TITLE % (task_guid, task.meta.title))
+        self.logger.info(i18n.TASK_TITLE.format(task_guid, task.gid, task.meta.title))
 
         if task.state == TASK_STATE_GET_META:
             task.state = TASK_STATE_SCAN_PAGE
@@ -718,13 +721,12 @@ class TaskControl:
             ]
             if len(missing) > 0:
                 self.logger.warning(
-                    "# %s Some pages are missing in task data, continue to scan pages, previous state: %s\n missing pages: %s"
-                    % (task_guid, task.state, missing)
+                    f"#{task_guid} some pages are missing in task data, continue to scan pages, previous state: {task.state}, missing pages: {missing}"
                 )
                 task.state = TASK_STATE_GET_META
 
         if task.state <= TASK_STATE_SCAN_PAGE:
-            self.logger.info(i18n.DF_STATE_START_SCAN_PAGE % task_guid)
+            self.logger.info(i18n.DF_STATE_START_SCAN_PAGE.format(task_guid, task.gid))
             # Stage 2: SCAN_PAGE (Phase 2 archive check inside)
             await self._scan_page_async(task, task_guid, req)
             if self._task_should_abort(task):
@@ -743,7 +745,7 @@ class TaskControl:
 
             if not found_archive:
                 self.logger.debug(
-                    "%s: no exact match found after page scan, total scanned pages: %d"
+                    "#%s: no exact match found after page scan, total scanned pages: %d"
                     % (task_guid, len(task.fid_2_page_hash_map))
                 )
                 await self._stage_try_reuse_async(task, task_guid, req)
@@ -775,19 +777,20 @@ class TaskControl:
 
         # After all pages are processed, make archive
         if task.state <= TASK_STATE_MAKE_ARCHIVE:
-            self.logger.info(i18n.TASK_START_MAKE_ARCHIVE % task.guid)
+            self.logger.info(i18n.TASK_START_MAKE_ARCHIVE.format(task.guid, task.gid))
             start_time = time.time()
-            pth = await self._make_archive_async(task)
+            pth, _ = await self._make_archive_async(task)
             self.logger.info(
-                i18n.TASK_MAKE_ARCHIVE_FINISHED
-                % (task.guid, pth, time.time() - start_time)
+                i18n.TASK_MAKE_ARCHIVE_FINISHED.format(
+                    task.guid, task.gid, pth, time.time() - start_time
+                )
             )
             self._host._save_session(task=True, proxy_store=True)
             if pth:
                 reuse_index.add_zip_to_reuse_index(self._host.global_reuse_index, pth)
 
         task.state = TASK_STATE_FINISHED
-        self.logger.info(i18n.TASK_FINISHED % task.guid)
+        self.logger.info(i18n.TASK_FINISHED.format(task.guid, task.gid))
         return
 
     async def _run_task_entry_async(self, task_guid: str):
@@ -814,7 +817,7 @@ class TaskControl:
                         task.state = TASK_STATE_FINISHED
                     return
                 except TaskAbort as ex:
-                    self.logger.info(
+                    self.logger.debug(
                         "%s: task aborted: %s"
                         % (task_guid, ex.reason or "control flow")
                     )

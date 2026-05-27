@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import traceback
+from typing import Optional
 
 from .request_wrapper import HttpRequest
 from .task import Task
@@ -35,6 +36,19 @@ except ImportError:
 sys.path.pop(1)
 
 
+state_2_names = {
+    TASK_STATE_PAUSED: "paused",
+    TASK_STATE_WAITING: "waiting",
+    TASK_STATE_GET_META: "getting meta",
+    TASK_STATE_SCAN_PAGE: "scanning page",
+    TASK_STATE_SCAN_IMG: "scanning images",
+    TASK_STATE_SCAN_ARCHIVE: "scanning archive",
+    TASK_STATE_DOWNLOAD: "downloading",
+    TASK_STATE_MAKE_ARCHIVE: "making archive",
+    TASK_STATE_FINISHED: "finished",
+    TASK_STATE_FAILED: "failed",
+}
+        
 class xeHentai(HostInterface):
     _TASK_CONFIG_KEYS = (
         "download_ori",
@@ -308,18 +322,6 @@ class xeHentai(HostInterface):
 
     
     def system_status(self):
-        state_2_names = {
-            TASK_STATE_PAUSED: "paused",
-            TASK_STATE_WAITING: "waiting",
-            TASK_STATE_GET_META: "getting meta",
-            TASK_STATE_SCAN_PAGE: "scanning page",
-            TASK_STATE_SCAN_IMG: "scanning images",
-            TASK_STATE_SCAN_ARCHIVE: "scanning archive",
-            TASK_STATE_DOWNLOAD: "downloading",
-            TASK_STATE_MAKE_ARCHIVE: "making archive",
-            TASK_STATE_FINISHED: "finished",
-            TASK_STATE_FAILED: "failed",
-        }
 
         working_status: dict[str, int] = {}
         for guid, task in self._all_tasks.items():
@@ -327,6 +329,30 @@ class xeHentai(HostInterface):
             working_status[state_name] = working_status.get(state_name, 0) + 1
 
         return ERR_NO_ERROR, working_status
+
+    def task_status(self,*,guid:Optional[str]=None, gid:Optional[str]=None, url:Optional[str]=None):
+        def parse_task(t: Task):
+            return {
+                "guid": t.guid,
+                "url": t.url,
+                "state": state_2_names.get(t.state, "unknown"),
+                "done": len(t._flist_done),
+                "total": t.meta.total if t.meta else 0,
+            }
+        
+        if guid:
+            t = self._all_tasks.get(guid)
+            if t:
+                return ERR_NO_ERROR, parse_task(t)
+        if gid:
+            for guid, task in self._all_tasks.items():
+                if task.gid == gid:
+                    return ERR_NO_ERROR, parse_task(task)
+        if url:
+            for guid, task in self._all_tasks.items():
+                if task.url == url:
+                    return ERR_NO_ERROR, parse_task(task)
+        return ERR_TASK_NOT_FOUND, None
 
     def load_session(self):
         legacy_session = {}

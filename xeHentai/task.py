@@ -264,9 +264,12 @@ class TaskReuseResources:
     ) -> str:
         return os.path.join(target_dir, "%s - %s" % (candidate_gid, archive_file_name))
 
-
     def _materialize_reuse_file(
-        self, target_dir:str, page_hash: str, total: int, fid: str, *, logger: Optional[Logger] = None
+        self,
+        target_dir: str,
+        page_hash: str,
+        total: int,
+        fid: str,
     ) -> Optional[str]:
         """Copy a matched reuse file into the current fid slot before page queue build.
         Returns:
@@ -636,8 +639,9 @@ class Task(object):
     # scan folder or zip file before all worker start working
     # it is designed mainly to remove truncated file and extract those outdated zip files
     def exact_downloaded_exits(
-        self, require_fid_page_hash_map: bool = False,
-        extract_non_exact_match: bool = False
+        self,
+        require_fid_page_hash_map: bool = False,
+        extract_non_exact_match: bool = False,
     ) -> Tuple[Literal[True], str] | Tuple[Literal[False], Optional[str]]:
         """Check if an exact matching archive exists (by gid/hash).
 
@@ -814,14 +818,15 @@ class Task(object):
         task_dir = self.get_task_dir()
         for fid, page_hash in self.fid_2_page_hash_map.items():
             # first try to materialize reuse file for this page hash, if hit, we can skip page scan and directly mark fid done
-            target_path = self.reuse._materialize_reuse_file(
-                task_dir, page_hash, self.meta.total, fid, logger=self.logger
-            )
-            if target_path:
-                basename = os.path.basename(target_path)
-                self.fid_2_file_name_map[fid] = basename
-                self.set_fid_done(fid)
-                continue
+            if page_hash in self.reuse.page_hash_file_map:
+                target_path = self.reuse._materialize_reuse_file(
+                    task_dir, page_hash, self.meta.total, fid
+                )
+                if target_path:
+                    basename = os.path.basename(target_path)
+                    self.fid_2_file_name_map[fid] = basename
+                    self.set_fid_done(fid)
+                    continue
 
             # if reuse not hit, then check if the file already exists by name and hash, if hit, we can also skip page scan and mark fid done
             # this is for the case when the task is restarted and files are already downloaded, we can avoid re-downloading and just check file existence and integrity by hash
@@ -901,40 +906,64 @@ class Task(object):
 
         return fn
 
-    def make_archive(self, remove=True):
+    def make_archive(self, remove=True) -> Tuple[str, bool]:
+        """Create a zip archive of the downloaded files with metadata in the comment.
+
+        Args:
+            remove (bool): Whether to remove the original files after creating the archive.
+
+        Returns:
+            Tuple[str, bool]: A tuple containing the path to the zip archive and a boolean indicating
+                              whether the archive was already up-to-date.
+        """
         dpath = self.get_task_dir()
         arc = "%s.zip" % dpath
-        if os.path.exists(arc):
-            # [s]when truncated images not exist, the zip file is considered fully downloaded[\s]
-            # [s]but tags still need  update[\s]
-            # in fact you can not edit the comment without rezip files, just leave it
-            with zipfile.ZipFile(arc, "r") as zipfile_target:
-                if zipfile_target.comment == self.encode_meta():
-                    return arc
-            # if comment is different, we need to update the comment
-            # but zipfile module does not support editing comment, we need to rewrite the zip file
-            with zipfile.ZipFile(arc, "a") as zipfile_target:
-                zipfile_target.comment = self.encode_meta()
-            if remove:
-                if os.path.exists(dpath):
-                    shutil.rmtree(dpath)
+        expected_meta = self.encode_meta()
 
-            return arc
+        def _():
+            if os.path.exists(arc):
+                file_count_match = False
+                # make archive might be called without page scan
+                # we can only check file count in this case, but it is better than nothing
+                with zipfile.ZipFile(arc, "r") as zipfile_target:
+                    if len(zipfile_target.namelist()) == self.meta.total:
+                        file_count_match = True
+                
+                if file_count_match:
+                    # if the archive already exists, we check if the comment matches expected meta
+                    with zipfile.ZipFile(arc, "r") as zipfile_target:
+                        if zipfile_target.comment == expected_meta:
+                            return arc, True
+                    # if comment is different, we need to update the comment
+                    # but zipfile module does not support editing comment, we need to rewrite the zip file
+                    with zipfile.ZipFile(arc, "a") as zipfile_target:
+                        zipfile_target.comment = expected_meta
 
-        with zipfile.ZipFile(arc, "w") as zipfile_target:
-            # zip comment created
-            # store json info in respective zip file
-            # thus metadata can be packed with comic it self in a single file
-            zipfile_target.comment = self.encode_meta()
+                    return arc, False
 
-            for fid, name in self.fid_2_file_name_map.items():
-                full_path = os.path.join(dpath, name)
-                zipfile_target.write(full_path, name, zipfile.ZIP_STORED)
+            with zipfile.ZipFile(arc, "w") as zipfile_target:
+                # zip comment created
+                # store json info in respective zip file
+                # thus metadata can be packed with comic it self in a single file
+                zipfile_target.comment = expected_meta
 
+                if len(self.fid_2_file_name_map) != self.meta.total:
+                    raise ValueError(
+                        "File count mismatch when making archive: expected %d, got %d"
+                        % (self.meta.total, len(self.fid_2_file_name_map))
+                    )
+
+                for fid, name in self.fid_2_file_name_map.items():
+                    full_path = os.path.join(dpath, name)
+                    zipfile_target.write(full_path, name, zipfile.ZIP_STORED)
+
+                return arc, False
+
+        ret = _()
         if remove:
             if os.path.exists(dpath):
                 shutil.rmtree(dpath)
-        return arc
+        return ret
 
     def from_dict(self, j, core_config=None):
         for k in self.__dict__:
