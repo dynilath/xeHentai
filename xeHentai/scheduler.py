@@ -2,6 +2,7 @@ import asyncio
 import queue
 import threading
 import inspect
+import math
 import time
 from typing import Callable, Optional, TypeVar, ParamSpec
 
@@ -12,7 +13,7 @@ R = TypeVar("R")
 class Scheduler:
     """Run sync callables in background threads and await their results in asyncio.
 
-    A fixed number of daemon worker threads consume jobs from an internal queue,
+    A fixed number of daemon worker threads consume jobs from internal queues,
     execute them, and complete asyncio futures on the event loop thread.
     """
 
@@ -23,19 +24,46 @@ class Scheduler:
             workers: Number of background worker threads.
             interval: Time interval between job executions.
         """
-        self.q = queue.Queue()
+        self._queue_count = max(1, math.floor(workers * 2 / 3))
+        self._queues = [queue.Queue() for _ in range(self._queue_count)]
+        self._submit_queue_index = 0
+        self._submit_lock = threading.Lock()
         self.interval = max(0.1, interval) if interval is not None else None
 
-        for _ in range(workers):
+        for worker_index in range(workers):
             threading.Thread(
                 target=self._worker,
+                args=(worker_index,),
                 daemon=True,
             ).start()
 
-    def _worker(self):
+    def _worker(self, worker_index: int):
         """Continuously process queued jobs and resolve associated futures."""
+        queue_index = worker_index % self._queue_count
+
         while True:
-            fn, args, kwargs, future = self.q.get()
+            item = None
+            consumed_index = queue_index
+
+            for offset in range(self._queue_count):
+                idx = (queue_index + offset) % self._queue_count
+                try:
+                    item = self._queues[idx].get_nowait()
+                    consumed_index = idx
+                    break
+                except queue.Empty:
+                    continue
+
+            if item is None:
+                try:
+                    item = self._queues[queue_index].get(timeout=0.1)
+                    consumed_index = queue_index
+                except queue.Empty:
+                    queue_index = (queue_index + 1) % self._queue_count
+                    continue
+
+            fn, args, kwargs, future = item
+            queue_index = (consumed_index + 1) % self._queue_count
 
             if future.cancelled():
                 continue
@@ -98,6 +126,10 @@ class Scheduler:
 
         future: asyncio.Future[R] = loop.create_future()
 
-        self.q.put((fn, args, kwargs, future))
+        with self._submit_lock:
+            queue_index = self._submit_queue_index
+            self._submit_queue_index = (self._submit_queue_index + 1) % self._queue_count
+
+        self._queues[queue_index].put((fn, args, kwargs, future))
 
         return await future

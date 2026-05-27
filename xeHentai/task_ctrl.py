@@ -86,7 +86,7 @@ class TaskControl:
             interval=host.config.get("page_interval", 0.5),
         )
         self._download_scheduler = Scheduler(
-            workers=host.config.get("download_thread_cnt", 2)
+            workers=host.config.get("download_thread_cnt", 5)
         )
         self._archive_scheduler = Scheduler(workers=1)
 
@@ -563,9 +563,7 @@ class TaskControl:
         while not task.page_q.empty():
             page_urls.append(task.page_q.get())
 
-        inflight_limit = int(task.config.get("pipeline_inflight_pages")) or 0
-        if inflight_limit <= 0:
-            inflight_limit = max(1, len(page_urls))
+        inflight_limit = task.config.get("download_thread_cnt", 5)
 
         pending = deque(page_urls)
         running = set()
