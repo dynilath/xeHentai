@@ -18,12 +18,11 @@ from .const import (
     ERR_ONLY_VISIBLE_EXH,
     ERR_QUOTA_EXCEEDED,
     ERR_SCAN_REGEX_FAILED,
-    ERR_STREAM_NOT_IMPLEMENTED,
 )
 from .stage_flow import StageAction
 
 
-class FilterException(Exception):
+class CrawlerException(Exception):
     """Base exception raised by the flt_quota_check decorator layer.
 
     Attributes:
@@ -39,53 +38,71 @@ class FilterException(Exception):
         self.reason = reason
 
 
-class GalleryRemovedException(FilterException):
+class ParseException(CrawlerException):
+    """Raised when the page parsing fails, e.g. due to site structure change.
+    Should abort the entire gallery crawl.
+    """
+
+    def __init__(self, url, reason=None):
+        CrawlerException.__init__(self, ERR_CONNECTION_ERROR, url, reason)
+
+
+class VitalCrawlerException(CrawlerException):
+    """Raised when a critical filter check fails, e.g. gallery removed or not found.
+    Should abort the entire gallery crawl.
+    """
+
+    def __init__(self, code: int, url: str, reason: Optional[str] = None):
+        CrawlerException.__init__(self, code, url, reason)
+
+
+class GalleryRemovedException(VitalCrawlerException):
     """Raised when the gallery is removed, e.g. due to DMCA takedown.
     Should abort the entire gallery crawl.
     """
 
     def __init__(self, url):
-        FilterException.__init__(self, ERR_GALLERY_REMOVED, url)
+        CrawlerException.__init__(self, ERR_GALLERY_REMOVED, url)
 
 
-class GalleryNotFoundException(FilterException):
+class GalleryNotFoundException(VitalCrawlerException):
     """Raised when the gallery is not found, e.g. due to deletion or pending availability.
     Should abort the entire gallery crawl.
     """
 
     def __init__(self, url):
-        FilterException.__init__(self, ERR_GALLERY_NOT_FOUND, url)
+        CrawlerException.__init__(self, ERR_GALLERY_NOT_FOUND, url)
 
 
-class VisibleOnlyInExhentaiException(FilterException):
+class VisibleOnlyInExhentaiException(CrawlerException):
     """Raised when the gallery is only visible in exhentai.org, e.g. due to content sensitivity.
     Should abort the entire gallery crawl.
     """
 
     def __init__(self, url):
-        FilterException.__init__(self, ERR_ONLY_VISIBLE_EXH, url)
+        CrawlerException.__init__(self, ERR_ONLY_VISIBLE_EXH, url)
 
 
-class IPBannedException(FilterException):
+class IPBannedException(CrawlerException):
     """Raised when the server reports the client's IP address has been temporarily banned.
     Should switch to the next proxy and retry the request with reloaded URL.
     The necessary waiting is handled by the proxy control logic.
     """
 
     def __init__(self, url, reason=None):
-        FilterException.__init__(self, ERR_IP_BANNED, url, reason)
+        CrawlerException.__init__(self, ERR_IP_BANNED, url, reason)
 
 
-class MetaDataParseException(FilterException):
+class MetaDataParseException(ParseException):
     """Raised when the gallery metadata parsing fails, e.g. due to site structure change.
     Should abort the entire gallery crawl.
     """
 
     def __init__(self, url, reason=None):
-        FilterException.__init__(self, ERR_CONNECTION_ERROR, url, reason)
+        CrawlerException.__init__(self, ERR_CONNECTION_ERROR, url, reason)
 
 
-class QuotaExceededException(FilterException):
+class QuotaExceededException(CrawlerException):
     """Raised when the server reports a bandwidth / image-viewing quota exceeded.
 
     The reason attribute describes which detection heuristic fired:
@@ -96,102 +113,61 @@ class QuotaExceededException(FilterException):
     """
 
     def __init__(self, url, reason=None):
-        FilterException.__init__(self, ERR_QUOTA_EXCEEDED, url, reason)
+        CrawlerException.__init__(self, ERR_QUOTA_EXCEEDED, url, reason)
 
 
-class KeyExpiredException(FilterException):
+class KeyExpiredException(CrawlerException):
     """Raised when the server returns HTTP 403, indicating the download key
     has expired and the URL needs to be refreshed before retrying.
     """
 
     def __init__(self, url):
-        FilterException.__init__(self, ERR_KEY_EXPIRED, url)
+        CrawlerException.__init__(self, ERR_KEY_EXPIRED, url)
 
 
-class GalleryDetailPageParseException(FilterException):
+class GalleryDetailPageParseException(ParseException):
     """Raised when the gallery page parsing fails, e.g. due to site structure change.
     Should abort the entire gallery crawl.
     """
 
     def __init__(self, url, reason=None):
-        FilterException.__init__(self, ERR_NO_PAGEURL_FOUND, url, reason)
+        CrawlerException.__init__(self, ERR_NO_PAGEURL_FOUND, url, reason)
 
 
-class ImagePageInfoParseException(FilterException):
+class ImagePageInfoParseException(ParseException):
     """Raised when the page info parsing fails, e.g. due to site structure change.
     Should abort the entire gallery crawl.
     """
 
     def __init__(self, url, reason=None):
-        FilterException.__init__(self, ERR_SCAN_REGEX_FAILED, url, reason)
+        CrawlerException.__init__(self, ERR_SCAN_REGEX_FAILED, url, reason)
 
 
-class ImageFileException(FilterException):
+class ImageFileException(CrawlerException):
     """Raised when the downloaded image file is broken, e.g. content-length mismatch or zero-length.
     Should retry the image download with reloaded URL.
     """
 
     def __init__(self, url, reason=None):
-        FilterException.__init__(self, ERR_IMAGE_BROKEN, url, reason)
+        CrawlerException.__init__(self, ERR_IMAGE_BROKEN, url, reason)
 
 
-class ImagePageInvalidException(FilterException):
+class ImagePageInvalidException(VitalCrawlerException):
     """Raised when the image page is not found, e.g. due to deletion or resampling.
     Should abort the entire gallery crawl.
     """
 
     def __init__(self, url):
-        FilterException.__init__(self, ERR_IMAGE_RESAMPLED, url)
+        CrawlerException.__init__(self, ERR_IMAGE_RESAMPLED, url)
 
 
-class ImageFileNotFoundException(FilterException):
+class ImageFileNotFoundException(CrawlerException):
     """Raised when the image file is not found, e.g. due to deletion.
     Should retry the image download with reloaded URL.
     """
 
     def __init__(self, url):
-        FilterException.__init__(self, ERR_HATH_NOT_FOUND, url)
-
-
-class ImageFileStreamException(FilterException):
-    """Raised when the image file is served in an unsupported streaming format.
-    Should abort the entire gallery crawl.
-    """
-
-    def __init__(self, url, reason=None):
-        FilterException.__init__(self, ERR_STREAM_NOT_IMPLEMENTED, url, reason)
-
-
-class DownloadException(Exception):
-    """Base exception for download failures that are not directly related to filter checks."""
-
-    def __init__(self, url, message=None):
-        Exception.__init__(self, message or url)
-        self.url = url
-
-
-class DownloadConnectionException(DownloadException):
-    """Raised when a download request fails due to a connection error, e.g. network failure or proxy error.
-    Should retry the download with reloaded URL.
-    """
-
-    def __init__(self, url, reason=None):
-        message = "connection error during download: %s, reason: %s" % (url, reason)
-        DownloadException.__init__(self, url, message)
-
-
-class DownloadLengthMismatchException(DownloadException):
-    """Raised when the downloaded file's content length does not match the expected length.
-    Should retry the download with reloaded URL.
-    """
-
-    def __init__(self, url, expected_length, actual_length):
-        message = "downloaded file length mismatch: %s, expected: %d, actual: %d" % (
-            url,
-            expected_length,
-            actual_length,
-        )
-        DownloadException.__init__(self, url, message)
+        CrawlerException.__init__(self, ERR_HATH_NOT_FOUND, url)
 
 
 class RequestLayerException(Exception):
@@ -240,7 +216,7 @@ def map_exception_policy(
 ) -> ExceptionPolicy:
     ignored: Set[int] = set(ignored_errors or ())
 
-    if isinstance(ex, FilterException) and ex.code in ignored:
+    if isinstance(ex, CrawlerException) and ex.code in ignored:
         return ExceptionPolicy(action=StageAction.SKIP)
 
     if isinstance(ex, QuotaExceededException):
@@ -253,11 +229,7 @@ def map_exception_policy(
 
     if isinstance(
         ex,
-        (
-            ImageFileException,
-            DownloadConnectionException,
-            DownloadLengthMismatchException,
-        ),
+        (ImageFileException),
     ):
         return ExceptionPolicy(action=StageAction.PIPELINE_RETRY, delay=1.0)
 
@@ -278,7 +250,6 @@ def map_exception_policy(
             GalleryDetailPageParseException,
             ImagePageInfoParseException,
             ImagePageInvalidException,
-            ImageFileStreamException,
             GalleryRemovedException,
             GalleryNotFoundException,
             VisibleOnlyInExhentaiException,

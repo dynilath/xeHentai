@@ -39,7 +39,7 @@ from .host_interface import HostInterface
 from .i18n import i18n
 from .task import DumplicatedFileInfo, Task, TaskReuseResources
 from .request_wrapper import HttpRequest, HttpRequestResult
-from .exceptions import FilterException, ImageFileNotFoundException
+from .exceptions import CrawlerException, ImageFileNotFoundException
 from .exceptions import map_exception_policy
 from .stage_flow import StageAction
 from .stage_flow import GetMetaResult, ScanPageResult, ScanImageResult, DownloadResult
@@ -133,7 +133,7 @@ class TaskControl:
             ex,
             ignored_errors=task.config.get("ignored_errors"),
         )
-        if isinstance(ex, FilterException):
+        if isinstance(ex, CrawlerException):
             failcode = ex.code
             reason = ex.reason or traceback.format_exc()
         else:
