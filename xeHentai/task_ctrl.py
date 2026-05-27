@@ -789,6 +789,10 @@ class TaskControl:
 
         task.state = TASK_STATE_FINISHED
         self.logger.info(i18n.TASK_FINISHED.format(task.guid, task.gid))
+        
+        task.cleanup_download_info()
+        self._host._save_session(task=True, proxy_store=True)
+        
         return
 
     async def _run_task_entry_async(self, task_guid: str):

@@ -38,6 +38,7 @@ class FilterException(Exception):
         self.url = url
         self.reason = reason
 
+
 class GalleryRemovedException(FilterException):
     """Raised when the gallery is removed, e.g. due to DMCA takedown.
     Should abort the entire gallery crawl.
@@ -46,6 +47,7 @@ class GalleryRemovedException(FilterException):
     def __init__(self, url):
         FilterException.__init__(self, ERR_GALLERY_REMOVED, url)
 
+
 class GalleryNotFoundException(FilterException):
     """Raised when the gallery is not found, e.g. due to deletion or pending availability.
     Should abort the entire gallery crawl.
@@ -53,7 +55,8 @@ class GalleryNotFoundException(FilterException):
 
     def __init__(self, url):
         FilterException.__init__(self, ERR_GALLERY_NOT_FOUND, url)
-        
+
+
 class VisibleOnlyInExhentaiException(FilterException):
     """Raised when the gallery is only visible in exhentai.org, e.g. due to content sensitivity.
     Should abort the entire gallery crawl.
@@ -280,7 +283,7 @@ def map_exception_policy(
             GalleryNotFoundException,
             VisibleOnlyInExhentaiException,
             IPBannedException,
-            MetaDataParseException
+            MetaDataParseException,
         ),
     ):
         return ExceptionPolicy(

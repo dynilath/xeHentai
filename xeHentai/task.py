@@ -959,6 +959,21 @@ class Task(object):
                 shutil.rmtree(dpath)
         return ret
 
+    def cleanup_download_info(self):
+        """Clean up download-related info to save memory after the task is finished."""
+        if self.state != TASK_STATE_FINISHED:
+            return
+        if len(self._flist_done) != self.meta.total:
+            return
+        
+        self.page_q = None
+        self.reload_map = {}
+        self.fid_2_img_hash_map = {}
+        self.fid_2_file_name_map = {}
+        self.dumplicated_file_map = {}
+        self.reuse.reset()
+    
+
     def from_dict(self, j, core_config=None):
         for k in self.__dict__:
             if k not in j:

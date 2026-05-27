@@ -172,11 +172,8 @@ class HttpRequest(object):
                     proxy_control.fail()
                     retry_count += 1
                     continue
-                elif r.ok:
-                    proxy_control.success()
-                else:
-                    retry_count += 1
-                    continue
+
+                proxy_control.success()
 
             r.encoding = "utf-8"
             final_url = r.url
