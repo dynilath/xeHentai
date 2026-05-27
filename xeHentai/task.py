@@ -810,6 +810,12 @@ class Task(object):
         # start rebuild page queue for later stages
         self.page_q.queue.clear()
         task_dir = self.get_task_dir()
+
+        if len(self.reuse.page_hash_file_map) > 0:
+            self.logger.debug(
+                f"#{self.guid}: Reuse page hash file map has {len(self.reuse.page_hash_file_map)} entries before building page queue."
+            )
+
         for fid, page_hash in self.fid_2_page_hash_map.items():
             # first try to materialize reuse file for this page hash, if hit, we can skip page scan and directly mark fid done
             if page_hash in self.reuse.page_hash_file_map:
@@ -817,8 +823,12 @@ class Task(object):
                     task_dir, page_hash, self.meta.total, fid
                 )
                 if target_path:
+                    self.logger.debug(
+                        f"#{self.guid}: Materialized reuse file for fid={fid} from page hash {page_hash}."
+                    )
                     basename = os.path.basename(target_path)
                     self.fid_2_file_name_map[fid] = basename
+                    self.fid_2_img_hash_map[fid] = checkfile.file_hash(target_path)
                     self.set_fid_done(fid)
                     continue
 
@@ -830,6 +840,9 @@ class Task(object):
                 expected_path = os.path.join(task_dir, expected_file_name)
                 if check_file(expected_path, expected_file_hash):
                     # file exists and matches expected hash, skip adding to page queue
+                    self.logger.debug(
+                        f"#{self.guid}: Found existing file for fid={fid} with matching hash, skipping."
+                    )
                     self.set_fid_done(fid)
                     continue
 
@@ -922,7 +935,7 @@ class Task(object):
                 with zipfile.ZipFile(arc, "r") as zipfile_target:
                     if len(zipfile_target.namelist()) == self.meta.total:
                         file_count_match = True
-                
+
                 if file_count_match:
                     # if the archive already exists, we check if the comment matches expected meta
                     with zipfile.ZipFile(arc, "r") as zipfile_target:
@@ -965,14 +978,13 @@ class Task(object):
             return
         if len(self._flist_done) != self.meta.total:
             return
-        
+
         self.page_q = None
         self.reload_map = {}
         self.fid_2_img_hash_map = {}
         self.fid_2_file_name_map = {}
         self.dumplicated_file_map = {}
         self.reuse.reset()
-    
 
     def from_dict(self, j, core_config=None):
         for k in self.__dict__:

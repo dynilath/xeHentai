@@ -747,10 +747,12 @@ class TaskControl:
                 self._handle_exact_match_found(task, task_guid, found_archive)
                 raise TaskFinished("phase2 exact-match completed")
 
+            self.logger.debug(
+                f"#{task_guid}: scaned {len(task.fid_2_page_hash_map)} pages"
+            )
+
             if not found_archive:
-                self.logger.debug(
-                    f"#{task_guid}: no exact match found after page scan, total scanned pages: {len(task.fid_2_page_hash_map)}"
-                )
+                self.logger.debug(f"#{task_guid}: no exact match found after page scan")
                 await self._stage_try_reuse_async(task, task_guid, req)
 
             if self._task_should_abort(task):
@@ -810,6 +812,11 @@ class TaskControl:
 
     async def _run_task_entry_async(self, task_guid: str):
         """Run one async task entry and keep failure/cleanup handling in one place."""
+
+        # initial await, allow the caller to do some quick scheduling of multiple tasks
+        # without immediately blocking on the first one
+        await asyncio.sleep(0)
+
         try:
             while True:
                 try:
