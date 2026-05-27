@@ -3,6 +3,7 @@
 # Contributor:
 #      fffonion        <fffonion@gmail.com>
 
+from threading import RLock
 import os
 import re
 import sys
@@ -48,7 +49,8 @@ state_2_names = {
     TASK_STATE_FINISHED: "finished",
     TASK_STATE_FAILED: "failed",
 }
-        
+
+
 class xeHentai(HostInterface):
     _TASK_CONFIG_KEYS = (
         "download_ori",
@@ -63,6 +65,7 @@ class xeHentai(HostInterface):
         self.logger = logger.Logger()
         self.tasks: Queue[str] = Queue()  # for queueing, stores gid only
         self.last_task_guid = None
+        self._task_lock: RLock = RLock()
         self._all_tasks: dict[str, Task] = {}  # for saving states
         _cfg = {
             k: v for k, v in default_config.__dict__.items() if not k.startswith("_")
@@ -193,32 +196,32 @@ class xeHentai(HostInterface):
             self.logger.warning(i18n.XEH_DOWNLOAD_ORI_NEED_LOGIN)
         t = Task(url, cfg, self.logger, core_config=self.config)
 
-        # check if task on same url already exists
-        # well, you may need to download from a link and save images in different zip files
-        # but in fact, this program doesnt support auto rename zip files
-        # and as for me, i prefer restart the same task when i click 'add to xehentai'
-        # in order to repair truncated images
-        for taskitem in self._all_tasks.items():
-            if url == taskitem[1].url:
-                rguid = taskitem[0]
-                self._all_tasks.pop(rguid)
-                t.guid = rguid
-                self._all_tasks[t.guid] = t
-                self._all_tasks[t.guid].state = TASK_STATE_GET_META
-                self.tasks.put(t.guid)
-                return 0, t.guid
+        with self._task_lock:
+            # check if task on same url already exists
+            # well, you may need to download from a link and save images in different zip files
+            # but in fact, this program doesnt support auto rename zip files
+            # and as for me, i prefer restart the same task when i click 'add to xehentai'
+            # in order to repair truncated images
+            for guid, taskitem in self._all_tasks.items():
+                if url == taskitem.url:
+                    self._all_tasks.pop(guid)
+                    t.guid = guid
+                    self._all_tasks[t.guid] = t
+                    self._all_tasks[t.guid].state = TASK_STATE_GET_META
+                    self.tasks.put(t.guid)
+                    return 0, t.guid
 
-        # task don't exists
-        if t.guid in self._all_tasks:
-            if self._all_tasks[t.guid].state in (
-                TASK_STATE_FINISHED,
-                TASK_STATE_FAILED,
-            ):
-                self.logger.debug(i18n.TASK_PUT_INTO_WAIT % t.guid)
-                self._all_tasks[t.guid].state = TASK_STATE_WAITING
-                self._all_tasks[t.guid].cleanup()
-            return 0, t.guid
-        self._all_tasks[t.guid] = t
+            # task don't exists
+            if t.guid in self._all_tasks:
+                if self._all_tasks[t.guid].state in (
+                    TASK_STATE_FINISHED,
+                    TASK_STATE_FAILED,
+                ):
+                    self.logger.debug(i18n.TASK_PUT_INTO_WAIT % t.guid)
+                    self._all_tasks[t.guid].state = TASK_STATE_WAITING
+                    self._all_tasks[t.guid].cleanup()
+                return 0, t.guid
+            self._all_tasks[t.guid] = t
         if not re.match(r"^%s/[^/]+/\d+/[^/]+/*#*$" % RESTR_SITE, url):
             t.set_fail(ERR_URL_NOT_RECOGNIZED)
         elif not self.has_login and re.match(r"^https*://exhentai\.org", url):
@@ -291,46 +294,60 @@ class xeHentai(HostInterface):
         self._save_session(task=True)
         tc._exit = XEH_STATE_CLEAN
 
-    def _save_session(self,*, task=False, proxy_store=False, cookies=False):
+    def _save_session(self, *, task=False, proxy_store=False, cookies=False):
         errors = []
         if task:
             try:
-                session_store.save_tasks(
-                    {}
-                    if not self.config["save_tasks"]
-                    else {k: v.to_dict() for k, v in self._all_tasks.items()}
-                )
+                with self._task_lock:
+                    cp_dict = (
+                        {}
+                        if not self.config["save_tasks"]
+                        else {k: v.to_dict() for k, v in self._all_tasks.items()}
+                    )
+                session_store.save_tasks(cp_dict)
             except Exception as ex:
                 errors.append(str(ex))
-                self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
+                self.logger.warning(
+                    i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc()
+                )
 
         if cookies:
             try:
                 session_store.save_cookies(self.cookies)
             except Exception as ex:
                 errors.append(str(ex))
-                self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
-        
-        if proxy_store and self.proxy: 
+                self.logger.warning(
+                    i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc()
+                )
+
+        if proxy_store and self.proxy:
             try:
                 self._save_proxy_store(self._merge_proxy_store())
             except Exception as ex:
                 errors.append(str(ex))
-                self.logger.warning(i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc())
-        
+                self.logger.warning(
+                    i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc()
+                )
+
         return errors
 
-    
     def system_status(self):
-
         working_status: dict[str, int] = {}
-        for guid, task in self._all_tasks.items():
-            state_name = state_2_names.get(task.state, "unknown")
-            working_status[state_name] = working_status.get(state_name, 0) + 1
+
+        with self._task_lock:
+            for guid, task in self._all_tasks.items():
+                state_name = state_2_names.get(task.state, "unknown")
+                working_status[state_name] = working_status.get(state_name, 0) + 1
 
         return ERR_NO_ERROR, working_status
 
-    def task_status(self,*,guid:Optional[str]=None, gid:Optional[str]=None, url:Optional[str]=None):
+    def task_status(
+        self,
+        *,
+        guid: Optional[str] = None,
+        gid: Optional[str] = None,
+        url: Optional[str] = None,
+    ):
         def parse_task(t: Task):
             return {
                 "guid": t.guid,
@@ -339,7 +356,7 @@ class xeHentai(HostInterface):
                 "done": len(t._flist_done),
                 "total": t.meta.total if t.meta else 0,
             }
-        
+
         if guid:
             t = self._all_tasks.get(guid)
             if t:
@@ -433,32 +450,34 @@ class xeHentai(HostInterface):
             "PassWord": pwd,
         }
         req = HttpRequest({}, self.logger, "main")
-        
+
         r = req.request(
             "POST",
             "https://forums.e-hentai.org/index.php?act=Login&CODE=01",
-            data=logindata
+            data=logindata,
         )
-        
-        coo = r.response.headers.get('set-cookie')
+
+        coo = r.response.headers.get("set-cookie")
         if not coo:
             raise Exception("No set-cookie header found in login response")
-        
+
         try:
-            cooid = re.findall('ipb_member_id=(.*?);', coo)[0]
-            coopw = re.findall('ipb_pass_hash=(.*?);', coo)[0]
-        except (IndexError, ) as ex:
-            errmsg = re.findall('<span class="postcolor">([^<]+)</span>', r.response.text)
+            cooid = re.findall("ipb_member_id=(.*?);", coo)[0]
+            coopw = re.findall("ipb_pass_hash=(.*?);", coo)[0]
+        except (IndexError,) as ex:
+            errmsg = re.findall(
+                '<span class="postcolor">([^<]+)</span>', r.response.text
+            )
             if errmsg:
                 raise Exception(errmsg[0])
             raise Exception("Login failed: %s" % str(ex))
-        
-        self.cookies.update({'ipb_member_id': cooid, 'ipb_pass_hash': coopw})
+
+        self.cookies.update({"ipb_member_id": cooid, "ipb_pass_hash": coopw})
         self.headers.update({"Cookie": util.make_cookie(self.cookies)})
         self.has_login = True
         self._save_session(cookies=True)
         self.logger.info(i18n.XEH_LOGIN_OK)
-        
+
         return ERR_NO_ERROR, self.has_login
 
     def set_cookie(self, cookie):

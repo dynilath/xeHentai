@@ -11,8 +11,6 @@ try:
     _locale = LOCALE.lower() if LOCALE else 'en_us'
     if _locale in ('zh_cn', 'zh_sg'):
         _locale = 'zh_hans'
-    elif _locale in ('zh_tw', 'zh_hk', 'zh_mo'):
-        _locale = 'zh_hant'
     lng = importlib.import_module("%s.i18n.%s" % (SCRIPT_NAME, _locale))
 except (ImportError, ValueError):
     lng = lng_fallback

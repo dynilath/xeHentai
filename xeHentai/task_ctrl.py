@@ -589,7 +589,7 @@ class TaskControl:
                     img_file_name = task.reload_map[scan_result.img_url][1]
                     self.logger.info(
                         i18n.XEH_FILE_DOWNLOADED.format(
-                            task_guid, scan_result.fid, img_file_name
+                            guid=task_guid, fid=scan_result.fid, fname=img_file_name
                         )
                     )
 
@@ -598,7 +598,9 @@ class TaskControl:
                 except ScanDownloadSkip as ex:
                     self.logger.info(
                         i18n.DF_FILE_DOWNLOADED_SKIPPED.format(
-                            task_guid, ex.result.fid if ex.result else None, ex.reason
+                            guid=task_guid,
+                            fid=ex.result.fid if ex.result else None,
+                            reason=ex.reason,
                         )
                     )
                     return
@@ -706,7 +708,9 @@ class TaskControl:
             raise TaskAbort("task aborted after stage_check_archive_phase1")
         self._host._save_session(task=True, proxy_store=True)
 
-        self.logger.info(i18n.TASK_TITLE.format(task_guid, task.gid, task.meta.title))
+        self.logger.info(
+            i18n.TASK_TITLE.format(guid=task_guid, gid=task.gid, title=task.meta.title)
+        )
 
         if task.state == TASK_STATE_GET_META:
             task.state = TASK_STATE_SCAN_PAGE
@@ -724,7 +728,9 @@ class TaskControl:
                 task.state = TASK_STATE_GET_META
 
         if task.state <= TASK_STATE_SCAN_PAGE:
-            self.logger.info(i18n.DF_STATE_START_SCAN_PAGE.format(task_guid, task.gid))
+            self.logger.info(
+                i18n.DF_STATE_START_SCAN_PAGE.format(guid=task_guid, gid=task.gid)
+            )
             # Stage 2: SCAN_PAGE (Phase 2 archive check inside)
             await self._scan_page_async(task, task_guid, req)
             if self._task_should_abort(task):
@@ -743,8 +749,7 @@ class TaskControl:
 
             if not found_archive:
                 self.logger.debug(
-                    "#%s: no exact match found after page scan, total scanned pages: %d"
-                    % (task_guid, len(task.fid_2_page_hash_map))
+                    f"#{task_guid}: no exact match found after page scan, total scanned pages: {len(task.fid_2_page_hash_map)}"
                 )
                 await self._stage_try_reuse_async(task, task_guid, req)
 
@@ -758,11 +763,14 @@ class TaskControl:
         task.build_page_queue()
 
         if task.state <= TASK_STATE_SCAN_IMG and not task.page_q.empty():
-            # Stage 4: SCAN_IMG
-            # Stage 5: DOWNLOAD
+            # Stage 4: SCAN_DOWNLOAD_IMG
             self.logger.info(
-                i18n.TASK_WILL_DOWNLOAD_CNT
-                % (task_guid, task.meta.total - len(task._flist_done), task.meta.total)
+                i18n.TASK_WILL_DOWNLOAD_CNT.format(
+                    guid=task_guid,
+                    gid=task.gid,
+                    count=task.meta.total - len(task._flist_done),
+                    total=task.meta.total,
+                )
             )
             await self._image_scan_download_async(task, task_guid, req)
             if self._task_should_abort(task):
@@ -775,12 +783,17 @@ class TaskControl:
 
         # After all pages are processed, make archive
         if task.state <= TASK_STATE_MAKE_ARCHIVE:
-            self.logger.info(i18n.TASK_START_MAKE_ARCHIVE.format(task.guid, task.gid))
+            self.logger.info(
+                i18n.TASK_START_MAKE_ARCHIVE.format(guid=task.guid, gid=task.gid)
+            )
             start_time = time.time()
             pth, _ = await self._make_archive_async(task)
             self.logger.info(
                 i18n.TASK_MAKE_ARCHIVE_FINISHED.format(
-                    task.guid, task.gid, pth, time.time() - start_time
+                    guid=task.guid,
+                    gid=task.gid,
+                    path=pth,
+                    time=time.time() - start_time,
                 )
             )
             self._host._save_session(task=True, proxy_store=True)
@@ -788,11 +801,11 @@ class TaskControl:
                 reuse_index.add_zip_to_reuse_index(self._host.global_reuse_index, pth)
 
         task.state = TASK_STATE_FINISHED
-        self.logger.info(i18n.TASK_FINISHED.format(task.guid, task.gid))
-        
+        self.logger.info(i18n.TASK_FINISHED.format(guid=task.guid, gid=task.gid))
+
         task.cleanup_download_info()
         self._host._save_session(task=True, proxy_store=True)
-        
+
         return
 
     async def _run_task_entry_async(self, task_guid: str):
@@ -890,7 +903,9 @@ class TaskControl:
                         continue
 
                     self._host.last_task_guid = task_guid
-                    self.logger.info(i18n.TASK_START % task_guid)
+                    self.logger.info(
+                        i18n.TASK_START.format(guid=task_guid, gid=task.gid)
+                    )
                     self._host._save_session(task=True, proxy_store=True)
                     cnt = 0
 
