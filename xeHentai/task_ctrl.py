@@ -201,6 +201,12 @@ class TaskControl:
         """Fetch fid_page_hash_map for a candidate archive that lacks it in comment metadata."""
         temp_fid_2_page_hash_map = {}
 
+        def page_result(x: tuple[str, str, str]):
+            matches = RE_GALLERY.findall(x[0])
+            if matches:
+                page_hash, fid = matches[0]
+                temp_fid_2_page_hash_map[fid] = page_hash
+
         def meta_grab() -> Tuple[HttpRequestResult, int, int]:
             res = req.request(
                 "GET",
@@ -210,12 +216,16 @@ class TaskControl:
                 proxy=self._host.proxy,
             )
             meta = filters.flt_metadata(res)
+
+            for x in filters.flt_pageurl(res):
+                page_result(x)
+
             return (res, meta["thumbnail_cnt"], meta["total"])
 
         _, thumbnail_cnt, total = await self._scan_scheduler.submit(meta_grab)
 
         awaitables: List[CoroutineType[Any, Any, HttpRequestResult]] = []
-        for x in range(0, int(math.ceil(1.0 * total / thumbnail_cnt))):
+        for x in range(1, int(math.ceil(1.0 * total / thumbnail_cnt))):
 
             def work(page_num=x):
                 return req.request(
@@ -231,10 +241,7 @@ class TaskControl:
         results = await asyncio.gather(*awaitables)
         for r in results:
             for x in filters.flt_pageurl(r):
-                matches = RE_GALLERY.findall(x[0])
-                if matches:
-                    page_hash, fid = matches[0]
-                    temp_fid_2_page_hash_map[fid] = page_hash
+                page_result(x)
         return (total, temp_fid_2_page_hash_map)
 
     async def _stage_try_reuse_async(
@@ -313,6 +320,20 @@ class TaskControl:
             r = await self._scan_scheduler.submit(work)
             meta = filters.flt_metadata(r)
             task.update_meta(meta)
+
+            temp_fid_2_page_url_map = {}
+
+            def page_scan_success(x: tuple[str, str, str]):
+                page_url, unpad_fid, original_file_name = x
+                temp_fid_2_page_url_map[unpad_fid] = page_url
+
+            for x in filters.flt_pageurl(r):
+                page_scan_success(x)
+
+            for fid, page_url in temp_fid_2_page_url_map.items():
+                page_hash = RE_GALLERY.findall(page_url)[0][0]
+                task.fid_2_page_hash_map.setdefault(fid, page_hash)
+
         except Exception as ex:
             self._raise_mapped_stage_exception(
                 "get_meta", task, ex, default_code=task.failcode
@@ -348,7 +369,7 @@ class TaskControl:
             do_proxy_page = not task.config.get("proxy_image_only")
             awaitables: List[CoroutineType[Any, Any, HttpRequestResult]] = []
             for x in range(
-                0, int(math.ceil(1.0 * task.meta.total / int(task.meta.thumbnail_cnt)))
+                1, int(math.ceil(1.0 * task.meta.total / task.meta.thumbnail_cnt))
             ):
 
                 def work(page_num=x):

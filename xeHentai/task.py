@@ -870,12 +870,12 @@ class Task(object):
         if not os.path.exists(fpath):
             os.makedirs(fpath)
 
-        pageurl, fname = self.reload_map[img_url]
-        _, fid = RE_GALLERY.findall(pageurl)[0]
+        reload_url, fname = self.reload_map[img_url]
+        _, fid = RE_GALLERY.findall(reload_url)[0]
         ext = self._content_type_to_ext(content_type)
         if ext:
             fname = Task._build_saving_file_name(self.meta.total, fid, ext)
-            self.reload_map[img_url] = (pageurl, fname)
+            self.reload_map[img_url] = (reload_url, fname)
             self.fid_2_file_name_map[fid] = fname
         else:
             ext = os.path.splitext(fname)[1]

@@ -220,7 +220,7 @@ def map_exception_policy(
         return ExceptionPolicy(action=StageAction.SKIP)
 
     if isinstance(ex, QuotaExceededException):
-        return ExceptionPolicy(action=StageAction.RETRY, delay=1.0)
+        return ExceptionPolicy(action=StageAction.RETRY, delay=60)
 
     if isinstance(ex, KeyExpiredException):
         if stage in ("scan_img", "download_img"):
