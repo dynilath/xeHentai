@@ -67,6 +67,7 @@ class xeHentai(HostInterface):
         self.last_task_guid = None
         self._task_lock: RLock = RLock()
         self._all_tasks: dict[str, Task] = {}  # for saving states
+        self._gid_to_guid: dict[str, str] = {}
         _cfg = {
             k: v for k, v in default_config.__dict__.items() if not k.startswith("_")
         }
@@ -88,6 +89,26 @@ class xeHentai(HostInterface):
         self._task_control = TaskControl(self)
         self.load_session()
         self.rpc = None
+
+    def _new_guid(self) -> str:
+        # Keep backward-compatible 8-char guid while guaranteeing runtime uniqueness.
+        while True:
+            guid = os.urandom(4).hex()
+            if guid not in self._all_tasks:
+                return guid
+
+    def _register_task(self, t: Task) -> None:
+        self._all_tasks[t.guid] = t
+        if t.gid:
+            self._gid_to_guid[str(t.gid)] = t.guid
+
+    def _unregister_task(self, guid: str) -> None:
+        t = self._all_tasks.pop(guid, None)
+        self._task_control.clear_task_top_status(guid)
+        if t and t.gid:
+            mapped = self._gid_to_guid.get(str(t.gid))
+            if mapped == guid:
+                self._gid_to_guid.pop(str(t.gid), None)
 
     @property
     def _exit(self):
@@ -197,37 +218,28 @@ class xeHentai(HostInterface):
         t = Task(url, cfg, self.logger, core_config=self.config)
 
         with self._task_lock:
-            # check if task on same url already exists
-            # well, you may need to download from a link and save images in different zip files
-            # but in fact, this program doesnt support auto rename zip files
-            # and as for me, i prefer restart the same task when i click 'add to xehentai'
-            # in order to repair truncated images
-            for guid, taskitem in self._all_tasks.items():
-                if url == taskitem.url:
-                    self._all_tasks.pop(guid)
-                    t.guid = guid
-                    self._all_tasks[t.guid] = t
-                    self._all_tasks[t.guid].state = TASK_STATE_GET_META
-                    self.tasks.put(t.guid)
-                    return 0, t.guid
+            existing_guid = self._gid_to_guid.get(str(t.gid))
+            if existing_guid and existing_guid in self._all_tasks:
+                existing = self._all_tasks[existing_guid]
+                existing.url = t.url
+                existing.config = t.config
+                existing.failcode = 0
+                existing.set_phase_state(TASK_STATE_WAITING)
+                existing.cleanup()
+                self._task_control.enqueue_waiting_task(existing.guid)
+                self._save_session(task=True)
+                return 0, existing.guid
 
-            # task don't exists
             if t.guid in self._all_tasks:
-                if self._all_tasks[t.guid].state in (
-                    TASK_STATE_FINISHED,
-                    TASK_STATE_FAILED,
-                ):
-                    self.logger.debug(i18n.TASK_PUT_INTO_WAIT % t.guid)
-                    self._all_tasks[t.guid].state = TASK_STATE_WAITING
-                    self._all_tasks[t.guid].cleanup()
-                return 0, t.guid
-            self._all_tasks[t.guid] = t
+                t.guid = self._new_guid()
+            self._register_task(t)
         if not re.match(r"^%s/[^/]+/\d+/[^/]+/*#*$" % RESTR_SITE, url):
             t.set_fail(ERR_URL_NOT_RECOGNIZED)
         elif not self.has_login and re.match(r"^https*://exhentai\.org", url):
             t.set_fail(ERR_CANT_DOWNLOAD_EXH)
         else:
-            self.tasks.put(t.guid)
+            t.set_phase_state(TASK_STATE_WAITING)
+            self._task_control.enqueue_waiting_task(t.guid)
             self._save_session(task=True)
             return 0, t.guid
         self.logger.error(i18n.TASK_ERROR % (t.guid, i18n.c(t.failcode)))
@@ -239,7 +251,8 @@ class xeHentai(HostInterface):
         if TASK_STATE_PAUSED < self._all_tasks[guid].state < TASK_STATE_FINISHED:
             return ERR_DELETE_RUNNING_TASK, None
         self._all_tasks[guid].cleanup(before_delete=True)
-        del self._all_tasks[guid]
+        self._unregister_task(guid)
+        self._save_session(task=True)
         return ERR_NO_ERROR, ""
 
     def pause_task(self, guid):
@@ -248,7 +261,9 @@ class xeHentai(HostInterface):
         t = self._all_tasks[guid]
         if t.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED, TASK_STATE_FAILED):
             return ERR_TASK_CANNOT_PAUSE, None
-        t.state = TASK_STATE_PAUSED
+        t.set_phase_state(TASK_STATE_PAUSED)
+        self._task_control.mark_task_processed(guid)
+        self._save_session(task=True)
         return ERR_NO_ERROR, ""
 
     def resume_task(self, guid):
@@ -257,13 +272,14 @@ class xeHentai(HostInterface):
         t = self._all_tasks[guid]
         if TASK_STATE_PAUSED < t.state < TASK_STATE_FINISHED:
             return ERR_TASK_CANNOT_RESUME, None
-        t.state = max(t.state, TASK_STATE_WAITING)
+        t.set_phase_state(max(t.state, TASK_STATE_WAITING))
 
         # image link is changed everytime the page is reloaded
         # so we need to re scan them
         if t.state > TASK_STATE_SCAN_PAGE:
-            t.state = TASK_STATE_SCAN_PAGE
-        self.tasks.put(guid)
+            t.set_phase_state(TASK_STATE_SCAN_PAGE)
+        self._task_control.enqueue_waiting_task(guid)
+        self._save_session(task=True)
         return ERR_NO_ERROR, ""
 
     def _task_loop(self):
@@ -332,14 +348,31 @@ class xeHentai(HostInterface):
         return errors
 
     def system_status(self):
-        working_status: dict[str, int] = {}
+        grouped: dict[str, dict[str, int]] = {
+            "waiting": {},
+            "processing": {},
+            "processed": {},
+        }
+        summary: dict[str, int] = {
+            "waiting": 0,
+            "processing": 0,
+            "processed": 0,
+        }
 
         with self._task_lock:
             for guid, task in self._all_tasks.items():
                 state_name = state_2_names.get(task.state, "unknown")
-                working_status[state_name] = working_status.get(state_name, 0) + 1
+                top_status = self._task_control.get_task_top_status(guid, task)
+                top_name = task_top_status_name(top_status)
+                if top_name not in grouped:
+                    top_name = "processed"
+                summary[top_name] = summary.get(top_name, 0) + 1
+                grouped[top_name][state_name] = grouped[top_name].get(state_name, 0) + 1
 
-        return ERR_NO_ERROR, working_status
+        return ERR_NO_ERROR, {
+            "summary": summary,
+            "detail": grouped,
+        }
 
     def task_status(
         self,
@@ -349,10 +382,14 @@ class xeHentai(HostInterface):
         url: Optional[str] = None,
     ):
         def parse_task(t: Task):
+            top_status = self._task_control.get_task_top_status(t.guid, t)
             return {
                 "guid": t.guid,
+                "gid": t.gid,
                 "url": t.url,
+                "top_status": task_top_status_name(top_status),
                 "state": state_2_names.get(t.state, "unknown"),
+                "phase_state": t.state,
                 "done": len(t._flist_done),
                 "total": t.meta.total if t.meta else 0,
             }
@@ -396,8 +433,17 @@ class xeHentai(HostInterface):
             _t = Task(_["url"], {}, self.logger, core_config=self.config).from_dict(
                 _, core_config=self.config
             )
-            self._all_tasks[_["guid"]] = _t
-            self.tasks.put(_["guid"])
+
+            if _t.guid in self._all_tasks:
+                _t.guid = self._new_guid()
+            existed = self._gid_to_guid.get(str(_t.gid))
+            if existed and existed in self._all_tasks:
+                continue
+            self._register_task(_t)
+            top_status = self._task_control.get_task_top_status(_t.guid, _t)
+            self._task_control.set_task_top_status(_t.guid, top_status)
+            if top_status == TASK_TOP_STATUS_WAITING:
+                self._task_control.enqueue_waiting_task(_t.guid)
         if self._all_tasks:
             self.logger.info(i18n.XEH_LOAD_TASKS_CNT % len(self._all_tasks))
 

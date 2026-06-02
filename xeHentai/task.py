@@ -449,8 +449,11 @@ class Task(object):
             # if 'resampled' in self.meta:
             #     del self.meta['resampled']
 
+    def set_phase_state(self, phase_state: int) -> None:
+        self.state = phase_state
+
     def set_fail(self, code):
-        self.state = TASK_STATE_FAILED
+        self.set_phase_state(TASK_STATE_FAILED)
         self.failcode = code
         # cleanup all we cached
         self.meta = GalleryMeta()
@@ -460,9 +463,8 @@ class Task(object):
         if not _:
             return False
         self.url = "https://exhentai.org%s" % _[0]
-        self.state = (
-            TASK_STATE_WAITING if self.state == TASK_STATE_FAILED else self.state
-        )
+        if self.state == TASK_STATE_FAILED:
+            self.set_phase_state(TASK_STATE_WAITING)
         self.failcode = 0
         return True
 
@@ -1027,7 +1029,8 @@ class Task(object):
             {
                 k: v
                 for k, v in self.__dict__.items()
-                if not k.endswith("_q") and not k.startswith("_")
+                if not k.endswith("_q")
+                and not k.startswith("_")
             }
         )
         d["meta"] = self.meta.to_dict()

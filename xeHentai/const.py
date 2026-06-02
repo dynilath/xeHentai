@@ -73,6 +73,18 @@ TASK_STATE_MAKE_ARCHIVE = 19
 TASK_STATE_FINISHED = 20
 TASK_STATE_FAILED = -1
 
+TASK_TOP_STATUS_WAITING = 1
+TASK_TOP_STATUS_PROCESSING = 2
+TASK_TOP_STATUS_PROCESSED = 3
+
+
+def task_top_status_name(top_status):
+    return {
+        TASK_TOP_STATUS_WAITING: "waiting",
+        TASK_TOP_STATUS_PROCESSING: "processing",
+        TASK_TOP_STATUS_PROCESSED: "processed",
+    }.get(top_status, "unknown")
+
 ERR_NO_ERROR = 0
 ERR_URL_NOT_RECOGNIZED = 1000
 ERR_CANT_DOWNLOAD_EXH = 1001

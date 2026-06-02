@@ -31,6 +31,9 @@ from .const import (
     TASK_STATE_SCAN_IMG,
     TASK_STATE_SCAN_PAGE,
     TASK_STATE_WAITING,
+    TASK_TOP_STATUS_PROCESSING,
+    TASK_TOP_STATUS_WAITING,
+    TASK_TOP_STATUS_PROCESSED,
     XEH_STATE_FULL_EXIT,
 )
 from .const import RE_GALLERY
@@ -80,6 +83,9 @@ class TaskControl:
         self._host = host
         self._all_threads = [[] for i in range(20)]
         self._exit = 0
+        self._runtime_top_status: Dict[str, int] = {}
+        self._waiting_set: set[str] = set()
+        self._running_set: set[str] = set()
 
         self._scan_scheduler = Scheduler(
             workers=host.config.get("scan_thread_cnt", 1),
@@ -118,6 +124,43 @@ class TaskControl:
 
     def _get_http_request(self, task_guid: str):
         return HttpRequest(self.headers, logger=self.logger, logger_prefix=task_guid)
+
+    def get_task_top_status(self, task_guid: str, task: Task | None = None) -> int:
+        runtime = self._runtime_top_status.get(task_guid)
+        if runtime is not None:
+            return runtime
+        task = task if task is not None else self._host._all_tasks.get(task_guid)
+        if not task:
+            return TASK_TOP_STATUS_WAITING
+        if task.state in (TASK_STATE_FINISHED, TASK_STATE_FAILED, TASK_STATE_PAUSED):
+            return TASK_TOP_STATUS_PROCESSED
+        return TASK_TOP_STATUS_WAITING
+
+    def set_task_top_status(self, task_guid: str, top_status: int) -> None:
+        self._runtime_top_status[task_guid] = top_status
+
+    def enqueue_waiting_task(self, task_guid: str) -> None:
+        if task_guid not in self._host._all_tasks:
+            return
+        self.set_task_top_status(task_guid, TASK_TOP_STATUS_WAITING)
+        if task_guid not in self._waiting_set:
+            self._waiting_set.add(task_guid)
+            self._host.tasks.put(task_guid)
+
+    def mark_task_processing(self, task_guid: str) -> None:
+        self._waiting_set.discard(task_guid)
+        self._running_set.add(task_guid)
+        self.set_task_top_status(task_guid, TASK_TOP_STATUS_PROCESSING)
+
+    def mark_task_processed(self, task_guid: str) -> None:
+        self._waiting_set.discard(task_guid)
+        self._running_set.discard(task_guid)
+        self.set_task_top_status(task_guid, TASK_TOP_STATUS_PROCESSED)
+
+    def clear_task_top_status(self, task_guid: str) -> None:
+        self._waiting_set.discard(task_guid)
+        self._running_set.discard(task_guid)
+        self._runtime_top_status.pop(task_guid, None)
 
     def _raise_mapped_stage_exception(
         self,
@@ -345,9 +388,10 @@ class TaskControl:
             and task.migrate_exhentai()
         ):
             self.logger.info(i18n.TASK_MIGRATE_EXH % task_guid)
-            self._host.tasks.put(task_guid)
-            raise TaskAbort(
-                "gallery migrated to exhentai", result=GetMetaResult(migrated=True)
+            raise TaskReschedule(
+                "gallery migrated to exhentai",
+                delay=0.0,
+                result=GetMetaResult(migrated=True),
             )
         elif task.failcode == ERR_IP_BANNED:
             self.logger.error(i18n.c(ERR_IP_BANNED) % r.response.text)
@@ -705,7 +749,7 @@ class TaskControl:
             raise TaskAbort("task aborted before stage_get_meta")
 
         if task.state == TASK_STATE_WAITING:
-            task.state = TASK_STATE_GET_META
+            task.set_phase_state(TASK_STATE_GET_META)
 
         # Stage 1: GET_META
         # GET_META should always run for any task
@@ -734,7 +778,7 @@ class TaskControl:
         )
 
         if task.state == TASK_STATE_GET_META:
-            task.state = TASK_STATE_SCAN_PAGE
+            task.set_phase_state(TASK_STATE_SCAN_PAGE)
         else:
             missing = [
                 str(i + 1)
@@ -746,7 +790,7 @@ class TaskControl:
                 self.logger.warning(
                     f"#{task_guid} some pages are missing in task data, continue to scan pages, previous state: {task.state}, missing pages: {missing}"
                 )
-                task.state = TASK_STATE_GET_META
+                task.set_phase_state(TASK_STATE_GET_META)
 
         if task.state <= TASK_STATE_SCAN_PAGE:
             self.logger.info(
@@ -780,7 +824,7 @@ class TaskControl:
                 raise TaskAbort("task aborted before build_page_queue")
             self._host._save_session(task=True, proxy_store=True)
 
-            task.state = TASK_STATE_SCAN_IMG
+            task.set_phase_state(TASK_STATE_SCAN_IMG)
 
         # build page queue for later stages, do this after scan_page to ensure the queue is up to date with scanned pages
         task.build_page_queue()
@@ -800,9 +844,9 @@ class TaskControl:
                 raise TaskAbort("task aborted before make_archive")
             self._host._save_session(task=True, proxy_store=True)
             if task.config.get("make_archive"):
-                task.state = TASK_STATE_MAKE_ARCHIVE
+                task.set_phase_state(TASK_STATE_MAKE_ARCHIVE)
             else:
-                task.state = TASK_STATE_FINISHED
+                task.set_phase_state(TASK_STATE_FINISHED)
 
         # After all pages are processed, make archive
         if task.state <= TASK_STATE_MAKE_ARCHIVE:
@@ -823,7 +867,8 @@ class TaskControl:
             if pth:
                 reuse_index.add_zip_to_reuse_index(self._host.global_reuse_index, pth)
 
-        task.state = TASK_STATE_FINISHED
+        task.set_phase_state(TASK_STATE_FINISHED)
+        self.mark_task_processed(task_guid)
         self.logger.info(i18n.TASK_FINISHED.format(guid=task.guid, gid=task.gid))
 
         task.cleanup_download_info()
@@ -845,30 +890,50 @@ class TaskControl:
                     return
                 except TaskReschedule as ex:
                     task = self._host._all_tasks.get(task_guid)
-                    if task and self._task_should_abort(task):
-                        raise TaskAbort(
-                            ex.reason,
-                            delay=ex.delay,
-                            failcode=ex.failcode,
-                            result=ex.result,
-                        )
-                    await asyncio.sleep(ex.delay or 1.0)
-                    continue
+                    if not task:
+                        return
+
+                    if ex.delay:
+                        await asyncio.sleep(ex.delay)
+
+                    if self._task_should_abort(task):
+                        if task.state == TASK_STATE_PAUSED:
+                            self.mark_task_processed(task_guid)
+                        else:
+                            # keep non-paused task phase intact; runtime status will be inferred
+                            self.clear_task_top_status(task_guid)
+                        self._host._save_session(task=True, proxy_store=True)
+                        return
+
+                    self.enqueue_waiting_task(task_guid)
+                    self._host._save_session(task=True, proxy_store=True)
+                    return
                 except TaskFinished:
                     task = self._host._all_tasks.get(task_guid)
                     if task:
-                        task.state = TASK_STATE_FINISHED
+                        task.set_phase_state(TASK_STATE_FINISHED)
+                        self.mark_task_processed(task_guid)
+                        self._host._save_session(task=True, proxy_store=True)
                     return
                 except TaskAbort as ex:
                     self.logger.debug(
                         "%s: task aborted: %s"
                         % (task_guid, ex.reason or "control flow")
                     )
+                    task = self._host._all_tasks.get(task_guid)
+                    if task:
+                        if task.state == TASK_STATE_PAUSED:
+                            self.mark_task_processed(task_guid)
+                        else:
+                            # TaskAbort is pure stop-flow; no re-dispatch behavior here.
+                            self.clear_task_top_status(task_guid)
+                        self._host._save_session(task=True, proxy_store=True)
                     return
                 except TaskFailed as ex:
                     task = self._host._all_tasks.get(task_guid)
                     if task:
-                        task.state = TASK_STATE_FAILED
+                        task.set_phase_state(TASK_STATE_FAILED)
+                        self.mark_task_processed(task_guid)
                         task.failcode = ex.failcode or task.failcode
                     fail_desc = ex.reason or (
                         i18n.c(task.failcode)
@@ -876,11 +941,13 @@ class TaskControl:
                         else "task failed"
                     )
                     self.logger.error(i18n.TASK_ERROR % (task_guid, fail_desc))
+                    self._host._save_session(task=True, proxy_store=True)
                     return
                 except TaskControlFlow as ex:
                     task = self._host._all_tasks.get(task_guid)
                     if task:
-                        task.state = TASK_STATE_FAILED
+                        task.set_phase_state(TASK_STATE_FAILED)
+                        self.mark_task_processed(task_guid)
                         task.failcode = ex.failcode or task.failcode
                     self.logger.error(
                         f"{task_guid}: unexpected control flow exception: {traceback.format_exc()}"
@@ -889,6 +956,7 @@ class TaskControl:
                         i18n.TASK_ERROR
                         % (task_guid, ex.reason or "unexpected task control flow")
                     )
+                    self._host._save_session(task=True, proxy_store=True)
                     return
         except asyncio.CancelledError:
             raise
@@ -896,7 +964,9 @@ class TaskControl:
             self.logger.error(i18n.TASK_ERROR % (task_guid, traceback.format_exc()))
             task = self._host._all_tasks.get(task_guid)
             if task:
-                task.state = TASK_STATE_FAILED
+                task.set_phase_state(TASK_STATE_FAILED)
+                self.mark_task_processed(task_guid)
+                self._host._save_session(task=True, proxy_store=True)
 
     async def _run_loop_async(self):
         """Main async scheduling loop with a cap on concurrent _do_task_async executions."""
@@ -922,15 +992,20 @@ class TaskControl:
                     except Empty:
                         break
 
+                    self._waiting_set.discard(task_guid)
+
                     task = self._host._all_tasks.get(task_guid)
                     if not task:
                         continue
+                    if self.get_task_top_status(task_guid, task) != TASK_TOP_STATUS_WAITING:
+                        continue
                     if not (TASK_STATE_PAUSED < task.state < TASK_STATE_FINISHED):
                         continue
-                    if task_guid in running.values():
+                    if task_guid in self._running_set:
                         continue
 
                     self._host.last_task_guid = task_guid
+                    self.mark_task_processing(task_guid)
                     self.logger.info(
                         i18n.TASK_START.format(guid=task_guid, gid=task.gid)
                     )
@@ -951,7 +1026,9 @@ class TaskControl:
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 for fut in done:
-                    running.pop(fut, None)
+                    done_guid = running.pop(fut, None)
+                    if done_guid:
+                        self._running_set.discard(done_guid)
                     try:
                         fut.result()
                     except asyncio.CancelledError:
@@ -966,6 +1043,7 @@ class TaskControl:
                 for fut in running.keys():
                     fut.cancel()
                 await asyncio.gather(*running.keys(), return_exceptions=True)
+                self._running_set.clear()
 
     def run(self):
         """Main task execution loop."""
