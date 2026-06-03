@@ -7,7 +7,6 @@ from threading import RLock
 import os
 import re
 import sys
-import logging
 import traceback
 from typing import Optional
 
@@ -168,18 +167,6 @@ class xeHentai(HostInterface):
         self.proxy = rebuilt_pool
         self._save_proxy_store(store)
 
-    @staticmethod
-    def _log_level_from_verbose(log_verbose):
-        try:
-            level = int(log_verbose)
-        except (TypeError, ValueError):
-            return logging.WARNING
-        if level >= 2:
-            return logging.DEBUG
-        if level >= 1:
-            return logging.INFO
-        return logging.WARNING
-
     def update_config(self, **cfg_dict):
         self.config.update(
             {k: v for k, v in cfg_dict.items() if k not in ("ignored_errors",)}
@@ -189,7 +176,8 @@ class xeHentai(HostInterface):
             self.config["ignored_errors"] = list(
                 set(self.config["ignored_errors"] + cfg_dict["ignored_errors"])
             )
-        self.logger.setLevel(self._log_level_from_verbose(self.config["log_verbose"]))
+        self.logger.set_console_level(self.config["log_level_console"])
+        self.logger.set_file_level(self.config["log_level_file"])
         self.logger.debug("cfg %s" % self.config)
         if "proxy" in cfg_dict:
             self._rebuild_proxy_pool(self.config["proxy"])

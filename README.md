@@ -52,7 +52,8 @@ Configuration keys：
  - **download_timeout** Timeout of download images. Default to `10`s.
  - **ignored_errors** Set the error codes to ignore and continue downloading. Default to *empty*. Error codes can be obtained from [const.py](xeHentai/const.py).
  - **log_path** Set log file path. Default to `eh.log`.
- - **log_verbose** Set log level with integer from 1 to 3. Bigger value means more verbose output. Default to `2`.
+ - **log_level_console** Console log level. Use one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Default to `DEBUG`.
+ - **log_level_file** File log level. Use one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Default to `DEBUG`.
  - **save_tasks** Set to save uncompleted tasks in `h.json`. Default to `False`.
  
 
@@ -62,7 +63,9 @@ Usage: xeH [-u USERNAME] [-k KEY] [-c COOKIE] [-i] [--daemon] [-d DIR] [-o]
            [-j BOOL] [-r BOOL] [-p PROXY] [--proxy-image | --proxy-image-only]
            [--rpc-interface ADDR] [--rpc-port PORT] [--rpc-secret ...]
            [--delete-task-files BOOL] [-a BOOL] [--download-range a-b,c-d,e]
-           [-t N] [--timeout N] [-f] [-l /path/to/eh.log] [-v] [-h]
+           [-t N] [--timeout N] [-f] [-l /path/to/eh.log]
+           [--log-level-console {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
+           [--log-level-file {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [-h]
            [--version]
            [url [url ...]]
 
@@ -120,7 +123,10 @@ optional arguments:
   -l /path/to/eh.log, --logpath /path/to/eh.log
                         define log path (current:
                         /Users/fffonion/Dev/Python/xeHentai/eh.log)
-  -v, --verbose         show more detailed log (default: 3)
+  --log-level-console {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                        set console log level (default: DEBUG)
+  --log-level-file {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                        set file log level (default: DEBUG)
   -h, --help            show this help message and exit
   --version             show program's version number and exit
 

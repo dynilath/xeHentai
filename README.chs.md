@@ -54,7 +54,8 @@ xeH
  - **download_timeout** 设置下载图片的超时，默认为`10`秒
  - **ignored_errors** 设置忽略的错误码，默认为空，错误码可以从`const.py`中获得
  - **log_path** 日志路径，默认为`eh.log`
- - **log_verbose** 日志等级，可选1-3，值越大输出越详细，默认为`2`
+ - **log_level_console** 控制台日志等级，可选`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`，默认为`DEBUG`
+ - **log_level_file** 文件日志等级，可选`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`，默认为`DEBUG`
  - **save_tasks** 是否保存任务到`h.json`，可用于断点续传，默认为否
  
 
@@ -64,7 +65,9 @@ xeH
            [-j BOOL] [-r BOOL] [-p PROXY] [--proxy-image | --proxy-image-only]
            [--rpc-interface ADDR] [--rpc-port PORT] [--rpc-secret ...]
            [--delete-task-files BOOL] [-a BOOL] [--download-range a-b,c-d,e]
-           [-t N] [--timeout N] [-f] [-l /path/to/eh.log] [-v] [-h]
+           [-t N] [--timeout N] [-f] [-l /path/to/eh.log]
+           [--log-level-console {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
+           [--log-level-file {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [-h]
            [--version]
            [url [url ...]]
 
@@ -107,7 +110,10 @@ xeH
   -f, --force           忽略配额判断, 继续下载 (默认: False)
   -l /path/to/eh.log, --logpath /path/to/eh.log
                         保存日志的路径 (默认: eh.log)
-  -v, --verbose         设置日志装逼等级 (默认: 2)
+  --log-level-console {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                        设置控制台日志等级 (默认: DEBUG)
+  --log-level-file {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                        设置文件日志等级 (默认: DEBUG)
   -h, --help            显示本帮助信息
   --version             显示版本信息
 

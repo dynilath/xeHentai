@@ -70,8 +70,10 @@ ignored_errors = []
 
 # define log path
 log_path = "eh.log"
-# set log level
-log_verbose = 2
+# set console log level (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+log_level_console = "DEBUG"
+# set file log level (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+log_level_file = "DEBUG"
 
 # save tasks to h.tasks.json
 save_tasks = False

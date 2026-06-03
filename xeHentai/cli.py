@@ -174,9 +174,18 @@ def parse_opt():
 
     parser.add_argument('-l', '--logpath', metavar = '/path/to/eh.log',
                         default = os.path.abspath(_def['log_path']), help = i18n.XEH_OPT_l)
-
-    parser.add_argument('-v', '--verbose', action = 'count', default = _def['log_verbose'],
-                        help = i18n.XEH_OPT_v)
+    parser.add_argument('--log-level-console',
+                        choices = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        type = str.upper,
+                        default = _def['log_level_console'],
+                        dest = 'log_level_console',
+                        help = i18n.XEH_OPT_log_level_console)
+    parser.add_argument('--log-level-file',
+                        choices = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        type = str.upper,
+                        default = _def['log_level_file'],
+                        dest = 'log_level_file',
+                        help = i18n.XEH_OPT_log_level_file)
     parser.add_argument('-h','--help', action = 'help', help = i18n.XEH_OPT_h)
     parser.add_argument('--version', action = 'version', version = f"{SCRIPT_NAME} {__version__} {"_dev" if DEVELOPMENT else ""}",
                         help = i18n.XEH_OPT_version)
