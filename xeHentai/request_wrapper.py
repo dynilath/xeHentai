@@ -136,7 +136,7 @@ class HttpRequest(object):
             else:
                 content_length = 0
 
-            logger.verbose(
+            logger.debug(
                 "%s %s %s %d %d"
                 % (logger_prefix, method, current_url, r.status_code, content_length)
             )

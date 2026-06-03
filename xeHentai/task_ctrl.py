@@ -634,7 +634,7 @@ class TaskControl:
         running = set()
 
         def log_task_state(label: str):
-            self.logger.verbose(
+            self.logger.debug(
                 f"{task_guid}: {label} P={len(pending)} W={len(running)} {len(task._flist_done)}/{task.meta.total}"
             )
 

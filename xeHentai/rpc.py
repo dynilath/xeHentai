@@ -124,7 +124,7 @@ class Handler(BaseHTTPRequestHandler):
     def serve_file(self, f):
         f.seek(0, os.SEEK_END)
         size = f.tell()
-        self.xeH.logger.verbose("GET %s 200 %d %s" % (self.path, size, self.client_address[0]))
+        self.xeH.logger.debug("GET %s 200 %d %s" % (self.path, size, self.client_address[0]))
         self.send_header("Content-Length", size)
         f.seek(0, os.SEEK_SET)
         self.end_headers()
@@ -216,13 +216,13 @@ class Handler(BaseHTTPRequestHandler):
                 size = self.serve_file(rt)
                 rt.close()
             else:
-                self.xeH.logger.verbose("GET %s 200 %d %s" % (self.path, len(rt), self.client_address[0]))
+                self.xeH.logger.debug("GET %s 200 %d %s" % (self.path, len(rt), self.client_address[0]))
                 self.send_header("Content-Length", len(rt))
                 self.end_headers()
                 self.wfile.write(rt)
             self.wfile.write(b'\n')
         except ConnectionError as e:
-            self.xeH.logger.verbose('Connection Error : %s' % e)
+            self.xeH.logger.debug('Connection Error : %s' % e)
         return
 
     @path_filter
@@ -270,11 +270,11 @@ class Handler(BaseHTTPRequestHandler):
                     code = 403
                     rt = jsonrpc_resp({"id":j['id']}, error_code = ERR_RPC_UNAUTHORIZED)
                     break
-            self.xeH.logger.verbose("RPC from: %s, cmd: %s, params: %s" % (self.client_address[0], cmd, params))
+            self.xeH.logger.debug("RPC from: %s, cmd: %s, params: %s" % (self.client_address[0], cmd, params))
             try:
                 cmd_rt = getattr(self.xeH, cmd_r)(*params[0], **params[1])
             except (ValueError, TypeError) as ex:
-                self.xeH.logger.verbose("RPC exec error:\n%s" % traceback.format_exc())
+                self.xeH.logger.debug("RPC exec error:\n%s" % traceback.format_exc())
                 code = 500
                 rt = jsonrpc_resp({"id":j['id']}, error_code = ERR_RPC_EXEC_ERROR,
                 error_msg = str(ex))
@@ -292,7 +292,7 @@ class Handler(BaseHTTPRequestHandler):
         rt = rt.encode('utf-8')
         self.wfile.write(rt)
         self.wfile.write(b'\n')
-        self.xeH.logger.verbose("RPC post finished.")
+        self.xeH.logger.debug("RPC post finished.")
         return
 
 

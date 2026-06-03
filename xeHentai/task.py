@@ -892,7 +892,7 @@ class Task(object):
                 os.remove(fn)
             os.rename(fn_tmp, fn)
         except Exception:
-            self.logger.warn(
+            self.logger.warning(
                 "Failed to save file for fid %s:\n %s", fid, traceback.format_exc()
             )
             os.remove(fn_tmp)
