@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 # coding:utf-8
 
-from dataclasses import dataclass
 import traceback
-from typing import Iterable, Optional, Set
+from typing import Iterable, Never, Optional, Set
 
 from .const import (
     ERR_CONNECTION_ERROR,
@@ -19,7 +18,15 @@ from .const import (
     ERR_QUOTA_EXCEEDED,
     ERR_SCAN_REGEX_FAILED,
 )
-from .stage_flow import StageAction
+from .stage_flow import (
+    TaskControlFlow,
+    TaskFailed,
+    TaskAbort,
+    TaskFinished,
+    StageRetry,
+    StageSkip,
+    ScanDownloadRetry,
+)
 
 
 class CrawlerException(Exception):
@@ -204,44 +211,53 @@ class RequestRetryExhaustedException(RequestLayerException):
         RequestLayerException.__init__(self, url, message)
 
 
-@dataclass
-class ExceptionPolicy:
-    action: StageAction
-    delay: float = 0.0
-    fail_detail: Optional[str] = None
+def raise_for_stage_exception(
+    stage: str,
+    ex: Exception,
+    ignored_errors: Optional[Iterable[int]] = None,
+    *,
+    default_code: int = 0,
+    result=None,
+)->Never:
+    """Map an exception directly to a TaskControlFlow subclass and raise it.
 
-
-def map_exception_policy(
-    stage: str, ex: Exception, ignored_errors: Optional[Iterable[int]] = None
-) -> ExceptionPolicy:
+    Combines the former two-step ``map_exception_policy`` → ``_raise_mapped_stage_exception``
+    pipeline into a single free function, eliminating the StageAction / ExceptionPolicy
+    intermediate layer.
+    """
     ignored: Set[int] = set(ignored_errors or ())
 
-    if isinstance(ex, CrawlerException) and ex.code in ignored:
-        return ExceptionPolicy(action=StageAction.SKIP)
+    if isinstance(ex, CrawlerException):
+        if ex.code in ignored:
+            raise StageSkip(str(ex), failcode=ex.code, result=result)
+        failcode = ex.code
+        reason = ex.reason or traceback.format_exc()
+    else:
+        failcode = default_code or 0
+        reason = traceback.format_exc()
 
     if isinstance(ex, QuotaExceededException):
-        return ExceptionPolicy(action=StageAction.RETRY, delay=60)
+        raise StageRetry(reason, delay=60, failcode=failcode, result=result)
 
     if isinstance(ex, KeyExpiredException):
         if stage in ("scan_img", "download_img"):
-            return ExceptionPolicy(action=StageAction.PIPELINE_RETRY)
-        return ExceptionPolicy(action=StageAction.RETRY, delay=0.5)
+            raise ScanDownloadRetry(
+                reason, delay=0.5, failcode=failcode, result=result
+            )
+        raise StageRetry(reason, delay=0.5, failcode=failcode, result=result)
 
-    if isinstance(
-        ex,
-        (ImageFileException),
-    ):
-        return ExceptionPolicy(action=StageAction.PIPELINE_RETRY, delay=1.0)
+    if isinstance(ex, ImageFileException):
+        raise ScanDownloadRetry(reason, delay=1.0, failcode=failcode, result=result)
 
     if isinstance(ex, ImageFileNotFoundException):
-        return ExceptionPolicy(action=StageAction.PIPELINE_RETRY)
+        raise ScanDownloadRetry(reason, failcode=failcode, result=result)
 
     if isinstance(ex, RequestRetryExhaustedException):
         if stage in ("scan_img", "download_img"):
-            return ExceptionPolicy(action=StageAction.PIPELINE_RETRY, delay=1.0)
-        return ExceptionPolicy(
-            action=StageAction.FAIL, fail_detail=traceback.format_exc()
-        )
+            raise ScanDownloadRetry(
+                reason, delay=1.0, failcode=failcode, result=result
+            )
+        raise TaskFailed(reason, failcode=failcode, result=result)
 
     if isinstance(
         ex,
@@ -257,36 +273,6 @@ def map_exception_policy(
             MetaDataParseException,
         ),
     ):
-        return ExceptionPolicy(
-            action=StageAction.FAIL, fail_detail=traceback.format_exc()
-        )
+        raise TaskFailed(reason, failcode=failcode, result=result)
 
-    return ExceptionPolicy(action=StageAction.FAIL, fail_detail=traceback.format_exc())
-
-
-if __name__ == "__main__":
-    # policy smoke checks
-    assert (
-        map_exception_policy("scan_img", QuotaExceededException("u")).action
-        == StageAction.RETRY
-    )
-    assert (
-        map_exception_policy("scan_img", KeyExpiredException("u")).action
-        == StageAction.PIPELINE_RETRY
-    )
-    assert (
-        map_exception_policy("get_meta", KeyExpiredException("u")).action
-        == StageAction.RETRY
-    )
-    assert (
-        map_exception_policy("download_img", ImageFileNotFoundException("u")).action
-        == StageAction.PIPELINE_RETRY
-    )
-    assert (
-        map_exception_policy("scan_page", RequestRetryExhaustedException("u", 3)).action
-        == StageAction.FAIL
-    )
-    assert (
-        map_exception_policy("scan_img", RequestRetryExhaustedException("u", 3)).action
-        == StageAction.RETRY
-    )
+    raise TaskFailed(reason, failcode=failcode, result=result)

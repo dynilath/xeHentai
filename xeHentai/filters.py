@@ -3,6 +3,8 @@
 # Contributor:
 #      fffonion        <fffonion@gmail.com>
 
+from dataclasses import dataclass
+from functools import wraps
 import re
 
 
@@ -22,7 +24,7 @@ from .exceptions import (
     QuotaExceededException,
     VisibleOnlyInExhentaiException,
 )
-from typing import Any, Callable, Dict, List, ParamSpec, Tuple, TypeVar
+from typing import Any, Callable, Concatenate, Dict, List, ParamSpec, Tuple, TypeVar
 
 SUC = 0
 FAIL = 1
@@ -136,9 +138,9 @@ def flt_pageurl(r: HttpRequestResult) -> List[Tuple[str, str, str]]:
         )
     return picpage
 
-
-def flt_quota_check(func: Callable[[HttpRequestResult, Callable[P, R]], R]):
-    def _(r: HttpRequestResult, suc: Callable[P, R]) -> R:
+def flt_quota_check(func: Callable[Concatenate[HttpRequestResult, P], R]):
+    @wraps(func)
+    def _(r: HttpRequestResult, *args: P.args, **kwargs: P.kwargs) -> R:
         content_type = r.response.headers.get("content-type", "")
         if r.response.status_code == 403:
             raise KeyExpiredException(r.final_url)
@@ -164,85 +166,86 @@ def flt_quota_check(func: Callable[[HttpRequestResult, Callable[P, R]], R]):
                 r.final_url, "image viewing limits exceeded (text match)"
             )
         else:
-            return func(r, suc)
+            return func(r, *args, **kwargs)
 
     return _
 
+@dataclass
+class ImgUrlFilterResult:
+    # unpad_fid, file_hash, file_ext, img_url, reload_url
+    unpad_fid: str
+    file_hash: str
+    file_ext: str
+    img_url: str
+    reload_url: str
 
-def flt_imgurl_wrapper(ori: bool):
 
-    @flt_quota_check
-    def flt_imgurl(
-        r: HttpRequestResult,
-        suc: Callable[[Tuple[str, str, str, str, str]], R],
-        ori: bool = ori,
-    ) -> R:
-        # input per image page response
-        # add (image url, reload url, filename) to queue if suc
-        # return (errorcode, page_url) if fail
-        if re.match("Invalid page", r.response.text):
-            raise ImagePageInvalidException(r.final_url)
+@flt_quota_check
+def flt_imgurl_wrapper(r: HttpRequestResult, ori: bool):
+    # input per image page response
+    # add (image url, reload url, filename) to queue if suc
+    # return (errorcode, page_url) if fail
+    if re.match("Invalid page", r.response.text):
+        raise ImagePageInvalidException(r.final_url)
 
-        _ = re.findall(r'src="([^"]+keystamp[^"]+)"', r.response.text)
-        if not _:
-            _ = re.findall(r'src="([^"]+)"\s+style="', r.response.text)
-        if not _:
-            raise ImagePageInfoParseException(
-                r.final_url, "can't find image url in page"
-            )
-        page_img_url = util.htmlunescape(_[0])
-
-        page_img_url_info = extract_img_url_info(page_img_url)
-        if not page_img_url_info:
-            raise ImagePageInfoParseException(r.final_url, "can't parse image url info")
-
-        _ = re.findall(r"<\/a><\/div><div>(.*?) :: ?\d+ x \d+[ <]", r.response.text)
-        if not _:
-            raise ImagePageInfoParseException(
-                r.final_url, "can't find original_file_name in page"
-            )
-        original_file_name = _[0].strip()
-
-        if "image.php" in original_file_name:
-            raise ImagePageInfoParseException(
-                r.final_url, "filename is image.php, can't parse original filename"
-            )
-
-        _ = re.findall(r"\/(\w+)\/(\d+)-(\d*)", r.final_url)
-        if not _:
-            raise ImagePageInfoParseException(
-                r.final_url, "can't parse page id from url"
-            )
-        orignal_hash, gid, unpad_fid = _[0]
-
-        # original url example: https://exhentai.org/fullimg/92997/9/77hogvralgb/009.jpg
-
-        original_img_url = re.findall(
-            r'class="mr".+<a href="(.+)"\s*>Download original', r.response.text
+    _ = re.findall(r'src="([^"]+keystamp[^"]+)"', r.response.text)
+    if not _:
+        _ = re.findall(r'src="([^"]+)"\s+style="', r.response.text)
+    if not _:
+        raise ImagePageInfoParseException(
+            r.final_url, "can't find image url in page"
         )
-        original_img_url = (
-            util.htmlunescape(original_img_url[0]) if original_img_url else page_img_url
+    page_img_url = util.htmlunescape(_[0])
+
+    page_img_url_info = extract_img_url_info(page_img_url)
+    if not page_img_url_info:
+        raise ImagePageInfoParseException(r.final_url, "can't parse image url info")
+
+    _ = re.findall(r"<\/a><\/div><div>(.*?) :: ?\d+ x \d+[ <]", r.response.text)
+    if not _:
+        raise ImagePageInfoParseException(
+            r.final_url, "can't find original_file_name in page"
         )
-        original_file_name = os.path.basename(original_img_url)
-        original_ext = os.path.splitext(original_file_name)[1]
+    original_file_name = _[0].strip()
 
-        _ = re.findall(r"return nl\('([a-zA-Z\d\-]+)'\)", r.response.text)
-        if not _:
-            raise ImagePageInfoParseException(
-                r.final_url, "can't find js nl value in page"
-            )
-        js_nl = _[0]
-
-        reload_url = "%s%snl=%s" % (
-            r.final_url,
-            "&" if "?" in r.final_url else "?",
-            js_nl,
+    if "image.php" in original_file_name:
+        raise ImagePageInfoParseException(
+            r.final_url, "filename is image.php, can't parse original filename"
         )
 
-        img_url = original_img_url if ori else page_img_url
-        file_hash = orignal_hash if ori else page_img_url_info.sha1[:10]
-        file_ext = original_ext if ori else page_img_url_info.format
+    _ = re.findall(r"\/(\w+)\/(\d+)-(\d*)", r.final_url)
+    if not _:
+        raise ImagePageInfoParseException(
+            r.final_url, "can't parse page id from url"
+        )
+    orignal_hash, gid, unpad_fid = _[0]
 
-        return suc((unpad_fid, file_hash, file_ext, img_url, reload_url))
+    # original url example: https://exhentai.org/fullimg/92997/9/77hogvralgb/009.jpg
 
-    return flt_imgurl
+    original_img_url = re.findall(
+        r'class="mr".+<a href="(.+)"\s*>Download original', r.response.text
+    )
+    original_img_url = (
+        util.htmlunescape(original_img_url[0]) if original_img_url else page_img_url
+    )
+    original_file_name = os.path.basename(original_img_url)
+    original_ext = os.path.splitext(original_file_name)[1]
+
+    _ = re.findall(r"return nl\('([a-zA-Z\d\-]+)'\)", r.response.text)
+    if not _:
+        raise ImagePageInfoParseException(
+            r.final_url, "can't find js nl value in page"
+        )
+    js_nl = _[0]
+
+    reload_url = "%s%snl=%s" % (
+        r.final_url,
+        "&" if "?" in r.final_url else "?",
+        js_nl,
+    )
+
+    img_url = original_img_url if ori else page_img_url
+    file_hash = orignal_hash if ori else page_img_url_info.sha1[:10]
+    file_ext = original_ext if ori else page_img_url_info.format
+
+    return ImgUrlFilterResult(unpad_fid, file_hash, file_ext, img_url, reload_url)

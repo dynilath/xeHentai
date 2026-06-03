@@ -4,30 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
-from typing import Generic, Optional, TypeVar
-
-
-class StageAction(str, Enum):
-    CONTINUE = "continue"
-    RETRY = "retry"
-    PIPELINE_RETRY = "pipeline_retry"
-    SKIP = "skip"
-    FINISH = "finish"
-    FAIL = "fail"
-    ABORT = "abort"
-
-
-T = TypeVar("T")
-
-
-@dataclass
-class StageOutcome(Generic[T]):
-    action: StageAction
-    result: Optional[T] = None
-    reason: Optional[str] = None
-    delay: float = 0.0
-    failcode: Optional[int] = None
+from typing import Optional
 
 
 class TaskControlFlow(BaseException):

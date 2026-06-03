@@ -42,9 +42,7 @@ from .host_interface import HostInterface
 from .i18n import i18n
 from .task import DumplicatedFileInfo, Task, TaskReuseResources
 from .request_wrapper import HttpRequest, HttpRequestResult
-from .exceptions import CrawlerException, ImageFileNotFoundException
-from .exceptions import map_exception_policy
-from .stage_flow import StageAction
+from .exceptions import ImageFileNotFoundException, raise_for_stage_exception
 from .stage_flow import GetMetaResult, ScanPageResult, ScanImageResult, DownloadResult
 from .stage_flow import (
     TaskControlFlow,
@@ -161,60 +159,6 @@ class TaskControl:
         self._waiting_set.discard(task_guid)
         self._running_set.discard(task_guid)
         self._runtime_top_status.pop(task_guid, None)
-
-    def _raise_mapped_stage_exception(
-        self,
-        stage: str,
-        task: Task,
-        ex: Exception,
-        *,
-        default_code: int = 0,
-        result=None,
-    ):
-        policy = map_exception_policy(
-            stage,
-            ex,
-            ignored_errors=task.config.get("ignored_errors"),
-        )
-        if isinstance(ex, CrawlerException):
-            failcode = ex.code
-            reason = ex.reason or traceback.format_exc()
-        else:
-            failcode = default_code or 0
-            reason = traceback.format_exc()
-        if policy.action == StageAction.RETRY:
-            raise StageRetry(
-                reason, delay=policy.delay, failcode=failcode, result=result
-            )
-        if policy.action == StageAction.PIPELINE_RETRY:
-            raise ScanDownloadRetry(
-                reason, delay=policy.delay, failcode=failcode, result=result
-            )
-        if policy.action == StageAction.SKIP:
-            raise StageSkip(
-                reason, delay=policy.delay, failcode=failcode, result=result
-            )
-        if policy.action == StageAction.ABORT:
-            raise TaskAbort(
-                reason, delay=policy.delay, failcode=failcode, result=result
-            )
-        if policy.action == StageAction.FAIL:
-            raise TaskFailed(
-                policy.fail_detail or reason,
-                delay=policy.delay,
-                failcode=failcode,
-                result=result,
-            )
-        if policy.action == StageAction.FINISH:
-            raise TaskFinished(
-                reason, delay=policy.delay, failcode=failcode, result=result
-            )
-        raise TaskFailed(
-            "unexpected policy action: %s" % policy.action,
-            delay=policy.delay,
-            failcode=failcode,
-            result=result,
-        )
 
     def _handle_exact_match_found(
         self, task: Task, task_guid: str, found_archive: str
@@ -377,25 +321,26 @@ class TaskControl:
                 page_hash = RE_GALLERY.findall(page_url)[0][0]
                 task.fid_2_page_hash_map.setdefault(fid, page_hash)
 
+            if (
+                task.failcode in (ERR_ONLY_VISIBLE_EXH, ERR_GALLERY_REMOVED)
+                and self.has_login
+                and task.migrate_exhentai()
+            ):
+                self.logger.info(i18n.TASK_MIGRATE_EXH % task_guid)
+                raise TaskReschedule(
+                    "gallery migrated to exhentai",
+                    delay=0.0,
+                    result=GetMetaResult(migrated=True),
+                )
+                
+            elif task.failcode == ERR_IP_BANNED:
+                self.logger.error(i18n.c(ERR_IP_BANNED) % r.response.text)
+                raise TaskFailed(i18n.c(ERR_IP_BANNED), failcode=ERR_IP_BANNED)
+            
         except Exception as ex:
-            self._raise_mapped_stage_exception(
-                "get_meta", task, ex, default_code=task.failcode
+            raise_for_stage_exception(
+                "get_meta", ex, task.config.get("ignored_errors"), default_code=task.failcode
             )
-
-        if (
-            task.failcode in (ERR_ONLY_VISIBLE_EXH, ERR_GALLERY_REMOVED)
-            and self.has_login
-            and task.migrate_exhentai()
-        ):
-            self.logger.info(i18n.TASK_MIGRATE_EXH % task_guid)
-            raise TaskReschedule(
-                "gallery migrated to exhentai",
-                delay=0.0,
-                result=GetMetaResult(migrated=True),
-            )
-        elif task.failcode == ERR_IP_BANNED:
-            self.logger.error(i18n.c(ERR_IP_BANNED) % r.response.text)
-            raise TaskFailed(i18n.c(ERR_IP_BANNED), failcode=ERR_IP_BANNED)
 
         return GetMetaResult()
 
@@ -435,8 +380,8 @@ class TaskControl:
                     page_scan_success(x)
                     page_count += 1
         except Exception as ex:
-            self._raise_mapped_stage_exception(
-                "scan_page", task, ex, default_code=task.failcode
+            raise_for_stage_exception(
+                "scan_page", ex, task.config.get("ignored_errors"), default_code=task.failcode
             )
 
         for fid, page_url in temp_fid_2_page_url_map.items():
@@ -448,7 +393,7 @@ class TaskControl:
     @stage_retry_skip_scope
     async def _scan_img_async(
         self, page_url: str, task: Task, task_guid: str, req: HttpRequest
-    ):
+    ) -> ScanImageResult:
 
         _ = RE_GALLERY.findall(page_url)
         if not _:
@@ -456,23 +401,21 @@ class TaskControl:
         page_hash: str = _[0][0]
         unpad_fid: str = _[0][1]
 
-        def img_scan_success(x: Tuple[str, str, str, str, str]):
+        def img_scan_success(x: filters.ImgUrlFilterResult):
             # This callback is called for each image page scanned, with x containing image info
             # We use it to populate task's reload_map and page_q for later downloading
 
-            unpad_fid, file_hash, file_ext, image_url, reload_url = x
-
             expected_saved = Task._build_saving_file_name(
-                task.meta.total, unpad_fid, file_ext
+                task.meta.total, x.unpad_fid, x.file_ext
             )
             expected = os.path.join(task.get_task_dir(), expected_saved)
 
-            task.fid_2_img_hash_map[unpad_fid] = file_hash
-            task.fid_2_file_name_map[unpad_fid] = expected_saved
+            task.fid_2_img_hash_map[x.unpad_fid] = x.file_hash
+            task.fid_2_file_name_map[x.unpad_fid] = expected_saved
 
             # STEP 1: Check if this image URL has been scanned before (dumplicated with another page)
-            if image_url in task.reload_map:
-                other_reload_url, other_file_name = task.reload_map[image_url]
+            if x.img_url in task.reload_map:
+                other_reload_url, other_file_name = task.reload_map[x.img_url]
 
                 _, other_unpad_fid = RE_GALLERY.findall(other_reload_url)[0]
 
@@ -485,29 +428,29 @@ class TaskControl:
                         # copy the file to expected path
                         # and mark fid done, so later scan/download stages will skip this image
                         shutil.copy(other, expected)
-                        task.set_fid_done(unpad_fid)
+                        task.set_fid_done(x.unpad_fid)
                     else:
                         # the file from other page is not downloaded yet
                         # add to dumplicated_file_map for later handling in download stage
                         task.dumplicated_file_map.setdefault(page_hash, []).append(
                             DumplicatedFileInfo(
-                                fid=unpad_fid,
+                                fid=x.unpad_fid,
                                 existed_fid=other_unpad_fid,
                                 file_name=expected_saved,
                                 existed_file_name=other_file_name,
                             )
                         )
                     self.logger.debug(
-                        f"{task_guid}: found dumplicated image URL:  \nsrc {other} <-> \ntarger: {expected}\n URL: {image_url}"
+                        f"{task_guid}: found dumplicated image URL:  \nsrc {other} <-> \ntarger: {expected}\n URL: {x.img_url}"
                     )
 
                     raise ScanDownloadSkip(
                         i18n.CF_SCANDOWNLOADSKIP_DUPLICATE,
                         result=ScanImageResult(
-                            fid=unpad_fid,
+                            fid=x.unpad_fid,
                             page_url=page_url,
-                            reload_url=reload_url,
-                            img_url=image_url,
+                            reload_url=x.reload_url,
+                            img_url=x.img_url,
                         ),
                     )
 
@@ -516,43 +459,43 @@ class TaskControl:
             # Some previous download might mistakenly set the file ext to .jpg/.png, so check them as well
             for ext in [".jpg", ".png"]:
                 wf_expected_file = Task._build_saving_file_name(
-                    task.meta.total, unpad_fid, ext
+                    task.meta.total, x.unpad_fid, ext
                 )
                 wf_expected = os.path.join(task.get_task_dir(), wf_expected_file)
                 if wf_expected == expected:
                     break
-                if check_file(wf_expected, file_hash):
+                if check_file(wf_expected, x.file_hash):
                     shutil.copy(wf_expected, expected)
-                    task.set_fid_done(unpad_fid)
+                    task.set_fid_done(x.unpad_fid)
                     raise ScanDownloadSkip(
                         i18n.CF_SCANDOWNLOADSKIP_EXISTING,
                         result=ScanImageResult(
-                            fid=unpad_fid,
+                            fid=x.unpad_fid,
                             page_url=page_url,
-                            reload_url=reload_url,
-                            img_url=image_url,
+                            reload_url=x.reload_url,
+                            img_url=x.img_url,
                         ),
                     )
 
-            if check_file(expected, file_hash):
-                task.set_fid_done(unpad_fid)
+            if check_file(expected, x.file_hash):
+                task.set_fid_done(x.unpad_fid)
                 raise ScanDownloadSkip(
                     i18n.CF_SCANDOWNLOADSKIP_EXISTING,
                     result=ScanImageResult(
-                        fid=unpad_fid,
+                        fid=x.unpad_fid,
                         page_url=page_url,
-                        reload_url=reload_url,
-                        img_url=image_url,
+                        reload_url=x.reload_url,
+                        img_url=x.img_url,
                     ),
                 )
 
             # STEP 3: New file that needs to be downloaded, add to reload_map for later download stage
-            task.reload_map.setdefault(image_url, (reload_url, expected_saved))
+            task.reload_map.setdefault(x.img_url, (x.reload_url, expected_saved))
             return ScanImageResult(
-                fid=unpad_fid,
+                fid=x.unpad_fid,
                 page_url=page_url,
-                img_url=image_url,
-                reload_url=reload_url,
+                img_url=x.img_url,
+                reload_url=x.reload_url,
             )
 
         try:
@@ -569,16 +512,16 @@ class TaskControl:
                 )
 
             r = await self._scan_scheduler.submit(work)
-            filter = filters.flt_imgurl_wrapper(
+            result = filters.flt_imgurl_wrapper(r, 
                 task.config["download_ori"] and self.has_login
             )
-            return filter(r, suc=img_scan_success)
+            return img_scan_success(result)
         except Exception as ex:
             result = ScanImageResult(
                 fid=unpad_fid, page_url=page_url, img_url="", reload_url=""
             )
-            self._raise_mapped_stage_exception(
-                "scan_img", task, ex, default_code=task.failcode, result=result
+            raise_for_stage_exception(
+                "scan_img", ex, task.config.get("ignored_errors"), default_code=task.failcode, result=result
             )
 
     @stage_retry_skip_scope
@@ -612,8 +555,8 @@ class TaskControl:
 
             return result
         except Exception as ex:
-            self._raise_mapped_stage_exception(
-                "download_img", task, ex, default_code=task.failcode, result=result
+            raise_for_stage_exception(
+                "download_img", ex, task.config.get("ignored_errors"), default_code=task.failcode, result=result
             )
 
     async def _image_scan_download_async(
