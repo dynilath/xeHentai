@@ -31,7 +31,7 @@ class Logger(object):
             from rich.logging import RichHandler
 
             handler = RichHandler(
-                show_time=True,
+                show_time=False,
                 show_level=True,
                 show_path=False,
                 rich_tracebacks=True,
@@ -44,7 +44,7 @@ class Logger(object):
             handler = logging.StreamHandler()
             handler.setFormatter(
                 logging.Formatter(
-                    "%(levelname)-8s [%(asctime)s] %(message)s", datefmt="%H:%M:%S"
+                    "%(levelname)-8s %(message)s"
                 )
             )
             handler.setLevel(self._console_level)

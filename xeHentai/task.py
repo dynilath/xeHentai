@@ -319,13 +319,9 @@ class TaskReuseResources:
 
                 local_name = "%s - %s" % (candidate_gid, basename)
                 local_path = os.path.join(target_dir, local_name)
-                tmp_path = "%s.xeh" % local_path
 
-                with zf.open(member, "r") as src, open(tmp_path, "wb") as dst:
+                with zf.open(member, "r") as src, open(local_path, "wb") as dst:
                     shutil.copyfileobj(src, dst)
-                if os.path.exists(local_path):
-                    os.remove(local_path)
-                os.rename(tmp_path, local_path)
 
                 path_list.append(local_path)
 
@@ -815,7 +811,7 @@ class Task(object):
 
         if len(self.reuse.page_hash_file_map) > 0:
             self.logger.debug(
-                f"#{self.guid}: Reuse page hash file map has {len(self.reuse.page_hash_file_map)} entries before building page queue."
+                f"[guid={self.guid}] Reuse page hash file map has {len(self.reuse.page_hash_file_map)} entries before building page queue."
             )
 
         for fid, page_hash in self.fid_2_page_hash_map.items():
@@ -826,7 +822,7 @@ class Task(object):
                 )
                 if target_path:
                     self.logger.debug(
-                        f"#{self.guid}: Materialized reuse file for fid={fid} from page hash {page_hash}."
+                        f"[guid={self.guid}] Materialized reuse file for fid={fid} from page hash {page_hash}."
                     )
                     basename = os.path.basename(target_path)
                     self.fid_2_file_name_map[fid] = basename
@@ -843,7 +839,7 @@ class Task(object):
                 if check_file(expected_path, expected_file_hash):
                     # file exists and matches expected hash, skip adding to page queue
                     self.logger.debug(
-                        f"#{self.guid}: Found existing file for fid={fid} with matching hash, skipping."
+                        f"[guid={self.guid}] Found existing file for fid={fid} with matching hash, skipping."
                     )
                     self.set_fid_done(fid)
                     continue

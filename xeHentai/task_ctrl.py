@@ -172,13 +172,13 @@ class TaskControl:
             if not os.path.exists(task_folder):
                 os.makedirs(task_folder)
             shutil.move(found_archive, current_arc)
-        self.logger.info(i18n.DF_FULLY_MATCHED % (task.guid, found_archive))
+        self.logger.info(i18n.DF_FULLY_MATCHED.format(guid=task.guid, path=current_arc))
         try:
             arc, up_to_date = task.make_archive()
             if up_to_date:
-                self.logger.info(i18n.DF_FULLY_MATCHED_UP_TO_DATE % (task.guid, arc))
+                self.logger.info(i18n.DF_FULLY_MATCHED_UP_TO_DATE.format(guid=task.guid, path=arc))
             else:
-                self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED % (task.guid, arc))
+                self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED.format(guid=task.guid, path=arc))
         except Exception as ex:
             self.logger.error(i18n.TASK_ERROR % (task.guid, traceback.format_exc()))
 
@@ -239,15 +239,11 @@ class TaskControl:
             archives_set, pending_count, page_map_count = task.prepare_reuse_files()
             if len(archives_set) > 0:
                 self.logger.debug(
-                    "#%s: found %d candidate archive(s) for reuse, with %d pending archives and %d page hash mappings",
-                    task_guid,
-                    len(archives_set),
-                    pending_count,
-                    page_map_count,
+                    f"[guid={task_guid}] candidate reuse archives: {archives_set}, pending_count: {pending_count}, page_map_count: {page_map_count}"
                 )
             else:
                 self.logger.debug(
-                    "#%s: no candidate archive found for reuse", task_guid
+                    f"[guid={task_guid}] no candidate archive found for reuse"
                 )
                 return None
 
@@ -273,19 +269,14 @@ class TaskControl:
                             break
 
                     self.logger.debug(
-                        "#%s: crawled reuse archive %s",
-                        task_guid,
-                        os.path.basename(candidate.archive_path),
+                        f"[guid={task_guid}] crawled reuse archive {os.path.basename(candidate.archive_path)}"
                     )
                 except Exception as ex:
                     self.logger.warning(
-                        "#%s: failed to crawl reuse archive %s: %s",
-                        task_guid,
-                        os.path.basename(candidate.archive_path),
-                        str(ex),
+                        f"[guid={task_guid}] failed to crawl reuse archive {os.path.basename(candidate.archive_path)}: {ex}"
                     )
         except Exception as ex:
-            self.logger.warning("#%s: try_reuse stage failed: %s", task_guid, str(ex))
+            self.logger.warning(f"[guid={task_guid}] try_reuse stage failed: {ex}")
 
     @stage_retry_skip_scope
     async def _get_meta_async(self, task: Task, task_guid: str, req: HttpRequest):
@@ -731,7 +722,7 @@ class TaskControl:
             ]
             if len(missing) > 0:
                 self.logger.warning(
-                    f"#{task_guid} some pages are missing in task data, continue to scan pages, previous state: {task.state}, missing pages: {missing}"
+                    f"[guid={task_guid}] some pages are missing in task data, continue to scan pages, previous state: {task.state}, missing pages: {missing}"
                 )
                 task.set_phase_state(TASK_STATE_GET_META)
 
@@ -756,11 +747,11 @@ class TaskControl:
                 raise TaskFinished("phase2 exact-match completed")
 
             self.logger.debug(
-                f"#{task_guid}: scaned {len(task.fid_2_page_hash_map)} pages"
+                f"[guid={task_guid}] scaned {len(task.fid_2_page_hash_map)} pages"
             )
 
             if not found_archive:
-                self.logger.debug(f"#{task_guid}: no exact match found after page scan")
+                self.logger.debug(f"[guid={task_guid}] no exact match found after page scan")
                 await self._stage_try_reuse_async(task, task_guid, req)
 
             if self._task_should_abort(task):
