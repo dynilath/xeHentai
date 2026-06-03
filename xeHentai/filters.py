@@ -67,10 +67,10 @@ def flt_metadata(r: HttpRequestResult) -> Dict[str, Any]:
 
     try:
         title_japanese = util.htmlunescape(
-            re.findall('="gj">(.*?)</h1>', r.response.text)[0]
+            re.findall(r'="gj">(.*?)<\/h1>', r.response.text)[0]
         )
         title_primary = util.htmlunescape(
-            re.findall('="gn">(.*?)</h1>', r.response.text)[0]
+            re.findall(r'="gn">(.*?)<\/h1>', r.response.text)[0]
         )
 
         # preferred readable naming
