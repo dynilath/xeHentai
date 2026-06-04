@@ -98,10 +98,10 @@ def flt_metadata(r: HttpRequestResult) -> Dict[str, Any]:
         meta["thumbnail_cnt"] = int(_[1]) - int(_[0]) + 1
 
         meta["newer_versions"] = []
-        gnd_block = re.search(r'<div id="gnd">(.+?)</div>', r.response.text, re.DOTALL)
+        gnd_block = re.search(r'<div id="gnd">(.+?)<\/div>', r.response.text, re.DOTALL)
         if gnd_block:
             for _u, _gid, _sethash, _title, _added in re.findall(
-                r'<a href="(https?://(?:e-|ex)hentai\.org/g/(\d+)/([^/"]+)/?)">([^<]+)</a>,\s*added\s*([^<]+)',
+                r'<a href="(https?:\/\/(?:e-|ex)hentai\.org\/g\/(\d+)\/([^\/"]+)\/?)">([^<]+)<\/a>,\s*added\s*([^<]+)',
                 gnd_block.group(1),
             ):
                 meta["newer_versions"].append(
