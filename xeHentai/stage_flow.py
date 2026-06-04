@@ -29,6 +29,13 @@ class StageRetry(TaskControlFlow):
     """Trigger stage-level retry handled by stage_retry_scope."""
 
 
+class TaskNewVersion(TaskControlFlow):
+    """Signal task migration to a new version of the same gallery."""
+    
+    def __init__(self, new_version_url: str, reason: Optional[str] = None, *, delay: float = 0.0, failcode: Optional[int] = None, result=None):
+        super().__init__(reason or self.__class__.__name__, delay=delay, failcode=failcode, result=result)
+        self.new_version_url = new_version_url
+
 class TaskFailed(TaskControlFlow):
     """Signal terminal task failure."""
 

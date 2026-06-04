@@ -210,7 +210,8 @@ class xeHentai(HostInterface):
         self.logger.set_log_path(self.config["log_path"])
         return ERR_NO_ERROR, ""
 
-    def add_task(self, url, **cfg_dict):
+    def _add_task(self, url,*, enqueue_existed=False, **cfg_dict):
+        """Internal: create, register, and enqueue a new task. Returns (error_code, guid_or_none)."""
         url = url.strip()
         cfg = {k: v for k, v in cfg_dict.items() if k in self._TASK_CONFIG_KEYS}
         download_ori = cfg.get("download_ori", self.config.get("download_ori"))
@@ -218,9 +219,9 @@ class xeHentai(HostInterface):
             self.logger.warning(i18n.XEH_DOWNLOAD_ORI_NEED_LOGIN)
         t = Task(url, cfg, self.logger, core_config=self.config)
 
-        with self._task_lock:
-            existing_guid = self._gid_to_guid.get(str(t.gid))
-            if existing_guid and existing_guid in self._all_tasks:
+        existing_guid = self._gid_to_guid.get(str(t.gid))
+        if existing_guid and existing_guid in self._all_tasks and enqueue_existed:
+            with self._task_lock:
                 existing = self._all_tasks[existing_guid]
                 existing.url = t.url
                 existing.config = t.config
@@ -231,9 +232,11 @@ class xeHentai(HostInterface):
                 self._save_session(task=True)
                 return 0, existing.guid
 
-            if t.guid in self._all_tasks:
-                t.guid = self._new_guid()
-            self._register_task(t)
+        if t.guid in self._all_tasks:
+            t.guid = self._new_guid()
+                
+        self._register_task(t)
+            
         if not re.match(r"^%s/[^/]+/\d+/[^/]+/*#*$" % RESTR_SITE, url):
             t.set_fail(ERR_URL_NOT_RECOGNIZED)
         elif not self.has_login and re.match(r"^https*://exhentai\.org", url):
@@ -245,6 +248,10 @@ class xeHentai(HostInterface):
             return 0, t.guid
         self.logger.error(i18n.TASK_ERROR % (t.guid, i18n.c(t.failcode)))
         return t.failcode, None
+
+    def add_task(self, url, **cfg_dict):
+        """Public/RPC-facing wrapper for adding a task."""
+        return self._add_task(url, enqueue_existed=True, **cfg_dict)
 
     def del_task(self, guid):
         if guid not in self._all_tasks:

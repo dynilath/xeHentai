@@ -52,7 +52,7 @@ def login_exhentai(r, suc, fail):
         return SUC
 
 
-def flt_metadata(r: HttpRequestResult, during_task_main: bool = True) -> Dict[str, Any]:
+def flt_metadata(r: HttpRequestResult) -> Dict[str, Any]:
     # input index response
     # add gallery meta if suc; return errorcode if fail
     if r.response.status_code == 404:
@@ -113,18 +113,6 @@ def flt_metadata(r: HttpRequestResult, during_task_main: bool = True) -> Dict[st
                         "added": _added.strip(),
                     }
                 )
-                
-        if meta["newer_versions"] and during_task_main:
-            latest_ver = sorted(
-                meta["newer_versions"],
-                key=lambda x: int(x["gid"]),
-                reverse=True,
-            )
-            
-            raise TaskNewVersion(
-                new_version_url=latest_ver[0]["url"],
-                reason=f"newer gallery version detected: {latest_ver[0]['url']} (added: {latest_ver[0]['added']})",
-            )
             
         return meta
     except Exception as e:

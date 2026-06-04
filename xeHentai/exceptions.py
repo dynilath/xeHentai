@@ -26,6 +26,7 @@ from .stage_flow import (
     StageRetry,
     StageSkip,
     ScanDownloadRetry,
+    TaskRetry,
 )
 
 
@@ -257,7 +258,7 @@ def raise_for_stage_exception(
             raise ScanDownloadRetry(
                 reason, delay=1.0, failcode=failcode, result=result
             )
-        raise TaskFailed(reason, failcode=failcode, result=result)
+        raise TaskRetry(reason, delay=10.0, failcode=failcode, result=result)
 
     if isinstance(
         ex,

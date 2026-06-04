@@ -2,7 +2,7 @@
 # coding:utf-8
 """Host interface for TaskControl - defines the contract that xeHentai must satisfy."""
 
-from typing import List, Protocol, Any, Dict, Optional
+from typing import List, Protocol, Any, Dict, Optional, Tuple
 from queue import Queue
 
 from .reuse_index import ReuseIndexHandle
@@ -44,6 +44,10 @@ class HostInterface(Protocol):
     """Dictionary of all tasks by GUID."""
 
     # Methods
+    def _add_task(self, url: str,*, enqueue_existed=False, **cfg_dict: Any) -> Tuple[int, Optional[str]]:
+        """Create, register, and enqueue a new task. Returns (error_code, guid_or_none)."""
+        ...
+
     def _save_session(self,*, task=False, proxy_store=False, cookies=False) -> List[str]:
         """Save the current session state."""
         ...

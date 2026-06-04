@@ -43,7 +43,13 @@ from .i18n import i18n
 from .task import DumplicatedFileInfo, Task
 from .request_wrapper import HttpRequest, HttpRequestResult
 from .exceptions import ImageFileNotFoundException, raise_for_stage_exception
-from .stage_flow import GetMetaResult, ScanPageResult, ScanImageResult, DownloadResult
+from .stage_flow import (
+    GetMetaResult,
+    ScanPageResult,
+    ScanImageResult,
+    DownloadResult,
+    TaskNewVersion,
+)
 from .stage_flow import (
     TaskControlFlow,
     TaskReschedule,
@@ -176,9 +182,13 @@ class TaskControl:
         try:
             arc, up_to_date = task.make_archive()
             if up_to_date:
-                self.logger.info(i18n.DF_FULLY_MATCHED_UP_TO_DATE.format(guid=task.guid, path=arc))
+                self.logger.info(
+                    i18n.DF_FULLY_MATCHED_UP_TO_DATE.format(guid=task.guid, path=arc)
+                )
             else:
-                self.logger.info(i18n.DF_FULLY_MATCHED_UPDATED.format(guid=task.guid, path=arc))
+                self.logger.info(
+                    i18n.DF_FULLY_MATCHED_UPDATED.format(guid=task.guid, path=arc)
+                )
         except Exception as ex:
             self.logger.error(i18n.TASK_ERROR % (task.guid, traceback.format_exc()))
 
@@ -202,7 +212,7 @@ class TaskControl:
                 timeout=task.config.get("page_timeout"),
                 proxy=self._host.proxy,
             )
-            meta = filters.flt_metadata(res, during_task_main=False)
+            meta = filters.flt_metadata(res)
 
             for x in filters.flt_pageurl(res):
                 page_result(x)
@@ -238,7 +248,7 @@ class TaskControl:
         try:
             archives_set, pending_count, page_map_count = task.prepare_reuse_files()
             if len(archives_set) > 0:
-                self.logger.debug(
+                self.logger.info(
                     f"[guid={task_guid}] candidate reuse archives: {archives_set}, pending_count: {pending_count}, page_map_count: {page_map_count}"
                 )
             else:
@@ -254,8 +264,10 @@ class TaskControl:
                             task, req, candidate
                         )
                     )
-                    
-                    task.reuse.use_archive_with_page_hash_map(candidate, fid_page_hash_map)
+
+                    task.reuse.use_archive_with_page_hash_map(
+                        candidate, fid_page_hash_map
+                    )
 
                     self.logger.debug(
                         f"[guid={task_guid}] crawled reuse archive {os.path.basename(candidate.archive_path)}"
@@ -266,6 +278,20 @@ class TaskControl:
                     )
         except Exception as ex:
             self.logger.warning(f"[guid={task_guid}] try_reuse stage failed: {ex}")
+
+    def _handle_task_new_version(self, task: Task) -> None:
+        """Handle TaskNewVersion control flow: add new task and mark current as processed."""
+        if task.meta.newer_versions:
+            latest_ver = sorted(
+                task.meta.newer_versions,
+                key=lambda x: int(x["gid"]),
+                reverse=True,
+            )
+            
+            raise TaskNewVersion(
+                new_version_url=latest_ver[0]["url"],
+                reason=f"newer gallery version detected: {latest_ver[0]['url']} (added: {latest_ver[0]['added']})",
+            )
 
     @stage_retry_skip_scope
     async def _get_meta_async(self, task: Task, task_guid: str, req: HttpRequest):
@@ -312,14 +338,17 @@ class TaskControl:
                     delay=0.0,
                     result=GetMetaResult(migrated=True),
                 )
-                
+
             elif task.failcode == ERR_IP_BANNED:
                 self.logger.error(i18n.c(ERR_IP_BANNED) % r.response.text)
                 raise TaskFailed(i18n.c(ERR_IP_BANNED), failcode=ERR_IP_BANNED)
-            
+
         except Exception as ex:
             raise_for_stage_exception(
-                "get_meta", ex, task.config.get("ignored_errors"), default_code=task.failcode
+                "get_meta",
+                ex,
+                task.config.get("ignored_errors"),
+                default_code=task.failcode,
             )
 
         return GetMetaResult()
@@ -361,7 +390,10 @@ class TaskControl:
                     page_count += 1
         except Exception as ex:
             raise_for_stage_exception(
-                "scan_page", ex, task.config.get("ignored_errors"), default_code=task.failcode
+                "scan_page",
+                ex,
+                task.config.get("ignored_errors"),
+                default_code=task.failcode,
             )
 
         for fid, page_url in temp_fid_2_page_url_map.items():
@@ -492,8 +524,8 @@ class TaskControl:
                 )
 
             r = await self._scan_scheduler.submit(work)
-            result = filters.flt_imgurl_wrapper(r, 
-                task.config["download_ori"] and self.has_login
+            result = filters.flt_imgurl_wrapper(
+                r, task.config["download_ori"] and self.has_login
             )
             return img_scan_success(result)
         except Exception as ex:
@@ -501,7 +533,11 @@ class TaskControl:
                 fid=unpad_fid, page_url=page_url, img_url="", reload_url=""
             )
             raise_for_stage_exception(
-                "scan_img", ex, task.config.get("ignored_errors"), default_code=task.failcode, result=result
+                "scan_img",
+                ex,
+                task.config.get("ignored_errors"),
+                default_code=task.failcode,
+                result=result,
             )
 
     @stage_retry_skip_scope
@@ -536,7 +572,11 @@ class TaskControl:
             return result
         except Exception as ex:
             raise_for_stage_exception(
-                "download_img", ex, task.config.get("ignored_errors"), default_code=task.failcode, result=result
+                "download_img",
+                ex,
+                task.config.get("ignored_errors"),
+                default_code=task.failcode,
+                result=result,
             )
 
     async def _image_scan_download_async(
@@ -680,6 +720,8 @@ class TaskControl:
         if self._task_should_abort(task):
             raise TaskAbort("task aborted after stage_get_meta")
 
+        self._handle_task_new_version(task)
+
         # Stage 1.1: CHECK_ARCHIVE (immediately after GET_META)
         if not task.meta:
             raise TaskReschedule(
@@ -740,7 +782,9 @@ class TaskControl:
             )
 
             if not found_archive:
-                self.logger.debug(f"[guid={task_guid}] no exact match found after page scan")
+                self.logger.debug(
+                    f"[guid={task_guid}] no exact match found after page scan"
+                )
                 await self._stage_try_reuse_async(task, task_guid, req)
 
             if self._task_should_abort(task):
@@ -831,6 +875,30 @@ class TaskControl:
                     self.enqueue_waiting_task(task_guid)
                     self._host._save_session(task=True, proxy_store=True)
                     return
+                except TaskNewVersion as ex:
+                    task = self._host._all_tasks.get(task_guid)
+                    if task:
+                        task.set_phase_state(TASK_STATE_FINISHED)
+                        self.mark_task_processed(task_guid)
+
+                        ret, new_guid = self._host._add_task(
+                            ex.new_version_url, enqueue_existed=False, **task.config.to_local_dict()
+                        )
+                        if ret == 0 and new_guid:
+                            self.logger.info(
+                                i18n.DF_MIGRATE_NEW_VERSION.format(
+                                    guid=task_guid, url=ex.new_version_url
+                                )
+                            )
+                        else:
+                            self.logger.warning(
+                                i18n.DF_MIGRATE_NEW_VERSION_FAIL.format(
+                                    guid=task_guid, ret=ret, url=ex.new_version_url
+                                )
+                            )
+
+                        self._host._save_session(task=True, proxy_store=True)
+                    return
                 except TaskFinished:
                     task = self._host._all_tasks.get(task_guid)
                     if task:
@@ -920,7 +988,10 @@ class TaskControl:
                     task = self._host._all_tasks.get(task_guid)
                     if not task:
                         continue
-                    if self.get_task_top_status(task_guid, task) != TASK_TOP_STATUS_WAITING:
+                    if (
+                        self.get_task_top_status(task_guid, task)
+                        != TASK_TOP_STATUS_WAITING
+                    ):
                         continue
                     if not (TASK_STATE_PAUSED < task.state < TASK_STATE_FINISHED):
                         continue
