@@ -16,7 +16,7 @@ from threading import RLock
 from dataclasses import dataclass, asdict, field
 
 import requests
-from .util.checkfile import check_file
+from .util.checkfile import buffer_hash, check_file
 from .util.logger import Logger
 from . import util
 from . import reuse_index
@@ -204,6 +204,22 @@ class DumplicatedFileInfo:
 
 
 @dataclass
+class TaskReuseSource:
+    archive_path: str
+    member_name: str
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskReuseSource":
+        return cls(
+            archive_path=str(data.get("archive_path", "")),
+            member_name=str(data.get("member_name", "")),
+        )
+    
+    def to_dict(self) -> Dict[str, str]:
+        return asdict(self)
+
+
+@dataclass
 class TaskReuseResources:
     """Task reuse resources.
 
@@ -212,18 +228,18 @@ class TaskReuseResources:
         pending_archives: A list of pending archive reuse candidates that require page hash crawling.
     """
 
-    page_hash_file_map: Dict[str, str] = field(default_factory=dict)
+    page_hash_source_map: Dict[str, TaskReuseSource] = field(default_factory=dict)
     pending_archives: List[reuse_index.ArchiveReuseCandidate] = field(
         default_factory=list
     )
 
     def reset(self) -> None:
-        self.page_hash_file_map.clear()
+        self.page_hash_source_map.clear()
         self.pending_archives.clear()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "page_hash_file_map": dict(self.page_hash_file_map),
+            "page_hash_source_map": {k: v.to_dict() for k, v in self.page_hash_source_map.items()},
             "pending_archives": [item.to_dict() for item in self.pending_archives],
         }
 
@@ -231,12 +247,12 @@ class TaskReuseResources:
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "TaskReuseResources":
         payload = data if isinstance(data, dict) else {}
         return cls(
-            page_hash_file_map={
-                str(page_hash): str(file_path)
-                for page_hash, file_path in dict(
-                    payload.get("page_hash_file_map", {}) or {}
+            page_hash_source_map={
+                str(page_hash): TaskReuseSource.from_dict(source)
+                for page_hash, source in dict(
+                    payload.get("page_hash_source_map", {}) or {}
                 ).items()
-                if page_hash and file_path
+                if page_hash and isinstance(source, dict)
             },
             pending_archives=[
                 reuse_index.ArchiveReuseCandidate.from_dict(item)
@@ -244,21 +260,32 @@ class TaskReuseResources:
                 if isinstance(item, dict)
             ],
         )
+        
+    def use_archive_with_page_hash_map(self, candidate: reuse_index.ArchiveReuseCandidate, fid_page_hash_map: Dict[str, str]) -> None:
+        """Register page hash sources from an archive candidate with fid_page_hash_map."""
+        page_hash_source_map: Dict[str, TaskReuseSource] = {}
+        with zipfile.ZipFile(candidate.archive_path, "r") as zf:
+            for member in zf.namelist():
+                sem, ext = os.path.splitext(member)
+                if not sem.isdigit():
+                    continue
+                fid = str(int(sem))
+                if fid in fid_page_hash_map:
+                    page_hash = fid_page_hash_map[fid]
+                    page_hash_source_map[page_hash] = TaskReuseSource(
+                        archive_path=candidate.archive_path,
+                        member_name=member
+                    )
+        self.register_page_hash_source(page_hash_source_map)
 
-    def register_page_hash_file(self, page_hash: str, file_path: str) -> bool:
-        self.page_hash_file_map[page_hash] = file_path
-        return True
+    def register_page_hash_source(self, hash_to_source: Dict[str, TaskReuseSource]) -> None:
+        self.page_hash_source_map.update(hash_to_source)
 
     def add_pending_archive(
         self, archive_info: reuse_index.ArchiveReuseCandidate
     ) -> None:
         self.pending_archives.append(archive_info)
 
-    @staticmethod
-    def _reuse_file_path(
-        target_dir: str, candidate_gid: str, archive_file_name: str
-    ) -> str:
-        return os.path.join(target_dir, "%s - %s" % (candidate_gid, archive_file_name))
 
     def _materialize_reuse_file(
         self,
@@ -271,44 +298,55 @@ class TaskReuseResources:
         Returns:
             The target file path if materialization is done, otherwise None.
         """
-        source_path = self.page_hash_file_map.get(page_hash)
-        if not source_path or not os.path.exists(source_path):
+        source_path = self.page_hash_source_map.get(page_hash)
+        if not source_path:
             return None
-        ext = checkfile.detect_image_ext(source_path)
-        if not ext:
+        
+        if not os.path.exists(source_path.archive_path):
             return None
-        target_fname = Task._build_saving_file_name(total, fid, ext)
-        target_path = os.path.join(target_dir, target_fname)
-
-        if os.path.exists(target_path):
-            return None
-        if source_path == target_path:
-            return None
-        shutil.copyfile(source_path, target_path)
-        return target_path
+        
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
+        
+        with zipfile.ZipFile(source_path.archive_path, "r") as zf:
+            info = zf.NameToInfo.get(source_path.member_name)
+            if not info:
+                return None
+            
+            with zf.open(info, "r") as src:
+                ext = checkfile.detect_image_ext_buffer(src)
+                
+            if not ext:
+                return None
+                
+            target_fname = Task._build_saving_file_name(total, fid, ext)
+            target_path = os.path.join(target_dir, target_fname)
+            
+            with zf.open(info, "r") as src, open(target_path, "wb+") as dst:
+                shutil.copyfileobj(src, dst)
+        
+            return target_path
 
     @staticmethod
-    def _build_archive_fid_to_path_map(
-        target_dir: str, candidate_gid: str, archive_path: str
-    ) -> Tuple[Optional[ArchiveMeta], List[str], Dict[str, str]]:
+    def _build_archive_resource(
+        archive_path: str,
+    ) -> Tuple[Optional[ArchiveMeta], Dict[str, TaskReuseSource]]:
         """Extract a candidate archive into the task directory and map fid to local file.
         Arguments:
             candidate_gid: The gid of the candidate archive
             archive_path: The file path to the candidate archive zip.
         Returns:
-            Tuple of (metadata, list of extracted file paths, fid to file path map)
+            Tuple of (metadata, page hash to reuse source map)
         """
-        if not os.path.exists(target_dir):
-            os.makedirs(target_dir)
-
         with zipfile.ZipFile(archive_path, "r") as zf:
             comment_str = zf.comment.decode("UTF-8", errors="ignore")
             metadata = ArchiveMeta.decode_meta(comment_str)
             if metadata is None:
-                return None, [], {}
+                return None, {}
 
-            path_list: List[str] = []
-            fid_to_path: Dict[str, str] = {}
+            fid_page_hash = metadata.fid_page_hash_map or {}
+
+            page_hash_to_reuse_source: Dict[str, TaskReuseSource] = {}
             for member in zf.namelist():
                 if member.endswith("/"):
                     continue
@@ -316,31 +354,22 @@ class TaskReuseResources:
                 basename = os.path.basename(member)
                 if not basename:
                     continue
-
-                local_name = "%s - %s" % (candidate_gid, basename)
-                local_path = os.path.join(target_dir, local_name)
-
-                with zf.open(member, "r") as src, open(local_path, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-
-                path_list.append(local_path)
-
+                
                 stem, _ = os.path.splitext(basename)
-                if stem.isdigit():
-                    # "01" -> "1"
-                    fid_to_path[str(int(stem))] = local_path
+                fid = str(int(stem)) if stem.isdigit() else None
+                    
+                if fid in fid_page_hash:
+                    page_hash_to_reuse_source[fid_page_hash[fid]] = TaskReuseSource(
+                        archive_path=archive_path, member_name=member
+                    )
+                elif metadata.download_ori:
+                    with zf.open(member, "r") as src:
+                        hash = buffer_hash(src)
+                        page_hash_to_reuse_source[hash] = TaskReuseSource(
+                            archive_path=archive_path, member_name=member
+                        )
 
-            # some metadata may have fid_fname_map
-            # it can be used to map fid to file
-            fid_fname_map = metadata.fid_page_hash_map or {}
-            for fid, archive_file_name in fid_fname_map.items():
-                archive_file_path = TaskReuseResources._reuse_file_path(
-                    target_dir, candidate_gid, archive_file_name
-                )
-                if os.path.exists(archive_file_path):
-                    fid_to_path[str(fid)] = archive_file_path
-
-            return metadata, path_list, fid_to_path
+            return metadata, page_hash_to_reuse_source
 
 
 class Task(object):
@@ -581,10 +610,8 @@ class Task(object):
                 continue
 
             try:
-                metadata, path_list, fid_to_path = (
-                    TaskReuseResources._build_archive_fid_to_path_map(
-                        self.get_task_dir(), candidate.gid, candidate.archive_path
-                    )
+                metadata, hash_to_rsrc = TaskReuseResources._build_archive_resource(
+                    candidate.archive_path
                 )
             except (OSError, zipfile.BadZipFile, RuntimeError) as ex:
                 self.logger.warning(
@@ -595,8 +622,6 @@ class Task(object):
                 )
                 continue
 
-            archives_considered.add(candidate.archive_path)
-
             if metadata is None or not metadata.url:
                 self.logger.warning(
                     "%s: cannot reuse archive %s: unparseable archive comment",
@@ -604,19 +629,11 @@ class Task(object):
                     candidate.archive_path,
                 )
                 continue
-
-            if metadata.fid_page_hash_map:
-                for fid, page_hash in metadata.fid_page_hash_map.items():
-                    fpath = fid_to_path.get(str(fid))
-                    if fpath:
-                        self.reuse.register_page_hash_file(page_hash, fpath)
-                continue
-
-            if metadata.download_ori:
-                for path in path_list:
-                    self.reuse.register_page_hash_file(checkfile.file_hash(path), path)
-                continue
-
+            
+            archives_considered.add(candidate.archive_path)
+            
+            self.reuse.register_page_hash_source(hash_to_rsrc)
+            
             if not metadata.download_ori and metadata.fid_page_hash_map is None:
                 # if the archive doesn't have page hash map and also doesn't download ori
                 # we can still try recover page hash by page scan
@@ -626,7 +643,7 @@ class Task(object):
         return (
             archives_considered,
             len(self.reuse.pending_archives),
-            len(self.reuse.page_hash_file_map),
+            len(self.reuse.page_hash_source_map),
         )
 
     # scan folder or zip file before all worker start working
@@ -673,7 +690,7 @@ class Task(object):
                 count_ok = metadata is not None and file_count == metadata.total
 
                 if not (marker_ok and url_ok and count_ok):
-                    return False, None
+                    return "bad_file"
 
                 # Check gid+hash match
                 assert metadata is not None
@@ -685,26 +702,30 @@ class Task(object):
                         # Phase 1: Require fid_page_hash_map in archive metadata
                         if require_fid_page_hash_map:
                             if not metadata.fid_page_hash_map:
-                                return False, None
+                                return "bad_meta"
 
                         # Validate fid_page_hash_map count matches total if present
                         if metadata.fid_page_hash_map:
                             if len(metadata.fid_page_hash_map) != metadata.total:
-                                return False, None
+                                return "bad_meta"
 
                         # Preserve existing populated hash map from page scan; only load from archive if currently empty
                         if not self.fid_2_page_hash_map:
                             self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
-                        return True, metadata
+                        return "exact_match"
 
-                return False, None
+                return "bad_file"
             except Exception:
-                return False, None
+                return "bad_file"
 
         def _reuse_not_exact_zip(arc_path):
             """Extract files from an existing archive if it matches the current task's gid+hash.
             This just extracts files, it does not check file integrity or update metadata.
             """
+            self.logger.debug(
+                f"[guid={self.guid}] Extracting files from non-exact matching archive for reuse: {arc_path}"
+            )
+
             task_dir = self.get_task_dir()
             if not os.path.exists(task_dir):
                 os.makedirs(task_dir)
@@ -727,7 +748,8 @@ class Task(object):
                         if member_path != reexted_path:
                             os.rename(member_path, reexted_path)
 
-            os.remove(arc_path)
+            if os.path.exists(arc_path):
+                os.remove(arc_path)
 
         current_arc_abs = os.path.abspath(archive_path)
 
@@ -735,12 +757,14 @@ class Task(object):
         if os.path.exists(archive_path):
             try:
                 with zipfile.ZipFile(archive_path, "r") as current_zip:
-                    is_exact, metadata = _check_exact_match(current_zip)
-                    if is_exact:
+                    is_exact = _check_exact_match(current_zip)
+                    if is_exact == "exact_match":
                         return True, archive_path
-                if extract_non_exact_match:
+                if is_exact == "bad_file" and extract_non_exact_match:
                     _reuse_not_exact_zip(archive_path)
-                return False, archive_path
+                if is_exact == "bad_meta":
+                    return False, archive_path
+                return False, None
             except zipfile.BadZipFile:
                 try:
                     os.remove(archive_path)
@@ -758,12 +782,14 @@ class Task(object):
             ):
                 try:
                     with zipfile.ZipFile(gid_arc, "r") as gid_zip:
-                        is_exact, metadata = _check_exact_match(gid_zip)
-                        if is_exact:
+                        is_exact = _check_exact_match(gid_zip)
+                        if is_exact == "exact_match":
                             return True, gid_arc
-                    if extract_non_exact_match:
+                    if is_exact == "bad_file" and extract_non_exact_match:
                         _reuse_not_exact_zip(gid_arc)
-                    return False, gid_arc
+                    if is_exact == "bad_meta":
+                        return False, gid_arc
+                    return False, None
                 except zipfile.BadZipFile:
                     pass
 
@@ -809,14 +835,14 @@ class Task(object):
         self.page_q.queue.clear()
         task_dir = self.get_task_dir()
 
-        if len(self.reuse.page_hash_file_map) > 0:
+        if len(self.reuse.page_hash_source_map) > 0:
             self.logger.debug(
-                f"[guid={self.guid}] Reuse page hash file map has {len(self.reuse.page_hash_file_map)} entries before building page queue."
+                f"[guid={self.guid}] Reuse page hash source map has {len(self.reuse.page_hash_source_map)} entries before building page queue."
             )
 
         for fid, page_hash in self.fid_2_page_hash_map.items():
             # first try to materialize reuse file for this page hash, if hit, we can skip page scan and directly mark fid done
-            if page_hash in self.reuse.page_hash_file_map:
+            if page_hash in self.reuse.page_hash_source_map:
                 target_path = self.reuse._materialize_reuse_file(
                     task_dir, page_hash, self.meta.total, fid
                 )
@@ -1025,8 +1051,7 @@ class Task(object):
             {
                 k: v
                 for k, v in self.__dict__.items()
-                if not k.endswith("_q")
-                and not k.startswith("_")
+                if not k.endswith("_q") and not k.startswith("_")
             }
         )
         d["meta"] = self.meta.to_dict()

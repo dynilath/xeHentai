@@ -40,7 +40,7 @@ from .const import RE_GALLERY
 from .util.checkfile import check_file
 from .host_interface import HostInterface
 from .i18n import i18n
-from .task import DumplicatedFileInfo, Task, TaskReuseResources
+from .task import DumplicatedFileInfo, Task
 from .request_wrapper import HttpRequest, HttpRequestResult
 from .exceptions import ImageFileNotFoundException, raise_for_stage_exception
 from .stage_flow import GetMetaResult, ScanPageResult, ScanImageResult, DownloadResult
@@ -202,7 +202,7 @@ class TaskControl:
                 timeout=task.config.get("page_timeout"),
                 proxy=self._host.proxy,
             )
-            meta = filters.flt_metadata(res)
+            meta = filters.flt_metadata(res, during_task_main=False)
 
             for x in filters.flt_pageurl(res):
                 page_result(x)
@@ -254,19 +254,8 @@ class TaskControl:
                             task, req, candidate
                         )
                     )
-
-                    target_dir = task.get_task_dir()
-                    for fid, page_hash in fid_page_hash_map.items():
-                        for ext in [".jpg", ".png", ".gif", ".bmp", ".webp"]:
-                            basename = Task._build_saving_file_name(
-                                candidate_total, fid, ext
-                            )
-                            file_path = TaskReuseResources._reuse_file_path(
-                                target_dir, candidate.gid, basename
-                            )
-                            if os.path.exists(file_path):
-                                task.reuse.register_page_hash_file(page_hash, file_path)
-                            break
+                    
+                    task.reuse.use_archive_with_page_hash_map(candidate, fid_page_hash_map)
 
                     self.logger.debug(
                         f"[guid={task_guid}] crawled reuse archive {os.path.basename(candidate.archive_path)}"
@@ -740,7 +729,7 @@ class TaskControl:
                 require_fid_page_hash_map=False,
                 extract_non_exact_match=True,
             )
-            if is_exact_match and found_archive:
+            if found_archive:
                 # Ensure old archives get updated with the hash map collected during page scanning
                 # (exact_downloaded_exits preserves populated hash map from queue_wrapper calls above)
                 self._handle_exact_match_found(task, task_guid, found_archive)

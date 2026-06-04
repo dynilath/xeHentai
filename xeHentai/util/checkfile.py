@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import os
 import hashlib
+from typing import IO
 
 from ..const import RE_IMGHASH
 
@@ -66,6 +67,23 @@ def extract_img_url_info(img_url: str) -> ImgUrlInfo | None:
         )
     return None
 
+def buffer_hash(buffer:IO[bytes], length: int = 10) -> str:
+    """Calculate the SHA-1 hash of a file-like buffer.
+
+    Args:
+        buffer: A file-like object that supports reading bytes.
+        length: Length of the hash digest to return (default is 10).
+    Returns:
+        The SHA-1 hash digest of the buffer, truncated to the specified length.
+    """
+    digest = hashlib.sha1()
+    while True:
+        chunk = buffer.read(1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+    return digest.hexdigest()[:length]
+
 def file_hash(path: str, length: int = 10) -> str:
     """Calculate the SHA-1 hash of a file.
 
@@ -76,22 +94,15 @@ def file_hash(path: str, length: int = 10) -> str:
         The SHA-1 hash digest of the file, truncated to the specified length.
     """
     with open(path, "rb") as handle:
-        digest = hashlib.sha1()
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()[:length]
+        return buffer_hash(handle, length)
 
 from pathlib import Path
 
-
-def detect_image_ext(path: str) -> str | None:
-    """Detect the image file type based on its header bytes."""
+def detect_image_ext_buffer(buffer: IO[bytes]) -> str | None:
+    """Detect the image file type based on the header bytes of a file-like buffer."""
     
-    with open(path, "rb") as f:
-        header = f.read(32)
+    header = buffer.read(32)
+    buffer.seek(0)  # Reset buffer position after reading
 
     # JPEG
     if header.startswith(b"\xFF\xD8\xFF"):
@@ -118,3 +129,8 @@ def detect_image_ext(path: str) -> str | None:
         return ".webp"
 
     return None
+
+def detect_image_ext(path: str) -> str | None:
+    """Detect the image file type based on its header bytes."""
+    with open(path, "rb") as f:
+        return detect_image_ext_buffer(f)
