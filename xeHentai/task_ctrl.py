@@ -1,6 +1,5 @@
 import math
 import os
-import re
 import shutil
 import time
 import traceback
@@ -12,16 +11,9 @@ from functools import wraps
 from queue import Empty, Queue
 from typing import Any, Dict, List, Tuple
 
-import requests
 
 from .scheduler import Scheduler
 from . import filters, reuse_index
-from .const import (
-    ERR_CANNOT_MAKE_ARCHIVE,
-    ERR_GALLERY_REMOVED,
-    ERR_IP_BANNED,
-    ERR_ONLY_VISIBLE_EXH,
-)
 from .const import (
     TASK_STATE_FAILED,
     TASK_STATE_FINISHED,
@@ -35,6 +27,7 @@ from .const import (
     TASK_TOP_STATUS_WAITING,
     TASK_TOP_STATUS_PROCESSED,
     XEH_STATE_FULL_EXIT,
+    TASK_STATE_ERR_CANNOT_MAKE_ARCHIVE,
 )
 from .const import RE_GALLERY
 from .util.checkfile import check_file
@@ -136,7 +129,7 @@ class TaskControl:
         task = task if task is not None else self._host._all_tasks.get(task_guid)
         if not task:
             return TASK_TOP_STATUS_WAITING
-        if task.state in (TASK_STATE_FINISHED, TASK_STATE_FAILED, TASK_STATE_PAUSED):
+        if task.state in (TASK_STATE_FINISHED, TASK_STATE_FAILED, TASK_STATE_PAUSED) or task.state < 0:
             return TASK_TOP_STATUS_PROCESSED
         return TASK_TOP_STATUS_WAITING
 
@@ -297,7 +290,6 @@ class TaskControl:
     async def _get_meta_async(self, task: Task, task_guid: str, req: HttpRequest):
         """Async version of Stage: Fetch gallery metadata from E-H site."""
 
-        task.failcode = 0
         try:
 
             def work():
@@ -327,28 +319,10 @@ class TaskControl:
                 page_hash = RE_GALLERY.findall(page_url)[0][0]
                 task.fid_2_page_hash_map.setdefault(fid, page_hash)
 
-            if (
-                task.failcode in (ERR_ONLY_VISIBLE_EXH, ERR_GALLERY_REMOVED)
-                and self.has_login
-                and task.migrate_exhentai()
-            ):
-                self.logger.info(i18n.TASK_MIGRATE_EXH % task_guid)
-                raise TaskReschedule(
-                    "gallery migrated to exhentai",
-                    delay=0.0,
-                    result=GetMetaResult(migrated=True),
-                )
-
-            elif task.failcode == ERR_IP_BANNED:
-                self.logger.error(i18n.c(ERR_IP_BANNED) % r.response.text)
-                raise TaskFailed(i18n.c(ERR_IP_BANNED), failcode=ERR_IP_BANNED)
-
         except Exception as ex:
             raise_for_stage_exception(
                 "get_meta",
                 ex,
-                task.config.get("ignored_errors"),
-                default_code=task.failcode,
             )
 
         return GetMetaResult()
@@ -392,8 +366,6 @@ class TaskControl:
             raise_for_stage_exception(
                 "scan_page",
                 ex,
-                task.config.get("ignored_errors"),
-                default_code=task.failcode,
             )
 
         for fid, page_url in temp_fid_2_page_url_map.items():
@@ -535,8 +507,6 @@ class TaskControl:
             raise_for_stage_exception(
                 "scan_img",
                 ex,
-                task.config.get("ignored_errors"),
-                default_code=task.failcode,
                 result=result,
             )
 
@@ -574,8 +544,6 @@ class TaskControl:
             raise_for_stage_exception(
                 "download_img",
                 ex,
-                task.config.get("ignored_errors"),
-                default_code=task.failcode,
                 result=result,
             )
 
@@ -690,7 +658,7 @@ class TaskControl:
             except Exception:
                 raise TaskFailed(
                     traceback.format_exc(),
-                    failcode=ERR_CANNOT_MAKE_ARCHIVE,
+                    task_state=TASK_STATE_ERR_CANNOT_MAKE_ARCHIVE,
                 )
 
         return await self._archive_scheduler.submit(work)
@@ -923,12 +891,11 @@ class TaskControl:
                 except TaskFailed as ex:
                     task = self._host._all_tasks.get(task_guid)
                     if task:
-                        task.set_phase_state(TASK_STATE_FAILED)
+                        task.set_phase_state(ex.task_state)
                         self.mark_task_processed(task_guid)
-                        task.failcode = ex.failcode or task.failcode
                     fail_desc = ex.reason or (
-                        i18n.c(task.failcode)
-                        if task and task.failcode
+                        i18n.c(-task.state)
+                        if task and task.state < 0
                         else "task failed"
                     )
                     self.logger.error(i18n.TASK_ERROR % (task_guid, fail_desc))
@@ -937,9 +904,8 @@ class TaskControl:
                 except TaskControlFlow as ex:
                     task = self._host._all_tasks.get(task_guid)
                     if task:
-                        task.set_phase_state(TASK_STATE_FAILED)
+                        task.set_phase_state(getattr(ex, 'task_state', TASK_STATE_FAILED))
                         self.mark_task_processed(task_guid)
-                        task.failcode = ex.failcode or task.failcode
                     self.logger.error(
                         f"{task_guid}: unexpected control flow exception: {traceback.format_exc()}"
                     )

@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from .const import TASK_STATE_FAILED
+
 
 class TaskControlFlow(BaseException):
     """Base type for task control-flow exceptions.
@@ -46,9 +48,9 @@ class TaskNewVersion(TaskControlFlow):
 class TaskFailed(TaskControlFlow):
     """Signal terminal task failure."""
 
-    def __init__(self, reason: Optional[str] = None, *, failcode: Optional[int] = None, result=None):
+    def __init__(self, reason: Optional[str] = None, *, task_state: int = TASK_STATE_FAILED, result=None):
         super().__init__(reason, result=result)
-        self.failcode = failcode
+        self.task_state = task_state
 
 
 class TaskFinished(TaskControlFlow):

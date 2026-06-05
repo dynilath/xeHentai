@@ -225,7 +225,6 @@ class xeHentai(HostInterface):
                 existing = self._all_tasks[existing_guid]
                 existing.url = t.url
                 existing.config = t.config
-                existing.failcode = 0
                 existing.set_phase_state(TASK_STATE_WAITING)
                 existing.cleanup()
                 self._task_control.enqueue_waiting_task(existing.guid)
@@ -238,16 +237,16 @@ class xeHentai(HostInterface):
         self._register_task(t)
             
         if not re.match(r"^%s/[^/]+/\d+/[^/]+/*#*$" % RESTR_SITE, url):
-            t.set_fail(ERR_URL_NOT_RECOGNIZED)
+            t.set_fail(TASK_STATE_ERR_URL_NOT_RECOGNIZED)
         elif not self.has_login and re.match(r"^https*://exhentai\.org", url):
-            t.set_fail(ERR_CANT_DOWNLOAD_EXH)
+            t.set_fail(TASK_STATE_ERR_CANT_DOWNLOAD_EXH)
         else:
             t.set_phase_state(TASK_STATE_WAITING)
             self._task_control.enqueue_waiting_task(t.guid)
             self._save_session(task=True)
             return 0, t.guid
-        self.logger.error(i18n.TASK_ERROR % (t.guid, i18n.c(t.failcode)))
-        return t.failcode, None
+        self.logger.error(i18n.TASK_ERROR % (t.guid, i18n.c(-t.state)))
+        return -t.state if t.state < 0 else 0, None
 
     def add_task(self, url, **cfg_dict):
         """Public/RPC-facing wrapper for adding a task."""
@@ -267,7 +266,7 @@ class xeHentai(HostInterface):
         if guid not in self._all_tasks:
             return ERR_TASK_NOT_FOUND, None
         t = self._all_tasks[guid]
-        if t.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED, TASK_STATE_FAILED):
+        if t.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED, TASK_STATE_FAILED) or t.state < 0:
             return ERR_TASK_CANNOT_PAUSE, None
         t.set_phase_state(TASK_STATE_PAUSED)
         self._task_control.mark_task_processed(guid)
@@ -369,7 +368,7 @@ class xeHentai(HostInterface):
 
         with self._task_lock:
             for guid, task in self._all_tasks.items():
-                state_name = state_2_names.get(task.state, "unknown")
+                state_name = state_2_names.get(task.state, "unknown" if task.state >= 0 else "error")
                 top_status = self._task_control.get_task_top_status(guid, task)
                 top_name = task_top_status_name(top_status)
                 if top_name not in grouped:

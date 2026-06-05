@@ -391,9 +391,8 @@ class Task(object):
         self.gid: str = _[0][0]
         self.sethash: str = _[0][1]
 
-        # Last task failure code.
-        self.failcode: int = 0
         # Current lifecycle state (TASK_STATE_*).
+        # Negative values encode failure reasons (TASK_STATE_ERR_*).
         self.state: int = TASK_STATE_WAITING
         # Short runtime task identifier.
         self.guid: str = str(uuid.uuid4())[:8]
@@ -466,7 +465,7 @@ class Task(object):
                 zippath = "%s.zip" % fpath
                 if os.path.exists(zippath):
                     os.remove(zippath)
-        elif self.state in (TASK_STATE_FINISHED, TASK_STATE_FAILED):
+        elif self.state == TASK_STATE_FINISHED or self.state < 0:
             self.page_q = None
             self.reload_map = {}
             # if 'filelist' in self.meta:
@@ -477,9 +476,8 @@ class Task(object):
     def set_phase_state(self, phase_state: int) -> None:
         self.state = phase_state
 
-    def set_fail(self, code):
-        self.set_phase_state(TASK_STATE_FAILED)
-        self.failcode = code
+    def set_fail(self, task_state):
+        self.set_phase_state(task_state)
         # cleanup all we cached
         self.meta = GalleryMeta()
 
@@ -488,9 +486,8 @@ class Task(object):
         if not _:
             return False
         self.url = "https://exhentai.org%s" % _[0]
-        if self.state == TASK_STATE_FAILED:
+        if self.state < 0:
             self.set_phase_state(TASK_STATE_WAITING)
-        self.failcode = 0
         return True
 
     # write some metadata into zip file
@@ -1040,7 +1037,10 @@ class Task(object):
             if k == "reuse":
                 setattr(self, k, TaskReuseResources.from_dict(j[k]))
                 continue
-            if k.endswith("_q"):
+            if k == "failcode":
+                # legacy key superseded by negative TASK_STATE_ERR_*
+                pass
+            elif k.endswith("_q"):
                 pass
             else:
                 setattr(self, k, j[k])

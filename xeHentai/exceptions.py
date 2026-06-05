@@ -2,21 +2,22 @@
 # coding:utf-8
 
 import traceback
-from typing import Iterable, Never, Optional, Set
+from typing import Never, Optional
 
 from .const import (
-    ERR_CONNECTION_ERROR,
-    ERR_GALLERY_NOT_FOUND,
-    ERR_GALLERY_REMOVED,
-    ERR_HATH_NOT_FOUND,
-    ERR_IMAGE_BROKEN,
-    ERR_IMAGE_RESAMPLED,
-    ERR_IP_BANNED,
-    ERR_KEY_EXPIRED,
-    ERR_NO_PAGEURL_FOUND,
-    ERR_ONLY_VISIBLE_EXH,
-    ERR_QUOTA_EXCEEDED,
-    ERR_SCAN_REGEX_FAILED,
+    TASK_STATE_FAILED,
+    TASK_STATE_ERR_CONNECTION_ERROR,
+    TASK_STATE_ERR_GALLERY_NOT_FOUND,
+    TASK_STATE_ERR_GALLERY_REMOVED,
+    TASK_STATE_ERR_HATH_NOT_FOUND,
+    TASK_STATE_ERR_IMAGE_BROKEN,
+    TASK_STATE_ERR_IMAGE_RESAMPLED,
+    TASK_STATE_ERR_IP_BANNED,
+    TASK_STATE_ERR_KEY_EXPIRED,
+    TASK_STATE_ERR_NO_PAGEURL_FOUND,
+    TASK_STATE_ERR_ONLY_VISIBLE_EXH,
+    TASK_STATE_ERR_QUOTA_EXCEEDED,
+    TASK_STATE_ERR_SCAN_REGEX_FAILED,
 )
 from .stage_flow import (
     TaskControlFlow,
@@ -34,7 +35,7 @@ class CrawlerException(Exception):
     """Base exception raised by the flt_quota_check decorator layer.
 
     Attributes:
-        code   (int): The error code constant from const.py (e.g. ERR_QUOTA_EXCEEDED).
+        code   (int): A negative TASK_STATE_ERR_* constant encoding the failure reason.
         url    (str): The real request URL that triggered the error.
         reason (str): Human-readable description of the specific trigger condition, or None.
     """
@@ -52,7 +53,7 @@ class ParseException(CrawlerException):
     """
 
     def __init__(self, url, reason=None):
-        CrawlerException.__init__(self, ERR_CONNECTION_ERROR, url, reason)
+        CrawlerException.__init__(self, TASK_STATE_ERR_CONNECTION_ERROR, url, reason)
 
 
 class VitalCrawlerException(CrawlerException):
@@ -70,7 +71,7 @@ class GalleryRemovedException(VitalCrawlerException):
     """
 
     def __init__(self, url):
-        CrawlerException.__init__(self, ERR_GALLERY_REMOVED, url)
+        CrawlerException.__init__(self, TASK_STATE_ERR_GALLERY_REMOVED, url)
 
 
 class GalleryNotFoundException(VitalCrawlerException):
@@ -79,7 +80,7 @@ class GalleryNotFoundException(VitalCrawlerException):
     """
 
     def __init__(self, url):
-        CrawlerException.__init__(self, ERR_GALLERY_NOT_FOUND, url)
+        CrawlerException.__init__(self, TASK_STATE_ERR_GALLERY_NOT_FOUND, url)
 
 
 class VisibleOnlyInExhentaiException(CrawlerException):
@@ -88,7 +89,7 @@ class VisibleOnlyInExhentaiException(CrawlerException):
     """
 
     def __init__(self, url):
-        CrawlerException.__init__(self, ERR_ONLY_VISIBLE_EXH, url)
+        CrawlerException.__init__(self, TASK_STATE_ERR_ONLY_VISIBLE_EXH, url)
 
 
 class IPBannedException(CrawlerException):
@@ -98,7 +99,7 @@ class IPBannedException(CrawlerException):
     """
 
     def __init__(self, url, reason=None):
-        CrawlerException.__init__(self, ERR_IP_BANNED, url, reason)
+        CrawlerException.__init__(self, TASK_STATE_ERR_IP_BANNED, url, reason)
 
 
 class MetaDataParseException(ParseException):
@@ -107,7 +108,7 @@ class MetaDataParseException(ParseException):
     """
 
     def __init__(self, url, reason=None):
-        CrawlerException.__init__(self, ERR_CONNECTION_ERROR, url, reason)
+        CrawlerException.__init__(self, TASK_STATE_ERR_CONNECTION_ERROR, url, reason)
 
 
 class QuotaExceededException(CrawlerException):
@@ -121,7 +122,7 @@ class QuotaExceededException(CrawlerException):
     """
 
     def __init__(self, url, reason=None):
-        CrawlerException.__init__(self, ERR_QUOTA_EXCEEDED, url, reason)
+        CrawlerException.__init__(self, TASK_STATE_ERR_QUOTA_EXCEEDED, url, reason)
 
 
 class KeyExpiredException(CrawlerException):
@@ -130,7 +131,7 @@ class KeyExpiredException(CrawlerException):
     """
 
     def __init__(self, url):
-        CrawlerException.__init__(self, ERR_KEY_EXPIRED, url)
+        CrawlerException.__init__(self, TASK_STATE_ERR_KEY_EXPIRED, url)
 
 
 class GalleryDetailPageParseException(ParseException):
@@ -139,7 +140,7 @@ class GalleryDetailPageParseException(ParseException):
     """
 
     def __init__(self, url, reason=None):
-        CrawlerException.__init__(self, ERR_NO_PAGEURL_FOUND, url, reason)
+        CrawlerException.__init__(self, TASK_STATE_ERR_NO_PAGEURL_FOUND, url, reason)
 
 
 class ImagePageInfoParseException(ParseException):
@@ -148,7 +149,7 @@ class ImagePageInfoParseException(ParseException):
     """
 
     def __init__(self, url, reason=None):
-        CrawlerException.__init__(self, ERR_SCAN_REGEX_FAILED, url, reason)
+        CrawlerException.__init__(self, TASK_STATE_ERR_SCAN_REGEX_FAILED, url, reason)
 
 
 class ImageFileException(CrawlerException):
@@ -157,7 +158,7 @@ class ImageFileException(CrawlerException):
     """
 
     def __init__(self, url, reason=None):
-        CrawlerException.__init__(self, ERR_IMAGE_BROKEN, url, reason)
+        CrawlerException.__init__(self, TASK_STATE_ERR_IMAGE_BROKEN, url, reason)
 
 
 class ImagePageInvalidException(VitalCrawlerException):
@@ -166,7 +167,7 @@ class ImagePageInvalidException(VitalCrawlerException):
     """
 
     def __init__(self, url):
-        CrawlerException.__init__(self, ERR_IMAGE_RESAMPLED, url)
+        CrawlerException.__init__(self, TASK_STATE_ERR_IMAGE_RESAMPLED, url)
 
 
 class ImageFileNotFoundException(CrawlerException):
@@ -175,7 +176,7 @@ class ImageFileNotFoundException(CrawlerException):
     """
 
     def __init__(self, url):
-        CrawlerException.__init__(self, ERR_HATH_NOT_FOUND, url)
+        CrawlerException.__init__(self, TASK_STATE_ERR_HATH_NOT_FOUND, url)
 
 
 class RequestLayerException(Exception):
@@ -215,9 +216,7 @@ class RequestRetryExhaustedException(RequestLayerException):
 def raise_for_stage_exception(
     stage: str,
     ex: Exception,
-    ignored_errors: Optional[Iterable[int]] = None,
     *,
-    default_code: int = 0,
     result=None,
 )->Never:
     """Map an exception directly to a TaskControlFlow subclass and raise it.
@@ -226,16 +225,8 @@ def raise_for_stage_exception(
     pipeline into a single free function, eliminating the StageAction / ExceptionPolicy
     intermediate layer.
     """
-    ignored: Set[int] = set(ignored_errors or ())
 
-    if isinstance(ex, CrawlerException):
-        if ex.code in ignored:
-            raise StageSkip(str(ex), result=result)
-        failcode = ex.code
-        reason = ex.reason or traceback.format_exc()
-    else:
-        failcode = default_code or 0
-        reason = traceback.format_exc()
+    reason = ex.reason if isinstance(ex, CrawlerException) and ex.reason else traceback.format_exc()
 
     if isinstance(ex, QuotaExceededException):
         raise StageRetry(reason, delay=60, result=result)
@@ -260,20 +251,7 @@ def raise_for_stage_exception(
             )
         raise TaskRetry(reason, delay=10.0, result=result)
 
-    if isinstance(
-        ex,
-        (
-            RequestInvalidURLException,
-            GalleryDetailPageParseException,
-            ImagePageInfoParseException,
-            ImagePageInvalidException,
-            GalleryRemovedException,
-            GalleryNotFoundException,
-            VisibleOnlyInExhentaiException,
-            IPBannedException,
-            MetaDataParseException,
-        ),
-    ):
-        raise TaskFailed(reason, failcode=failcode, result=result)
+    if isinstance(ex, CrawlerException):
+        raise TaskFailed(reason, task_state=ex.code, result=result)
 
-    raise TaskFailed(reason, failcode=failcode, result=result)
+    raise TaskFailed(reason, task_state=TASK_STATE_FAILED, result=result)
