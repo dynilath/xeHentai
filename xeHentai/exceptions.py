@@ -230,7 +230,7 @@ def raise_for_stage_exception(
 
     if isinstance(ex, CrawlerException):
         if ex.code in ignored:
-            raise StageSkip(str(ex), failcode=ex.code, result=result)
+            raise StageSkip(str(ex), result=result)
         failcode = ex.code
         reason = ex.reason or traceback.format_exc()
     else:
@@ -238,27 +238,27 @@ def raise_for_stage_exception(
         reason = traceback.format_exc()
 
     if isinstance(ex, QuotaExceededException):
-        raise StageRetry(reason, delay=60, failcode=failcode, result=result)
+        raise StageRetry(reason, delay=60, result=result)
 
     if isinstance(ex, KeyExpiredException):
         if stage in ("scan_img", "download_img"):
             raise ScanDownloadRetry(
-                reason, delay=0.5, failcode=failcode, result=result
+                reason, delay=0.5, result=result
             )
-        raise StageRetry(reason, delay=0.5, failcode=failcode, result=result)
+        raise StageRetry(reason, delay=0.5, result=result)
 
     if isinstance(ex, ImageFileException):
-        raise ScanDownloadRetry(reason, delay=1.0, failcode=failcode, result=result)
+        raise ScanDownloadRetry(reason, delay=1.0, result=result)
 
     if isinstance(ex, ImageFileNotFoundException):
-        raise ScanDownloadRetry(reason, failcode=failcode, result=result)
+        raise ScanDownloadRetry(reason, result=result)
 
     if isinstance(ex, RequestRetryExhaustedException):
         if stage in ("scan_img", "download_img"):
             raise ScanDownloadRetry(
-                reason, delay=1.0, failcode=failcode, result=result
+                reason, delay=1.0, result=result
             )
-        raise TaskRetry(reason, delay=10.0, failcode=failcode, result=result)
+        raise TaskRetry(reason, delay=10.0, result=result)
 
     if isinstance(
         ex,

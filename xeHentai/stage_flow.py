@@ -13,31 +13,42 @@ class TaskControlFlow(BaseException):
     from regular exceptions that should be treated as task failures.
     """
 
-    def __init__(self, reason: Optional[str] = None, *, delay: float = 0.0, failcode: Optional[int] = None, result=None):
+    def __init__(self, reason: Optional[str] = None, *, result=None):
         super().__init__(reason or self.__class__.__name__)
         self.reason = reason
-        self.delay = delay
-        self.failcode = failcode
         self.result = result
 
 
-class TaskReschedule(TaskControlFlow):
+class TaskControlFlowWithDelay(TaskControlFlow):
+    """Base for control-flow exceptions that carry a retry delay."""
+
+    def __init__(self, reason: Optional[str] = None, *, delay: float = 0.0, result=None):
+        super().__init__(reason, result=result)
+        self.delay = delay
+
+
+class TaskReschedule(TaskControlFlowWithDelay):
     """Trigger task-level reschedule handled by task entry loop."""
 
 
-class StageRetry(TaskControlFlow):
+class StageRetry(TaskControlFlowWithDelay):
     """Trigger stage-level retry handled by stage_retry_scope."""
 
 
 class TaskNewVersion(TaskControlFlow):
     """Signal task migration to a new version of the same gallery."""
     
-    def __init__(self, new_version_url: str, reason: Optional[str] = None, *, delay: float = 0.0, failcode: Optional[int] = None, result=None):
-        super().__init__(reason or self.__class__.__name__, delay=delay, failcode=failcode, result=result)
+    def __init__(self, new_version_url: str, reason: Optional[str] = None, *, result=None):
+        super().__init__(reason, result=result)
         self.new_version_url = new_version_url
+
 
 class TaskFailed(TaskControlFlow):
     """Signal terminal task failure."""
+
+    def __init__(self, reason: Optional[str] = None, *, failcode: Optional[int] = None, result=None):
+        super().__init__(reason, result=result)
+        self.failcode = failcode
 
 
 class TaskFinished(TaskControlFlow):
@@ -48,7 +59,7 @@ class TaskAbort(TaskControlFlow):
     """Signal non-failure abort flow (pause/shutdown/migration control)."""
 
 
-class TaskRetry(TaskControlFlow):
+class TaskRetry(TaskControlFlowWithDelay):
     """Trigger task-level retry handled by task entry loop."""
 
 
@@ -56,7 +67,7 @@ class StageSkip(TaskControlFlow):
     """Signal a local skip in stage-level flow."""
 
 
-class ScanDownloadRetry(TaskControlFlow):
+class ScanDownloadRetry(TaskControlFlowWithDelay):
     """Retry the combined scan-download pipeline step with refreshed context."""
 
 
