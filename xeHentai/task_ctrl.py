@@ -762,7 +762,7 @@ class TaskControl:
             task.set_phase_state(TASK_STATE_SCAN_IMG)
 
         # build page queue for later stages, do this after scan_page to ensure the queue is up to date with scanned pages
-        task.build_page_queue()
+        await self._download_scheduler.submit(lambda: task.build_page_queue())
 
         if task.state <= TASK_STATE_SCAN_IMG and not task.page_q.empty():
             # Stage 4: SCAN_DOWNLOAD_IMG
@@ -885,12 +885,7 @@ class TaskControl:
                     if task:
                         task.set_phase_state(ex.task_state)
                         self.mark_task_processed(task_guid)
-                    fail_desc = ex.reason or (
-                        i18n.c(-task.state)
-                        if task and task.state < 0
-                        else "task failed"
-                    )
-                    self.logger.error(i18n.TASK_ERROR % (task_guid, fail_desc))
+                    self.logger.error(i18n.TASK_ERROR % (task_guid, traceback.format_exc()))
                     return
                 except TaskControlFlow as ex:
                     task = self._host._all_tasks.get(task_guid)
