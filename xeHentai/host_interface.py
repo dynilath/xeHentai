@@ -48,7 +48,7 @@ class HostInterface(Protocol):
         """Create, register, and enqueue a new task. Returns (error_code, guid_or_none)."""
         ...
 
-    def _save_session(self,*, task=False, proxy_store=False, cookies=False) -> List[str]:
+    def _save_session(self,*, task=False, proxy_store=False, cookies=False, guid: Optional[str]=None) -> List[str]:
         """Save the current session state."""
         ...
 

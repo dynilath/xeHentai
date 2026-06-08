@@ -142,7 +142,7 @@ def _load_tasks_sqlite(db_path: str = TASKS_DB_FILE) -> Dict[str, Any]:
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            'SELECT guid, payload FROM tasks ORDER BY updated_at DESC'
+            'SELECT guid, payload, phase_state FROM tasks ORDER BY updated_at DESC'
         ).fetchall()
     finally:
         conn.close()
@@ -160,7 +160,7 @@ def _load_tasks_sqlite(db_path: str = TASKS_DB_FILE) -> Dict[str, Any]:
         if not isinstance(payload, dict):
             continue
         payload['guid'] = str(payload.get('guid', guid) or guid)
-        phase_state = int(payload.get('state', TASK_STATE_WAITING) or TASK_STATE_WAITING)
+        phase_state = int(row['phase_state'] or TASK_STATE_WAITING)
         payload['state'] = phase_state
         payload.pop('top_status', None)
         tasks[guid] = payload
@@ -186,6 +186,40 @@ def _load_json(path: str) -> Dict[str, Any]:
 
 def save_tasks(tasks: Dict[str, Any], path: str = TASKS_DB_FILE) -> None:
     _save_tasks_sqlite(tasks, path)
+
+
+def save_single_task(guid: str, task_payload: Dict[str, Any], db_path: str = TASKS_DB_FILE) -> None:
+    _ensure_schema(db_path)
+    conn = _connect(db_path)
+    now_ts = int(time.time())
+    try:
+        row = _extract_task_row(task_payload, guid)
+        with conn:
+            conn.execute(
+                '''
+                INSERT INTO tasks (guid, gid, url, phase_state, payload, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guid) DO UPDATE SET
+                    gid = excluded.gid,
+                    url = excluded.url,
+                    phase_state = excluded.phase_state,
+                    payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                ''',
+                (
+                    row['guid'],
+                    row['gid'],
+                    row['url'],
+                    row['phase_state'],
+                    row['payload'],
+                    now_ts,
+                ),
+            )
+        cached = _TASKS_CACHE.get(db_path)
+        if cached is not None:
+            cached[guid] = dict(task_payload)
+    finally:
+        conn.close()
 
 
 def load_tasks(path: str = TASKS_DB_FILE) -> Dict[str, Any]:

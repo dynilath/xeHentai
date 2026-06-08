@@ -98,17 +98,19 @@ class xeHentai(HostInterface):
                 return guid
 
     def _register_task(self, t: Task) -> None:
-        self._all_tasks[t.guid] = t
-        if t.gid:
-            self._gid_to_guid[str(t.gid)] = t.guid
+        with self._task_lock:
+            self._all_tasks[t.guid] = t
+            if t.gid:
+                self._gid_to_guid[str(t.gid)] = t.guid
 
     def _unregister_task(self, guid: str) -> None:
-        t = self._all_tasks.pop(guid, None)
-        self._task_control.clear_task_top_status(guid)
-        if t and t.gid:
-            mapped = self._gid_to_guid.get(str(t.gid))
-            if mapped == guid:
-                self._gid_to_guid.pop(str(t.gid), None)
+        with self._task_lock:
+            t = self._all_tasks.pop(guid, None)
+            self._task_control.clear_task_top_status(guid)
+            if t and t.gid:
+                mapped = self._gid_to_guid.get(str(t.gid))
+                if mapped == guid:
+                    self._gid_to_guid.pop(str(t.gid), None)
 
     @property
     def _exit(self):
@@ -220,16 +222,19 @@ class xeHentai(HostInterface):
         t = Task(url, cfg, self.logger, core_config=self.config)
 
         existing_guid = self._gid_to_guid.get(str(t.gid))
-        if existing_guid and existing_guid in self._all_tasks and enqueue_existed:
-            with self._task_lock:
-                existing = self._all_tasks[existing_guid]
-                existing.url = t.url
-                existing.config = t.config
-                existing.set_phase_state(TASK_STATE_WAITING)
-                existing.cleanup()
-                self._task_control.enqueue_waiting_task(existing.guid)
-                self._save_session(task=True)
-                return 0, existing.guid
+        if existing_guid and existing_guid in self._all_tasks:
+            if enqueue_existed:
+                with self._task_lock:
+                    existing = self._all_tasks[existing_guid]
+                    existing.url = t.url
+                    existing.config = t.config
+                    existing.set_phase_state(TASK_STATE_WAITING)
+                    existing.cleanup()
+                    self._task_control.enqueue_waiting_task(existing.guid)
+                    self._save_session(task=True, guid=existing.guid)
+                    return 0, existing.guid
+            else:
+                return 0, existing_guid
 
         if t.guid in self._all_tasks:
             t.guid = self._new_guid()
@@ -243,7 +248,7 @@ class xeHentai(HostInterface):
         else:
             t.set_phase_state(TASK_STATE_WAITING)
             self._task_control.enqueue_waiting_task(t.guid)
-            self._save_session(task=True)
+            self._save_session(task=True, guid=t.guid)
             return 0, t.guid
         self.logger.error(i18n.TASK_ERROR % (t.guid, i18n.c(-t.state)))
         return -t.state if t.state < 0 else 0, None
@@ -270,7 +275,7 @@ class xeHentai(HostInterface):
             return ERR_TASK_CANNOT_PAUSE, None
         t.set_phase_state(TASK_STATE_PAUSED)
         self._task_control.mark_task_processed(guid)
-        self._save_session(task=True)
+        self._save_session(task=True, guid=t.guid)
         return ERR_NO_ERROR, ""
 
     def resume_task(self, guid):
@@ -286,7 +291,7 @@ class xeHentai(HostInterface):
         if t.state > TASK_STATE_SCAN_PAGE:
             t.set_phase_state(TASK_STATE_SCAN_PAGE)
         self._task_control.enqueue_waiting_task(guid)
-        self._save_session(task=True)
+        self._save_session(task=True, guid=t.guid)
         return ERR_NO_ERROR, ""
 
     def _task_loop(self):
@@ -317,17 +322,23 @@ class xeHentai(HostInterface):
         self._save_session(task=True)
         tc._exit = XEH_STATE_CLEAN
 
-    def _save_session(self, *, task=False, proxy_store=False, cookies=False):
+    def _save_session(self, *, task=False, proxy_store=False, cookies=False, guid: Optional[str]=None):
         errors = []
         if task:
             try:
-                with self._task_lock:
-                    cp_dict = (
-                        {}
-                        if not self.config["save_tasks"]
-                        else {k: v.to_dict() for k, v in self._all_tasks.items()}
-                    )
-                session_store.save_tasks(cp_dict)
+                if guid and self.config["save_tasks"]:
+                    with self._task_lock:
+                        t = self._all_tasks.get(guid)
+                        if t:
+                            session_store.save_single_task(guid, t.to_dict())
+                else:
+                    with self._task_lock:
+                        cp_dict = (
+                            {}
+                            if not self.config["save_tasks"]
+                            else {k: v.to_dict() for k, v in self._all_tasks.items()}
+                        )
+                    session_store.save_tasks(cp_dict)
             except Exception as ex:
                 errors.append(str(ex))
                 self.logger.warning(

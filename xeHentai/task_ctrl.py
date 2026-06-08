@@ -704,7 +704,7 @@ class TaskControl:
 
         if self._task_should_abort(task):
             raise TaskAbort("task aborted after stage_check_archive_phase1")
-        self._host._save_session(task=True, proxy_store=True)
+        self._host._save_session(task=True, proxy_store=True, guid=task_guid)
 
         self.logger.info(
             i18n.TASK_TITLE.format(guid=task_guid, gid=task.gid, title=task.meta.title)
@@ -757,7 +757,7 @@ class TaskControl:
 
             if self._task_should_abort(task):
                 raise TaskAbort("task aborted before build_page_queue")
-            self._host._save_session(task=True, proxy_store=True)
+            self._host._save_session(task=True, proxy_store=True, guid=task_guid)
 
             task.set_phase_state(TASK_STATE_SCAN_IMG)
 
@@ -777,7 +777,7 @@ class TaskControl:
             await self._image_scan_download_async(task, task_guid, req)
             if self._task_should_abort(task):
                 raise TaskAbort("task aborted before make_archive")
-            self._host._save_session(task=True, proxy_store=True)
+            self._host._save_session(task=True, proxy_store=True, guid=task_guid)
             if task.config.get("make_archive"):
                 task.set_phase_state(TASK_STATE_MAKE_ARCHIVE)
             else:
@@ -798,7 +798,7 @@ class TaskControl:
                     time=time.time() - start_time,
                 )
             )
-            self._host._save_session(task=True, proxy_store=True)
+            self._host._save_session(task=True, proxy_store=True, guid=task_guid)
             if pth:
                 reuse_index.add_zip_to_reuse_index(self._host.global_reuse_index, pth)
 
@@ -807,7 +807,7 @@ class TaskControl:
         self.logger.info(i18n.TASK_FINISHED.format(guid=task.guid, gid=task.gid))
 
         task.cleanup_download_info()
-        self._host._save_session(task=True, proxy_store=True)
+        self._host._save_session(task=True, proxy_store=True, guid=task_guid)
 
         return
 
@@ -837,12 +837,8 @@ class TaskControl:
                         else:
                             # keep non-paused task phase intact; runtime status will be inferred
                             self.clear_task_top_status(task_guid)
-                        self._host._save_session(task=True, proxy_store=True)
-                        return
-
-                    self.enqueue_waiting_task(task_guid)
-                    self._host._save_session(task=True, proxy_store=True)
-                    return
+                    else:
+                        self.enqueue_waiting_task(task_guid)
                 except TaskNewVersion as ex:
                     task = self._host._all_tasks.get(task_guid)
                     if task:
@@ -864,15 +860,12 @@ class TaskControl:
                                     guid=task_guid, ret=ret, url=ex.new_version_url
                                 )
                             )
-
-                        self._host._save_session(task=True, proxy_store=True)
                     return
                 except TaskFinished:
                     task = self._host._all_tasks.get(task_guid)
                     if task:
                         task.set_phase_state(TASK_STATE_FINISHED)
                         self.mark_task_processed(task_guid)
-                        self._host._save_session(task=True, proxy_store=True)
                     return
                 except TaskAbort as ex:
                     self.logger.debug(
@@ -886,7 +879,6 @@ class TaskControl:
                         else:
                             # TaskAbort is pure stop-flow; no re-dispatch behavior here.
                             self.clear_task_top_status(task_guid)
-                        self._host._save_session(task=True, proxy_store=True)
                     return
                 except TaskFailed as ex:
                     task = self._host._all_tasks.get(task_guid)
@@ -899,7 +891,6 @@ class TaskControl:
                         else "task failed"
                     )
                     self.logger.error(i18n.TASK_ERROR % (task_guid, fail_desc))
-                    self._host._save_session(task=True, proxy_store=True)
                     return
                 except TaskControlFlow as ex:
                     task = self._host._all_tasks.get(task_guid)
@@ -913,8 +904,10 @@ class TaskControl:
                         i18n.TASK_ERROR
                         % (task_guid, ex.reason or "unexpected task control flow")
                     )
-                    self._host._save_session(task=True, proxy_store=True)
                     return
+                finally:
+                    # ensure any necessary cleanup or state saving happens after each attempt, even if an unexpected exception occurs
+                    self._host._save_session(task=True, proxy_store=True, guid=task_guid)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -923,7 +916,7 @@ class TaskControl:
             if task:
                 task.set_phase_state(TASK_STATE_FAILED)
                 self.mark_task_processed(task_guid)
-                self._host._save_session(task=True, proxy_store=True)
+                self._host._save_session(task=True, proxy_store=True, guid=task_guid)
 
     async def _run_loop_async(self):
         """Main async scheduling loop with a cap on concurrent _do_task_async executions."""
@@ -939,7 +932,7 @@ class TaskControl:
 
         try:
             while not self._exit:
-                if cnt == 10:
+                if cnt == 50:
                     self._host._save_session(task=True, proxy_store=True)
                     cnt = 0
 
@@ -969,7 +962,7 @@ class TaskControl:
                     self.logger.info(
                         i18n.TASK_START.format(guid=task_guid, gid=task.gid)
                     )
-                    self._host._save_session(task=True, proxy_store=True)
+                    self._host._save_session(task=True, proxy_store=True, guid=task_guid)
                     cnt = 0
 
                     fut = asyncio.create_task(self._run_task_entry_async(task_guid))
