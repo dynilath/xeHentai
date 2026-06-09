@@ -28,12 +28,28 @@ def _is_retryable_request_exception(ex: Exception) -> bool:
         ex,
         (
             requests.exceptions.ProxyError,
-            requests.exceptions.ConnectTimeout,
-            requests.exceptions.ReadTimeout,
+            requests.exceptions.Timeout,
             requests.exceptions.SSLError,
             requests.exceptions.ConnectionError,
+            requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.ContentDecodingError,
         ),
     )
+
+
+def _is_retryable_status_code(status_code: int) -> bool:
+    RETRY_STATUS_CODES = {
+        408,
+        429,
+        500,
+        502,
+        503,
+        504,
+        520,
+        522,
+        524,
+    }
+    return status_code in RETRY_STATUS_CODES
 
 
 @dataclass
@@ -151,7 +167,7 @@ class HttpRequest(object):
                         )
                     continue
 
-            if r.status_code == 503:
+            if _is_retryable_status_code(r.status_code):
                 retry_count += 1
                 continue
 
