@@ -48,6 +48,9 @@ state_2_names = {
     TASK_STATE_MAKE_ARCHIVE: "making archive",
     TASK_STATE_FINISHED: "finished",
     TASK_STATE_FAILED: "failed",
+    
+    TASK_STATE_ERR_GALLERY_REMOVED: "gallery removed",
+    TASK_STATE_ERR_GALLERY_NOT_FOUND: "gallery not found",
 }
 
 
@@ -216,9 +219,17 @@ class xeHentai(HostInterface):
         """Internal: create, register, and enqueue a new task. Returns (error_code, guid_or_none)."""
         url = url.strip()
         cfg = {k: v for k, v in cfg_dict.items() if k in self._TASK_CONFIG_KEYS}
+        
         download_ori = cfg.get("download_ori", self.config.get("download_ori"))
         if download_ori and not self.has_login:
             self.logger.warning(i18n.XEH_DOWNLOAD_ORI_NEED_LOGIN)
+            
+        if not re.match(r"^%s/[^/]+/\d+/[^/]+/*#*$" % RESTR_SITE, url):
+            return ERR_URL_NOT_RECOGNIZED, None
+        
+        if not self.has_login and re.match(r"^https*://exhentai\.org", url):
+            return ERR_CANT_DOWNLOAD_EXH, None
+            
         t = Task(url, cfg, self.logger, core_config=self.config)
 
         existing_guid = self._gid_to_guid.get(str(t.gid))
@@ -226,36 +237,41 @@ class xeHentai(HostInterface):
             if enqueue_existed:
                 with self._task_lock:
                     existing = self._all_tasks[existing_guid]
-                    existing.url = t.url
-                    existing.config = t.config
-                    existing.set_phase_state(TASK_STATE_WAITING)
-                    existing.cleanup()
-                    self._task_control.enqueue_waiting_task(existing.guid)
-                    self._save_session(task=True, guid=existing.guid)
-                    return 0, existing.guid
-            else:
-                return 0, existing_guid
+                    if existing.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED) or existing.state < 0:
+                        existing.url = t.url
+                        existing.config = t.config
+                        existing.set_phase_state(TASK_STATE_WAITING)
+                        existing.cleanup()
+                        self._task_control.enqueue_waiting_task(existing.guid)
+                        self._save_session(task=True, guid=existing.guid)
+            return 0, existing_guid
 
         if t.guid in self._all_tasks:
             t.guid = self._new_guid()
-                
+
         self._register_task(t)
-            
-        if not re.match(r"^%s/[^/]+/\d+/[^/]+/*#*$" % RESTR_SITE, url):
-            t.set_fail(TASK_STATE_ERR_URL_NOT_RECOGNIZED)
-        elif not self.has_login and re.match(r"^https*://exhentai\.org", url):
-            t.set_fail(TASK_STATE_ERR_CANT_DOWNLOAD_EXH)
-        else:
-            t.set_phase_state(TASK_STATE_WAITING)
-            self._task_control.enqueue_waiting_task(t.guid)
-            self._save_session(task=True, guid=t.guid)
-            return 0, t.guid
-        self.logger.error(i18n.TASK_ERROR % (t.guid, i18n.c(-t.state)))
-        return -t.state if t.state < 0 else 0, None
+
+        t.set_phase_state(TASK_STATE_WAITING)
+        self._task_control.enqueue_waiting_task(t.guid)
+        self._save_session(task=True, guid=t.guid)
+        return 0, t.guid
+
 
     def add_task(self, url, **cfg_dict):
         """Public/RPC-facing wrapper for adding a task."""
         return self._add_task(url, enqueue_existed=True, **cfg_dict)
+    
+    
+    def add_tasks(self, urls, **cfg_dict):
+        """Add multiple tasks. Returns a list of (error_code, guid_or_none) for each url."""
+        results = []
+        for url in urls:
+            code, guid = self._add_task(url, enqueue_existed=True, **cfg_dict)
+            if code != ERR_NO_ERROR:
+                return code, results
+            results.append(guid)
+        return ERR_NO_ERROR, results
+        
 
     def del_task(self, guid):
         if guid not in self._all_tasks:
