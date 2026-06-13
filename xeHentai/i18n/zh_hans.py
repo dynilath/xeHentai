@@ -141,3 +141,7 @@ DF_MIGRATE_NEW_VERSION_FAIL = "[guid={guid}] 图集迁移到新版本失败 [res
 # control flows
 CF_SCANDOWNLOADSKIP_DUPLICATE = "发现重复文件，跳过下载"
 CF_SCANDOWNLOADSKIP_EXISTING = "文件已存在，跳过下载"
+
+# error messages
+TS_ERR_GALLERY_REMOVED = "[guid={guid} gid={gid}] 图集被移除，可能需要换个IP进行访问，或者等待里站可见"
+TS_ERR_GALLERY_NOT_FOUND = "[guid={guid} gid={gid}] 无法找到图集，可能地址错误或者图集未创建"

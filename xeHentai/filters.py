@@ -118,10 +118,13 @@ def flt_metadata(r: HttpRequestResult) -> Dict[str, Any]:
     except Exception as e:
         raise MetaDataParseException(
             r.final_url, "can't parse gallery metadata: %s" % e
-        )
+        ) from e
 
 
 def flt_pageurl(r: HttpRequestResult) -> List[Tuple[str, str, str]]:
+    if re.match("This IP address has been temporarily banned", r.response.text):
+        detail = re.findall("The ban expires in (.+)", r.response.text)[0]
+        raise IPBannedException(r.final_url, detail)
     # input gallery response
     # result[0]: page url;
     # result[1]: page id;

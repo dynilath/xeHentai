@@ -199,4 +199,4 @@ class HttpRequest(object):
 
         raise RequestRetryExhaustedException(
             url=url_history[0], retry=retry, last_ex=last_ex
-        )
+        ) from last_ex

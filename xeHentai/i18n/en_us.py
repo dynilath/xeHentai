@@ -141,3 +141,7 @@ DF_MIGRATE_NEW_VERSION_FAIL = "[guid={guid}] gallery migrate to new version fail
 # control flows
 CF_SCANDOWNLOADSKIP_DUPLICATE = "duplicate file found, skip downloading"
 CF_SCANDOWNLOADSKIP_EXISTING = "file already exists, skip downloading"
+
+# error messages
+TS_ERR_GALLERY_REMOVED = "[guid={guid} gid={gid}] gallery has been removed, may need to change IP to access or wait until it's visible in exhentai"
+TS_ERR_GALLERY_NOT_FOUND = "[guid={guid} gid={gid}] gallery not found, may be incorrect url or gallery not created"

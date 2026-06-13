@@ -252,6 +252,6 @@ def raise_for_stage_exception(
         raise TaskRetry(reason, delay=10.0, result=result)
 
     if isinstance(ex, CrawlerException):
-        raise TaskFailed(reason, task_state=ex.code, result=result)
+        raise TaskFailed(reason, task_state=ex.code, result=result) from ex
 
-    raise TaskFailed(reason, task_state=TASK_STATE_FAILED, result=result)
+    raise TaskFailed(reason, task_state=TASK_STATE_FAILED, result=result) from ex

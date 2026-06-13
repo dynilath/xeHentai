@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Tuple
 from .scheduler import Scheduler
 from . import filters, reuse_index
 from .const import (
+    TASK_STATE_ERR_GALLERY_NOT_FOUND,
+    TASK_STATE_ERR_GALLERY_REMOVED,
     TASK_STATE_FAILED,
     TASK_STATE_FINISHED,
     TASK_STATE_GET_META,
@@ -655,11 +657,11 @@ class TaskControl:
         def work():
             try:
                 return task.make_archive()
-            except Exception:
+            except Exception as e:
                 raise TaskFailed(
                     traceback.format_exc(),
                     task_state=TASK_STATE_ERR_CANNOT_MAKE_ARCHIVE,
-                )
+                ) from e
 
         return await self._archive_scheduler.submit(work)
 
@@ -885,6 +887,13 @@ class TaskControl:
                     if task:
                         task.set_phase_state(ex.task_state)
                         self.mark_task_processed(task_guid)
+                        if ex.task_state == TASK_STATE_ERR_GALLERY_REMOVED:
+                            self.logger.error(i18n.TS_ERR_GALLERY_REMOVED.format(guid=task_guid, gid=task.gid))
+                            return
+                        elif ex.task_state == TASK_STATE_ERR_GALLERY_NOT_FOUND:
+                            self.logger.error(i18n.TS_ERR_GALLERY_NOT_FOUND.format(guid=task_guid, gid=task.gid))
+                            return
+                                     
                     self.logger.error(i18n.TASK_ERROR % (task_guid, traceback.format_exc()))
                     return
                 except TaskControlFlow as ex:
