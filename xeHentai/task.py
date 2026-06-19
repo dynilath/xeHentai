@@ -709,6 +709,10 @@ class Task(object):
                         # Preserve existing populated hash map from page scan; only load from archive if currently empty
                         if not self.fid_2_page_hash_map:
                             self.fid_2_page_hash_map = metadata.fid_page_hash_map or {}
+                        
+                        if metadata.download_ori:
+                            self.config.update({"download_ori": metadata.download_ori})
+                        
                         return "exact_match"
 
                 return "bad_file"
