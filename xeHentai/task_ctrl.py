@@ -128,8 +128,10 @@ class TaskControl:
         runtime = self._runtime_top_status.get(task_guid)
         if runtime is not None:
             return runtime
-        task = task if task is not None else self._host._all_tasks.get(task_guid)
+        task = task if task is not None else self._host._active_tasks.get(task_guid)
         if not task:
+            # Cold task: no runtime status recorded. Treat as waiting so the run
+            # loop picks it up; finished/failed/paused tasks are not enqueued.
             return TASK_TOP_STATUS_WAITING
         if task.state in (TASK_STATE_FINISHED, TASK_STATE_FAILED, TASK_STATE_PAUSED) or task.state < 0:
             return TASK_TOP_STATUS_PROCESSED
@@ -139,8 +141,16 @@ class TaskControl:
         self._runtime_top_status[task_guid] = top_status
 
     def enqueue_waiting_task(self, task_guid: str) -> None:
-        if task_guid not in self._host._all_tasks:
-            return
+        # The task must exist either in the active set or in the DB. We avoid a
+        # DB probe on every enqueue for the common active case; for cold tasks
+        # the caller (add_task/resume/retry/load_session) has just ensured the
+        # row exists, so we trust the guid here.
+        if task_guid not in self._host._active_tasks:
+            # Cheap existence guard: only enqueue if known to be active or the
+            # caller is a trusted lifecycle path. To stay safe without a per-call
+            # DB hit, we accept the guid; the run loop will hydrate-and-skip if
+            # it turns out to be unknown.
+            pass
         self.set_task_top_status(task_guid, TASK_TOP_STATUS_WAITING)
         if task_guid not in self._waiting_set:
             self._waiting_set.add(task_guid)
@@ -549,6 +559,7 @@ class TaskControl:
                 result=result,
             )
 
+    @stage_retry_skip_scope
     async def _image_scan_download_async(
         self, task: Task, task_guid: str, req: HttpRequest
     ):
@@ -670,7 +681,7 @@ class TaskControl:
 
     async def _do_task_async(self, task_guid: str):
         """Execute a task using async/await for stages instead of manual state machine."""
-        task = self._host._all_tasks[task_guid]
+        task = self._host._active_tasks[task_guid]
         task._reuse_index = self._host.global_reuse_index
 
         req = self._get_http_request(task_guid)
@@ -826,7 +837,7 @@ class TaskControl:
                     await self._do_task_async(task_guid)
                     return
                 except TaskReschedule as ex:
-                    task = self._host._all_tasks.get(task_guid)
+                    task = self._host._active_tasks.get(task_guid)
                     if not task:
                         return
 
@@ -842,7 +853,7 @@ class TaskControl:
                     else:
                         self.enqueue_waiting_task(task_guid)
                 except TaskNewVersion as ex:
-                    task = self._host._all_tasks.get(task_guid)
+                    task = self._host._active_tasks.get(task_guid)
                     if task:
                         task.set_phase_state(TASK_STATE_FINISHED)
                         self.mark_task_processed(task_guid)
@@ -864,7 +875,7 @@ class TaskControl:
                             )
                     return
                 except TaskFinished:
-                    task = self._host._all_tasks.get(task_guid)
+                    task = self._host._active_tasks.get(task_guid)
                     if task:
                         task.set_phase_state(TASK_STATE_FINISHED)
                         self.mark_task_processed(task_guid)
@@ -874,7 +885,7 @@ class TaskControl:
                         "%s: task aborted: %s"
                         % (task_guid, ex.reason or "control flow")
                     )
-                    task = self._host._all_tasks.get(task_guid)
+                    task = self._host._active_tasks.get(task_guid)
                     if task:
                         if task.state == TASK_STATE_PAUSED:
                             self.mark_task_processed(task_guid)
@@ -883,7 +894,7 @@ class TaskControl:
                             self.clear_task_top_status(task_guid)
                     return
                 except TaskFailed as ex:
-                    task = self._host._all_tasks.get(task_guid)
+                    task = self._host._active_tasks.get(task_guid)
                     if task:
                         task.set_phase_state(ex.task_state)
                         self.mark_task_processed(task_guid)
@@ -897,7 +908,7 @@ class TaskControl:
                     self.logger.error(i18n.TASK_ERROR % (task_guid, traceback.format_exc()))
                     return
                 except TaskControlFlow as ex:
-                    task = self._host._all_tasks.get(task_guid)
+                    task = self._host._active_tasks.get(task_guid)
                     if task:
                         task.set_phase_state(getattr(ex, 'task_state', TASK_STATE_FAILED))
                         self.mark_task_processed(task_guid)
@@ -916,7 +927,7 @@ class TaskControl:
             raise
         except Exception:
             self.logger.error(i18n.TASK_ERROR % (task_guid, traceback.format_exc()))
-            task = self._host._all_tasks.get(task_guid)
+            task = self._host._active_tasks.get(task_guid)
             if task:
                 task.set_phase_state(TASK_STATE_FAILED)
                 self.mark_task_processed(task_guid)
@@ -936,8 +947,10 @@ class TaskControl:
 
         try:
             while not self._exit:
+                # Periodic proxy_store flush only — each task saves itself at
+                # its lifecycle boundaries, so there is no bulk task save here.
                 if cnt == 50:
-                    self._host._save_session(task=True, proxy_store=True)
+                    self._host._save_session(proxy_store=True)
                     cnt = 0
 
                 while not self._exit and len(running) < concurrency_limit:
@@ -948,17 +961,27 @@ class TaskControl:
 
                     self._waiting_set.discard(task_guid)
 
-                    task = self._host._all_tasks.get(task_guid)
+                    # Hydrate the task from the DB into the active set on
+                    # dispatch. If hydration fails (e.g. task was deleted),
+                    # skip it.
+                    task = self._host._hydrate_task(task_guid)
                     if not task:
                         continue
                     if (
                         self.get_task_top_status(task_guid, task)
                         != TASK_TOP_STATUS_WAITING
                     ):
+                        # Not waiting — evict immediately to avoid a leak.
+                        self._host._dehydrate_task(task_guid)
                         continue
                     if not (TASK_STATE_PAUSED < task.state < TASK_STATE_FINISHED):
-                        continue
+                        # e.g. a WAITING task (state==1) passes 0<1<20; finished
+                        # or paused tasks get evicted.
+                        if task.state != TASK_STATE_WAITING:
+                            self._host._dehydrate_task(task_guid)
+                            continue
                     if task_guid in self._running_set:
+                        self._host._dehydrate_task(task_guid)
                         continue
 
                     self._host.last_task_guid = task_guid
@@ -993,6 +1016,12 @@ class TaskControl:
                     except Exception:
                         # _run_task_entry_async already logs details.
                         pass
+                    # Single eviction point: persist the (now terminal or
+                    # re-waiting) task and drop it from memory. Covers all
+                    # exit paths (TaskFinished/TaskFailed/TaskAbort/TaskNewVersion/
+                    # TaskReschedule/exception).
+                    if done_guid:
+                        self._host._dehydrate_task(done_guid)
 
                 cnt += 1
         finally:

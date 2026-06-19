@@ -65,6 +65,45 @@ def parse_task(t: Task):
     }
 
 
+def _state_name(state: int) -> str:
+    return state_2_names.get(state, "unknown" if state >= 0 else f"error.{state}")
+
+
+def parse_task_row(row: dict):
+    """Build a task status dict from a lightweight DB row.
+
+    `done` is only accurate for active tasks; for cold tasks we report 0 (the
+    accurate done count is not persisted as a column, by design).
+    """
+    return {
+        "guid": row.get("guid", ""),
+        "gid": row.get("gid", ""),
+        "url": row.get("url", ""),
+        "state": _state_name(int(row.get("phase_state", TASK_STATE_WAITING))),
+        "phase_state": int(row.get("phase_state", TASK_STATE_WAITING)),
+        "done": 0,
+        "total": int(row.get("total", 0) or 0),
+        "title": row.get("title", "") or "",
+    }
+
+
+def _derive_top_status(state: int) -> int:
+    """Derive a coarse top_status from a phase_state without an in-memory task.
+
+    WAITING -> WAITING; FINISHED/FAILED/PAUSED/negative errors -> PROCESSED;
+    everything in between (active stages) -> PROCESSING.
+    """
+    if state == TASK_STATE_WAITING:
+        return TASK_TOP_STATUS_WAITING
+    if state == TASK_STATE_FINISHED or state < 0 or state == TASK_STATE_PAUSED:
+        return TASK_TOP_STATUS_PROCESSED
+    return TASK_TOP_STATUS_PROCESSING
+
+
+def _top_name_for_state(state: int) -> str:
+    return task_top_status_name(_derive_top_status(state))
+
+
 class xeHentai(HostInterface):
     _TASK_CONFIG_KEYS = (
         "download_ori",
@@ -77,11 +116,13 @@ class xeHentai(HostInterface):
     def __init__(self):
         self.verstr = f"{__version__}{'-dev' if DEVELOPMENT else ''}"
         self.logger = logger.Logger()
-        self.tasks: Queue[str] = Queue()  # for queueing, stores gid only
+        self.tasks: Queue[str] = Queue()  # for queueing, stores guid only
         self.last_task_guid = None
         self._task_lock: RLock = RLock()
-        self._all_tasks: dict[str, Task] = {}  # for saving states
-        self._gid_to_guid: dict[str, str] = {}
+        # Only currently-executing tasks live in memory (bounded by
+        # async_task_concurrency). All other tasks live in SQLite and are
+        # hydrated on demand. The DB is the single source of truth.
+        self._active_tasks: dict[str, Task] = {}
         _cfg = {
             k: v for k, v in default_config.__dict__.items() if not k.startswith("_")
         }
@@ -106,25 +147,74 @@ class xeHentai(HostInterface):
 
     def _new_guid(self) -> str:
         # Keep backward-compatible 8-char guid while guaranteeing runtime uniqueness.
+        # Check both active tasks and the DB (cheap UNIQUE PK lookup).
         while True:
             guid = os.urandom(4).hex()
-            if guid not in self._all_tasks:
-                return guid
+            if guid in self._active_tasks:
+                continue
+            if session_store.get_task_row(guid) is not None:
+                continue
+            return guid
+
+    def _get_active_task(self, guid: str) -> Optional[Task]:
+        """Return an in-memory active Task without hydrating. None if cold."""
+        return self._active_tasks.get(guid)
+
+    def _hydrate_task(self, guid: str) -> Optional[Task]:
+        """Load a single Task from the DB into the active set and return it.
+
+        If the task is already active, returns the existing instance. If the
+        guid is unknown, returns None. Hydration parses one payload row (~1ms).
+        """
+        if guid in self._active_tasks:
+            return self._active_tasks[guid]
+        payload = session_store.load_task_payload(guid)
+        if payload is None:
+            return None
+        try:
+            t = Task(payload.get("url", ""), {}, self.logger, core_config=self.config)
+            t.from_dict(payload, core_config=self.config)
+        except Exception:
+            self.logger.warning(
+                "Failed to hydrate task %s:\n%s" % (guid, traceback.format_exc())
+            )
+            return None
+        t._reuse_index = self.global_reuse_index
+        self._active_tasks[guid] = t
+        return t
+
+    def _dehydrate_task(self, guid: str) -> None:
+        """Persist an active Task back to the DB and evict it from memory.
+
+        Idempotent: a no-op if the guid is not active. This is the single
+        eviction point called by the run loop after a task finishes/fails/etc.
+        """
+        t = self._active_tasks.pop(guid, None)
+        if t is None:
+            return
+        try:
+            session_store.save_task_from_active(t)
+        except Exception:
+            self.logger.warning(
+                "Failed to dehydrate task %s:\n%s" % (guid, traceback.format_exc())
+            )
+        t.cleanup()
 
     def _register_task(self, t: Task) -> None:
+        """Persist a freshly created Task to the DB (does not keep it active).
+
+        Kept for compatibility with call sites that build a Task and want it
+        stored; the task is NOT placed in _active_tasks here.
+        """
         with self._task_lock:
-            self._all_tasks[t.guid] = t
-            if t.gid:
-                self._gid_to_guid[str(t.gid)] = t.guid
+            session_store.save_task_from_active(t)
 
     def _unregister_task(self, guid: str) -> None:
+        """Remove a task from the DB and from the active set."""
         with self._task_lock:
-            t = self._all_tasks.pop(guid, None)
+            self._active_tasks.pop(guid, None)
             self._task_control.clear_task_top_status(guid)
-            if t and t.gid:
-                mapped = self._gid_to_guid.get(str(t.gid))
-                if mapped == guid:
-                    self._gid_to_guid.pop(str(t.gid), None)
+            session_store.delete_task(guid)
 
     @property
     def _exit(self):
@@ -243,31 +333,30 @@ class xeHentai(HostInterface):
 
         t = Task(url, cfg, self.logger, core_config=self.config)
 
-        existing_guid = self._gid_to_guid.get(str(t.gid))
-        if existing_guid and existing_guid in self._all_tasks:
+        # Dedup by gid via DB (gid has a UNIQUE index). No in-memory map needed.
+        existing_guid = session_store.find_guid_by_gid(str(t.gid))
+        if existing_guid:
             if enqueue_existed:
-                with self._task_lock:
-                    existing = self._all_tasks[existing_guid]
-                    if (
-                        existing.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED)
-                        or existing.state < 0
-                    ):
-                        existing.url = t.url
-                        existing.config = t.config
-                        existing.set_phase_state(TASK_STATE_WAITING)
-                        existing.cleanup()
-                        self._task_control.enqueue_waiting_task(existing.guid)
-                        self._save_session(task=True, guid=existing.guid)
+                existing = self._hydrate_task(existing_guid)
+                if existing is not None and (
+                    existing.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED)
+                    or existing.state < 0
+                ):
+                    existing.url = t.url
+                    existing.config = t.config
+                    existing.set_phase_state(TASK_STATE_WAITING)
+                    existing.cleanup()
+                    self._task_control.enqueue_waiting_task(existing.guid)
+                    self._dehydrate_task(existing.guid)
             return 0, existing_guid
 
-        if t.guid in self._all_tasks:
+        # Ensure the new guid is unique across active set and DB.
+        if t.guid in self._active_tasks or session_store.get_task_row(t.guid) is not None:
             t.guid = self._new_guid()
 
-        self._register_task(t)
-
         t.set_phase_state(TASK_STATE_WAITING)
+        session_store.save_task_from_active(t)
         self._task_control.enqueue_waiting_task(t.guid)
-        self._save_session(task=True, guid=t.guid)
         return 0, t.guid
 
     def add_task(self, url, **cfg_dict):
@@ -287,43 +376,60 @@ class xeHentai(HostInterface):
         return ERR_NO_ERROR, results
 
     def del_task(self, guid):
-        if guid not in self._all_tasks:
+        row = session_store.get_task_row(guid)
+        if row is None and guid not in self._active_tasks:
             return ERR_TASK_NOT_FOUND, None
-        if TASK_STATE_PAUSED < self._all_tasks[guid].state < TASK_STATE_FINISHED:
+        # Cannot delete a task that is currently running.
+        active = self._active_tasks.get(guid)
+        cur_state = active.state if active else int(row.get("phase_state", TASK_STATE_WAITING))
+        if TASK_STATE_PAUSED < cur_state < TASK_STATE_FINISHED:
             return ERR_DELETE_RUNNING_TASK, None
-        self._all_tasks[guid].cleanup(before_delete=True)
+        if active is None:
+            active = self._hydrate_task(guid)
+        if active is not None:
+            active.cleanup(before_delete=True)
         self._unregister_task(guid)
-        self._save_session(task=True)
         return ERR_NO_ERROR, ""
 
     def pause_task(self, guid):
-        if guid not in self._all_tasks:
+        row = session_store.get_task_row(guid)
+        if row is None and guid not in self._active_tasks:
             return ERR_TASK_NOT_FOUND, None
-        t = self._all_tasks[guid]
+        active = self._active_tasks.get(guid)
+        cur_state = active.state if active else int(row.get("phase_state", TASK_STATE_WAITING))
         if (
-            t.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED, TASK_STATE_FAILED)
-            or t.state < 0
+            cur_state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED, TASK_STATE_FAILED)
+            or cur_state < 0
         ):
             return ERR_TASK_CANNOT_PAUSE, None
-        t.set_phase_state(TASK_STATE_PAUSED)
+        if active is not None:
+            # Active task: set state; the worker will abort via _task_should_abort
+            # and the run loop will dehydrate it on return.
+            active.set_phase_state(TASK_STATE_PAUSED)
+        else:
+            # Cold task: lightweight state-only DB update.
+            session_store.update_task_state(guid, TASK_STATE_PAUSED)
         self._task_control.mark_task_processed(guid)
-        self._save_session(task=True, guid=t.guid)
         return ERR_NO_ERROR, ""
 
     def resume_task(self, guid):
-        if guid not in self._all_tasks:
+        row = session_store.get_task_row(guid)
+        if row is None and guid not in self._active_tasks:
             return ERR_TASK_NOT_FOUND, None
-        t = self._all_tasks[guid]
-        if TASK_STATE_PAUSED < t.state < TASK_STATE_FINISHED:
+        active = self._active_tasks.get(guid)
+        cur_state = active.state if active else int(row.get("phase_state", TASK_STATE_WAITING))
+        if TASK_STATE_PAUSED < cur_state < TASK_STATE_FINISHED:
             return ERR_TASK_CANNOT_RESUME, None
-        t.set_phase_state(max(t.state, TASK_STATE_WAITING))
-
         # image link is changed everytime the page is reloaded
         # so we need to re scan them
-        if t.state > TASK_STATE_SCAN_PAGE:
-            t.set_phase_state(TASK_STATE_SCAN_PAGE)
+        new_state = max(cur_state, TASK_STATE_WAITING)
+        if new_state > TASK_STATE_SCAN_PAGE:
+            new_state = TASK_STATE_SCAN_PAGE
+        if active is not None:
+            active.set_phase_state(new_state)
+        else:
+            session_store.update_task_state(guid, new_state)
         self._task_control.enqueue_waiting_task(guid)
-        self._save_session(task=True, guid=t.guid)
         return ERR_NO_ERROR, ""
 
     def _task_loop(self):
@@ -335,7 +441,12 @@ class xeHentai(HostInterface):
     def _cleanup(self):
         tc = self._task_control
         tc._exit = tc._exit if tc._exit > 0 else XEH_STATE_SOFT_EXIT
-        self._save_session(task=True)
+        # Dehydrate any still-active tasks so their latest state is persisted
+        # before we tear down the run loop.
+        with self._task_lock:
+            active_guids = list(self._active_tasks.keys())
+        for guid in active_guids:
+            self._dehydrate_task(guid)
         tc.join_all()
         self.logger.cleanup()
         # let's send a request to rpc server to unblock it
@@ -350,8 +461,6 @@ class xeHentai(HostInterface):
             except:
                 pass
             self.rpc.join()
-        # save it again in case we miss something
-        self._save_session(task=True)
         tc._exit = XEH_STATE_CLEAN
 
     def _save_session(
@@ -364,25 +473,20 @@ class xeHentai(HostInterface):
     ):
         errors = []
         if task:
-            try:
-                if guid and self.config["save_tasks"]:
-                    with self._task_lock:
-                        t = self._all_tasks.get(guid)
-                        if t:
-                            session_store.save_single_task(guid, t.to_dict())
-                else:
-                    with self._task_lock:
-                        cp_dict = (
-                            {}
-                            if not self.config["save_tasks"]
-                            else {k: v.to_dict() for k, v in self._all_tasks.items()}
+            # Only active tasks need saving; cold tasks are already persisted
+            # (their state changes go through update_task_state / _dehydrate_task).
+            if guid:
+                t = self._active_tasks.get(guid)
+                if t and self.config["save_tasks"]:
+                    try:
+                        session_store.save_task_from_active(t)
+                    except Exception as ex:
+                        errors.append(str(ex))
+                        self.logger.warning(
+                            i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc()
                         )
-                    session_store.save_tasks(cp_dict)
-            except Exception as ex:
-                errors.append(str(ex))
-                self.logger.warning(
-                    i18n.SESSION_WRITE_EXCEPTION % traceback.format_exc()
-                )
+            # The legacy bulk-save path (no guid) is intentionally a no-op for
+            # tasks: each task is saved individually at its lifecycle boundaries.
 
         if cookies:
             try:
@@ -416,17 +520,37 @@ class xeHentai(HostInterface):
             "processed": 0,
         }
 
+        # Aggregate cold tasks via a single GROUP BY query.
+        state_counts = session_store.count_tasks_by_state()
+        # Active tasks override their DB phase_state with the live value, so
+        # subtract them from the cold aggregate and re-add under the live value.
+        active_states: dict[str, int] = {}
         with self._task_lock:
-            for guid, task in self._all_tasks.items():
-                state_name = state_2_names.get(
-                    task.state, "unknown" if task.state >= 0 else f"error.{task.state}"
-                )
-                top_status = self._task_control.get_task_top_status(guid, task)
-                top_name = task_top_status_name(top_status)
-                if top_name not in grouped:
-                    top_name = "processed"
-                summary[top_name] = summary.get(top_name, 0) + 1
-                grouped[top_name][state_name] = grouped[top_name].get(state_name, 0) + 1
+            for guid, task in self._active_tasks.items():
+                active_states[guid] = task.state
+
+        for state_val, cnt in state_counts.items():
+            # Each guid counted in state_counts reflects the DB row; if that guid
+            # is active, its live state may differ. We handle active guids below.
+            state_name = _state_name(state_val)
+            top_name = _top_name_for_state(state_val)
+            grouped[top_name][state_name] = grouped[top_name].get(state_name, 0) + cnt
+            summary[top_name] = summary.get(top_name, 0) + cnt
+
+        # Correct for active tasks: remove one from their DB-state bucket and add
+        # one to their live-state bucket.
+        for guid, live_state in active_states.items():
+            row = session_store.get_task_row(guid)
+            db_state = int(row.get("phase_state", TASK_STATE_WAITING)) if row else TASK_STATE_WAITING
+            if db_state != live_state and row:
+                db_name = _state_name(db_state)
+                db_top = _top_name_for_state(db_state)
+                grouped[db_top][db_name] = max(0, grouped[db_top].get(db_name, 0) - 1)
+                summary[db_top] = max(0, summary.get(db_top, 0) - 1)
+            live_name = _state_name(live_state)
+            live_top = _top_name_for_state(live_state)
+            grouped[live_top][live_name] = grouped[live_top].get(live_name, 0) + 1
+            summary[live_top] = summary.get(live_top, 0) + 1
 
         return ERR_NO_ERROR, {
             "summary": summary,
@@ -440,19 +564,31 @@ class xeHentai(HostInterface):
         gid: Optional[str] = None,
         url: Optional[str] = None,
     ):
-
         if guid:
-            t = self._all_tasks.get(guid)
-            if t:
-                return ERR_NO_ERROR, parse_task(t)
+            active = self._active_tasks.get(guid)
+            if active:
+                return ERR_NO_ERROR, parse_task(active)
+            row = session_store.get_task_row(guid)
+            if row:
+                return ERR_NO_ERROR, parse_task_row(row)
         if gid:
-            for guid, task in self._all_tasks.items():
-                if task.gid == gid:
-                    return ERR_NO_ERROR, parse_task(task)
+            found_guid = session_store.find_guid_by_gid(gid)
+            if found_guid:
+                active = self._active_tasks.get(found_guid)
+                if active:
+                    return ERR_NO_ERROR, parse_task(active)
+                row = session_store.get_task_row(found_guid)
+                if row:
+                    return ERR_NO_ERROR, parse_task_row(row)
         if url:
-            for guid, task in self._all_tasks.items():
-                if task.url == url:
-                    return ERR_NO_ERROR, parse_task(task)
+            found_guid = session_store.find_guid_by_url(url)
+            if found_guid:
+                active = self._active_tasks.get(found_guid)
+                if active:
+                    return ERR_NO_ERROR, parse_task(active)
+                row = session_store.get_task_row(found_guid)
+                if row:
+                    return ERR_NO_ERROR, parse_task_row(row)
         return ERR_TASK_NOT_FOUND, None
 
     def find_tasks(
@@ -463,18 +599,26 @@ class xeHentai(HostInterface):
         max_count: Optional[int] = None,
     ):
         max_count = max_count or 128
-        results = []
-        with self._task_lock:
-            for guid, task in self._all_tasks.items():
-                if state is not None and task.state != state:
-                    continue
-                t_top_status = self._task_control.get_task_top_status(guid, task)
-                if top_status is not None and t_top_status != top_status:
-                    continue
-                results.append(parse_task(task))
-                if len(results) >= max_count:
-                    break
-
+        # DB query covers cold tasks by phase_state.
+        states_filter = [state] if state is not None else None
+        _, rows = session_store.query_tasks(
+            states=states_filter, limit=max_count, order_by="updated_at", order_dir="DESC"
+        )
+        results = [parse_task_row(row) for row in rows]
+        # Enrich with live done/state for any active tasks present in the page.
+        for item in results:
+            active = self._active_tasks.get(item["guid"])
+            if active:
+                item["done"] = len(active._flist_done)
+                item["phase_state"] = active.state
+                item["state"] = _state_name(active.state)
+                item["total"] = active.meta.total if active.meta else item["total"]
+        # top_status filtering (derived from phase_state) applied client-side.
+        if top_status is not None:
+            results = [
+                item for item in results
+                if _derive_top_status(item["phase_state"]) == top_status
+            ]
         return ERR_NO_ERROR, results
 
     def retry_tasks(
@@ -485,27 +629,66 @@ class xeHentai(HostInterface):
         gid: Optional[str] = None,
         url: Optional[str] = None,
     ):
-        targets: List[Task] = []
+        target_guids: list[str] = []
         if guid:
-            t = self._all_tasks.get(guid)
-            if t:
-                targets.append(t)
+            target_guids.append(guid)
         if guids:
-            for g in guids:
-                t = self._all_tasks.get(g)
-                if t:
-                    targets.append(t)
-        if gid or url:
-            for t in self._all_tasks.values():
-                if t.gid == gid or t.url == url:
-                    targets.append(t)
+            target_guids.extend(guids)
+        if gid:
+            found = session_store.find_guid_by_gid(gid)
+            if found:
+                target_guids.append(found)
+        if url:
+            found = session_store.find_guid_by_url(url)
+            if found:
+                target_guids.append(found)
 
-        targets = [t for t in targets if t.state < 0]
-        for t in targets:
-            t.set_phase_state(TASK_STATE_WAITING)
-            self._task_control.enqueue_waiting_task(t.guid)
-            self._save_session(task=True, guid=t.guid)
-        return ERR_NO_ERROR, [parse_task(t) for t in targets]
+        results = []
+        for g in target_guids:
+            active = self._active_tasks.get(g)
+            cur_state = active.state if active else None
+            if cur_state is None:
+                row = session_store.get_task_row(g)
+                cur_state = int(row.get("phase_state", TASK_STATE_WAITING)) if row else None
+            if cur_state is None or cur_state >= 0:
+                continue
+            if active is not None:
+                active.set_phase_state(TASK_STATE_WAITING)
+            else:
+                session_store.update_task_state(g, TASK_STATE_WAITING)
+            self._task_control.enqueue_waiting_task(g)
+            results.append(g)
+        # Build status dicts (hydrate only what we need; reuse rows where possible).
+        out = []
+        for g in results:
+            active = self._active_tasks.get(g)
+            if active:
+                out.append(parse_task(active))
+            else:
+                row = session_store.get_task_row(g)
+                if row:
+                    out.append(parse_task_row(row))
+        return ERR_NO_ERROR, out
+
+    def count_active_tasks(self) -> int:
+        """Count tasks still being worked on (waiting through make_archive).
+
+        Active (in-memory) tasks are counted live; cold tasks via a DB COUNT.
+        Used by the CLI to decide whether the process can exit.
+        """
+        db_count = session_store.count_active_tasks(
+            state_low=TASK_STATE_WAITING, state_high=TASK_STATE_FINISHED
+        )
+        # Active tasks whose live state falls in the active window but whose DB
+        # row may already be FINISHED/PAUSED (e.g. just paused) should still
+        # count. Conversely active tasks already FINISHED in memory shouldn't.
+        live_active = sum(
+            1 for t in self._active_tasks.values()
+            if TASK_STATE_WAITING <= t.state < TASK_STATE_FINISHED
+        )
+        # Approximate: take max to avoid undercounting freshly-mutated active
+        # tasks whose DB row hasn't been dehydrated yet.
+        return max(db_count, live_active)
 
     def load_session(self):
         legacy_session = {}
@@ -518,33 +701,57 @@ class xeHentai(HostInterface):
                 )
                 return ERR_SAVE_SESSION_FAILED, str(ex)
 
+        # Ensure the SQLite schema exists / is migrated before any query.
         try:
-            tasks_payload = (
-                session_store.load_tasks()
-                if session_store.has_tasks_file()
-                else legacy_session.get("tasks", {})
-            )
+            session_store._ensure_schema()
         except Exception as ex:
-            self.logger.warning(i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc())
+            self.logger.warning(
+                i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc()
+            )
             return ERR_SAVE_SESSION_FAILED, str(ex)
 
-        for _ in tasks_payload.values():
-            _t = Task(_["url"], {}, self.logger, core_config=self.config).from_dict(
-                _, core_config=self.config
-            )
+        # Rebuild the in-memory waiting queue from the DB. We only load the
+        # guids of WAITING tasks — no Task objects, no payload parsing.
+        waiting_count = 0
+        if session_store.has_tasks_file():
+            try:
+                waiting_guids = session_store.list_waiting_guids()
+            except Exception as ex:
+                self.logger.warning(
+                    i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc()
+                )
+                return ERR_SAVE_SESSION_FAILED, str(ex)
+            for guid in waiting_guids:
+                self._task_control.set_task_top_status(guid, TASK_TOP_STATUS_WAITING)
+                self._task_control.enqueue_waiting_task(guid)
+            waiting_count = len(waiting_guids)
+        else:
+            # No DB yet; one-time import from legacy JSON session if present.
+            legacy_tasks = legacy_session.get("tasks", {})
+            if isinstance(legacy_tasks, dict) and legacy_tasks:
+                try:
+                    imported = session_store.import_tasks_from_json()
+                    self.logger.info(
+                        "Imported %d tasks from legacy session (skipped %d)"
+                        % (imported.get("imported", 0), imported.get("skipped", 0))
+                    )
+                except Exception:
+                    self.logger.warning(
+                        i18n.SESSION_LOAD_EXCEPTION % traceback.format_exc()
+                    )
+                try:
+                    waiting_guids = session_store.list_waiting_guids()
+                    for guid in waiting_guids:
+                        self._task_control.set_task_top_status(
+                            guid, TASK_TOP_STATUS_WAITING
+                        )
+                        self._task_control.enqueue_waiting_task(guid)
+                    waiting_count = len(waiting_guids)
+                except Exception:
+                    pass
 
-            if _t.guid in self._all_tasks:
-                _t.guid = self._new_guid()
-            existed = self._gid_to_guid.get(str(_t.gid))
-            if existed and existed in self._all_tasks:
-                continue
-            self._register_task(_t)
-            top_status = self._task_control.get_task_top_status(_t.guid, _t)
-            self._task_control.set_task_top_status(_t.guid, top_status)
-            if top_status == TASK_TOP_STATUS_WAITING:
-                self._task_control.enqueue_waiting_task(_t.guid)
-        if self._all_tasks:
-            self.logger.info(i18n.XEH_LOAD_TASKS_CNT % len(self._all_tasks))
+        if waiting_count:
+            self.logger.info(i18n.XEH_LOAD_TASKS_CNT % waiting_count)
 
         try:
             loaded_cookies = (

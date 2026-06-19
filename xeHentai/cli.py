@@ -69,7 +69,7 @@ def main(xeH, opt):
         Thread(target = xeH._task_loop, name = "main" ).start()
         while xeH._exit < XEH_STATE_CLEAN:
             # if specify urls, finished this task and exit xeHentai
-            if opt.urls and not [k for k, v in xeH._all_tasks.items() if TASK_STATE_WAITING <= v.state < TASK_STATE_FINISHED]:
+            if opt.urls and xeH.count_active_tasks() == 0:
                 xeH._exit = XEH_STATE_SOFT_EXIT
             time.sleep(1)
     except KeyboardInterrupt:

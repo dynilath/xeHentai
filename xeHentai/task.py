@@ -524,6 +524,64 @@ class Task(object):
     def _build_saving_file_name(total: int, fid: str, ext: str):
         return f"{fid.zfill(len(str(total)))}{ext}"
 
+    def _zero_pad_fid(self, fid: str) -> str:
+        """Return the fid zero-padded to the width of meta.total (e.g. 1 -> "01")."""
+        width = len(str(self.meta.total)) if self.meta.total else 0
+        return str(fid).zfill(width) if width else str(fid)
+
+    def get_fid_filename(self, fid: str) -> Optional[str]:
+        """Resolve the saved file name (with extension) for a fid.
+
+        Files are stored zero-padded by fid (see ``_build_saving_file_name``),
+        but the extension is only known at download time, so resolution is:
+
+          1. ``fid_2_file_name_map`` — populated during download / hydration.
+             For active tasks this always hits.
+          2. The task download folder ``<task_dir>/<padded_fid>.*`` — used while
+             a task is still downloading (folder exists, files on disk).
+          3. The finished archive ``<task_dir>.zip`` — a member whose stem is
+             ``padded_fid``. Finished tasks have their folder removed by
+             ``make_archive`` and ``fid_2_file_name_map`` cleared by
+             ``cleanup_download_info``, so this is the authoritative source for
+             cold finished tasks.
+
+        Lookups from (2)/(3) are cached into ``fid_2_file_name_map`` so a range
+        scan (e.g. RPC ``get_image``) is cheap and only walks the disk/zip once
+        per fid. Returns None if the fid cannot be resolved.
+        """
+        fid = str(fid)
+        cached = self.fid_2_file_name_map.get(fid)
+        if cached:
+            return cached
+
+        padded = self._zero_pad_fid(fid)
+        task_dir = self.get_task_dir()
+
+        # 2. Download folder (task still downloading, files on disk).
+        if os.path.isdir(task_dir):
+            for name in os.listdir(task_dir):
+                stem, _ = os.path.splitext(name)
+                if stem == padded:
+                    self.fid_2_file_name_map[fid] = name
+                    return name
+
+        # 3. Finished archive zip.
+        zip_path = "%s.zip" % task_dir
+        if os.path.isfile(zip_path):
+            try:
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    for member in zf.namelist():
+                        if member.endswith("/"):
+                            continue
+                        stem, _ = os.path.splitext(os.path.basename(member))
+                        if stem == padded:
+                            self.fid_2_file_name_map[fid] = member
+                            return member
+            except (OSError, zipfile.BadZipFile):
+                pass
+
+        return None
+
     def _content_type_to_ext(self, content_type):
         """Map HTTP content type to file extension, result contains leading dot."""
         content_type = (content_type or "").strip().lower()

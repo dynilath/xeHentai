@@ -322,20 +322,104 @@ class xeHentaiRPCExtended(object):
             self.xeH.update_config(**cfg_dict)
         return self.get_config()
            
-    def list_tasks(self, level = "download"):
-        reverse_mode = False
+    def list_tasks(self, states=None, *, tags=None, gid=None, url=None,
+                   offset=0, limit=100, order_by="updated_at", order_dir="DESC"):
+        """List tasks with a simple, single state filter plus tag filtering.
+
+        Parameters:
+          states: a phase_state int, or a list of phase_state ints to match
+                  (OR semantics — tasks in any of these states). A legacy
+                  string level ("download", "finished", "!waiting", ...) is
+                  still accepted for backward compatibility and translated to
+                  the corresponding state(s). Omit to match all states.
+          tags:   a tag string, or a list of tag strings. Tasks carrying ANY of
+                  these tags are matched (OR semantics).
+          gid/url: exact match.
+          offset/limit/order_by/order_dir: pagination and ordering.
+
+        Returns ``(ERR_NO_ERROR, {"total": N, "items": [...]})`` where each
+        item is a lightweight dict (guid/gid/url/phase_state/title/total).
+        Active tasks are enriched with their live ``done``/``phase_state``.
+        """
+        from . import session_store as _ss
+
+        states = self._normalize_states(states)
+        tags = self._normalize_tags(tags)
+
+        total, rows = _ss.query_tasks(
+            states=states, tags=tags, gid=gid, url=url,
+            offset=offset, limit=limit,
+            order_by=order_by, order_dir=order_dir,
+        )
+        items = []
+        for row in rows:
+            item = {
+                "guid": row.get("guid", ""),
+                "gid": row.get("gid", ""),
+                "url": row.get("url", ""),
+                "phase_state": int(row.get("phase_state", 0)),
+                "title": row.get("title", "") or "",
+                "total": int(row.get("total", 0) or 0),
+                "done": 0,
+            }
+            # Enrich with live state for active tasks.
+            active = self.xeH._get_active_task(item["guid"])
+            if active is not None:
+                item["done"] = len(active._flist_done)
+                item["phase_state"] = active.state
+                item["total"] = active.meta.total if active.meta else item["total"]
+            items.append(item)
+        return ERR_NO_ERROR, {"total": total, "items": items}
+
+    @classmethod
+    def _normalize_states(cls, states):
+        """Coerce the ``states`` argument into a list of int phase_states.
+
+        Accepts: an int, a list of ints, or a legacy string level (e.g.
+        "download", "!finished"). Returns None to mean "no state filter".
+        """
+        if states is None:
+            return None
+        if isinstance(states, str):
+            # Legacy level argument. "x" -> match state x; "!x" -> match all
+            # states except x (we approximate by enumerating known states).
+            return cls._level_to_states(states)
+        if isinstance(states, int):
+            return [states]
+        if isinstance(states, (list, tuple)):
+            out = [int(s) for s in states if s is not None]
+            return out or None
+        return None
+
+    @staticmethod
+    def _normalize_tags(tags):
+        """Coerce tags into a non-empty list of strings, or None."""
+        if tags is None:
+            return None
+        if isinstance(tags, str):
+            return [tags] if tags else None
+        if isinstance(tags, (list, tuple)):
+            out = [str(t) for t in tags if t]
+            return out or None
+        return None
+
+    @staticmethod
+    def _level_to_states(level):
+        """Translate a legacy string level into a list of phase_states.
+
+        Forward form "download" -> [TASK_STATE_DOWNLOAD]. The reverse form
+        ("!finished") is deliberately not supported here — callers should pass
+        an explicit ``states`` array instead. Returns None for unknown levels.
+        """
+        if not isinstance(level, str) or not level:
+            return None
         if level.startswith('!'):
-            reverse_mode = True
-            level = level[1:]
-        level = "TASK_STATE_%s" % level.upper()
-        if level not in globals():
-            return ERR_TASK_LEVEL_UNDEF, None
-        lv = globals()[level]
-        rt = [{_k:_v for _k, _v in v.to_dict().items() if _k not in
-            ('reload_map', 'dumplicated_file_map', 'page_q')}
-                for _, v in self._all_tasks.items() if
-                     (reverse_mode and v.state != lv) or (not reverse_mode and v.state == lv)]
-        return ERR_NO_ERROR, rt
+            # Reverse mode is intentionally dropped; the states array is the
+            # supported way to express "everything except X".
+            return None
+        key = "TASK_STATE_%s" % level.upper()
+        const = globals().get(key)
+        return [const] if isinstance(const, int) else None
     
     def _get_image_path(self, guid, fid):
         mime_map = {
@@ -346,51 +430,74 @@ class xeHentaiRPCExtended(object):
             "bmp": "image/bmp",
             "webp": "image/webp"
         }
-        if guid not in self._all_tasks:
+        t = self.xeH._hydrate_task(guid)
+        if t is None:
             return None, None, None
-        t = self._all_tasks[guid]
-        fid = str(fid)
-        f = t.get_fidpad(fid)
+        try:
+            fid = str(fid)
+            f = t.get_fid_filename(fid)
 
-        ext = os.path.splitext(f)[1].lower()[1:]
-        if ext not in mime_map:
-            mime = "application/octet-stream"
-        else:
-            mime = mime_map[ext]
-        return t.get_task_dir(), f, mime
-    
-    def _get_archive_path(self, guid):
-        if guid not in self._all_tasks:
-            return None, None
-        t = self._all_tasks[guid]
-        st = time.time()
-        pth = t.make_archive(False)
-        et = time.time()
-        if et - st > 0.1:
-            self.logger.warning('RPC: %.2fs taken to get archive' % (et - st))
-        return pth
-    
-    def get_image(self, guid, request_range=None):
-        if guid not in self._all_tasks:
-            return ERR_TASK_NOT_FOUND, None
-        t = self._all_tasks[guid]
-        start = 1
-        end = t.meta.total + 1
-        if request_range:
-            request_range = str(request_range)
-            _ = request_range.split(',')
-            if len(_) == 1:
-                start = int(request_range)
+            ext = os.path.splitext(f)[1].lower()[1:] if f else ""
+            if ext not in mime_map:
+                mime = "application/octet-stream"
             else:
-                start = int(_[0])
-            end = int(_[0]) + 1
-        rt = []
-        for fid in range(start, end):
-            fid_str = "%d" % fid
-            f = t.get_fidpad(fid_str)
-            uri = "%s/%s" % (t.guid, fid)
-            rt.append('/img/%s/%s/%s' % (hash_link(self.secret, uri), uri, f))
-        return ERR_NO_ERROR, rt
+                mime = mime_map[ext]
+            return t.get_task_dir(), f, mime
+        finally:
+            # Only evict if this RPC call hydrated a previously-cold task. If the
+            # task is actively running, leave it in the active set.
+            self._evict_if_cold(guid, t)
+
+    def _get_archive_path(self, guid):
+        t = self.xeH._hydrate_task(guid)
+        if t is None:
+            return None
+        try:
+            st = time.time()
+            pth = t.make_archive(False)
+            et = time.time()
+            if et - st > 0.1:
+                self.xeH.logger.warning('RPC: %.2fs taken to get archive' % (et - st))
+            return pth
+        finally:
+            self._evict_if_cold(guid, t)
+
+    def get_image(self, guid, request_range=None):
+        t = self.xeH._hydrate_task(guid)
+        if t is None:
+            return ERR_TASK_NOT_FOUND, None
+        try:
+            start = 1
+            end = t.meta.total + 1
+            if request_range:
+                request_range = str(request_range)
+                _ = request_range.split(',')
+                if len(_) == 1:
+                    start = int(request_range)
+                else:
+                    start = int(_[0])
+                end = int(_[0]) + 1
+            rt = []
+            for fid in range(start, end):
+                fid_str = "%d" % fid
+                f = t.get_fid_filename(fid_str)
+                if not f:
+                    # File not resolvable (e.g. not yet downloaded / missing in
+                    # archive). Skip it rather than emitting a broken /None URL.
+                    continue
+                uri = "%s/%s" % (t.guid, fid)
+                rt.append('/img/%s/%s/%s' % (hash_link(self.secret, uri), uri, f))
+            return ERR_NO_ERROR, rt
+        finally:
+            self._evict_if_cold(guid, t)
+
+    def _evict_if_cold(self, guid, task):
+        """Dehydrate a task hydrated by an RPC call, unless it is currently
+        being processed by the run loop (i.e. in the running set)."""
+        tc = self.xeH._task_control
+        if guid in tc._running_set:
+            return
+        self.xeH._dehydrate_task(guid)
 
     
     def __getattr__(self, k):

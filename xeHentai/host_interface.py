@@ -40,8 +40,12 @@ class HostInterface(Protocol):
     last_task_guid: Optional[str]
     """Last processed task GUID."""
 
-    _all_tasks: Dict[str, Task]
-    """Dictionary of all tasks by GUID."""
+    _active_tasks: Dict[str, Task]
+    """Dictionary of currently-executing tasks by GUID (bounded by async_task_concurrency).
+
+    Cold (waiting/finished/failed/paused) tasks live only in the SQLite store
+    and are hydrated into this dict on demand.
+    """
 
     # Methods
     def _add_task(self, url: str,*, enqueue_existed=False, **cfg_dict: Any) -> Tuple[int, Optional[str]]:
@@ -54,4 +58,16 @@ class HostInterface(Protocol):
 
     def _cleanup(self) -> None:
         """Clean up resources."""
+        ...
+
+    def _hydrate_task(self, guid: str) -> Optional[Task]:
+        """Load a single Task from the DB into the active set and return it."""
+        ...
+
+    def _dehydrate_task(self, guid: str) -> None:
+        """Persist an active Task back to the DB and evict it from memory."""
+        ...
+
+    def _get_active_task(self, guid: str) -> Optional[Task]:
+        """Return an in-memory active Task without hydrating. None if cold."""
         ...
