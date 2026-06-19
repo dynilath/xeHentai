@@ -853,13 +853,13 @@ class TaskControl:
                         if ret == 0 and new_guid:
                             self.logger.info(
                                 i18n.DF_MIGRATE_NEW_VERSION.format(
-                                    guid=task_guid, url=ex.new_version_url
+                                    guid=task_guid, gid=task.gid, url=ex.new_version_url
                                 )
                             )
                         else:
                             self.logger.warning(
                                 i18n.DF_MIGRATE_NEW_VERSION_FAIL.format(
-                                    guid=task_guid, ret=ret, url=ex.new_version_url
+                                    guid=task_guid, gid=task.gid, ret=ret, url=ex.new_version_url
                                 )
                             )
                     return

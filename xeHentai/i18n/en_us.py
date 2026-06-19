@@ -135,8 +135,8 @@ DF_FULLY_MATCHED_UP_TO_DATE = "[guid={guid}] task archive is up to date, no need
 DF_FULLY_MATCHED_UPDATED = "[guid={guid}] task archive metadata updated, new archive at {path}"
 DF_STATE_START_SCAN_PAGE = "[guid={guid} gid={gid}] task start scanning pages"
 DF_FILE_DOWNLOADED_SKIPPED = "[guid={guid}] skipped downloading image fid={fid} {reason}"
-DF_MIGRATE_NEW_VERSION = "[guid={guid}] gallery migrate to new version, new task url: {url}"
-DF_MIGRATE_NEW_VERSION_FAIL = "[guid={guid}] gallery migrate to new version failed [result={ret}] url: {url}"
+DF_MIGRATE_NEW_VERSION = "[guid={guid} gid={gid}] gallery migrate to new version, new task url: {url}"
+DF_MIGRATE_NEW_VERSION_FAIL = "[guid={guid} gid={gid}] gallery migrate to new version failed [result={ret}] url: {url}"
 
 # control flows
 CF_SCANDOWNLOADSKIP_DUPLICATE = "duplicate file found, skip downloading"
