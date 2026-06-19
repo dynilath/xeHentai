@@ -8,7 +8,7 @@ import os
 import re
 import sys
 import traceback
-from typing import Optional
+from typing import List, Optional
 
 from .request_wrapper import HttpRequest
 from .task import Task
@@ -48,10 +48,21 @@ state_2_names = {
     TASK_STATE_MAKE_ARCHIVE: "making archive",
     TASK_STATE_FINISHED: "finished",
     TASK_STATE_FAILED: "failed",
-    
     TASK_STATE_ERR_GALLERY_REMOVED: "gallery removed",
     TASK_STATE_ERR_GALLERY_NOT_FOUND: "gallery not found",
 }
+
+
+def parse_task(t: Task):
+    return {
+        "guid": t.guid,
+        "gid": t.gid,
+        "url": t.url,
+        "state": state_2_names.get(t.state, "unknown"),
+        "phase_state": t.state,
+        "done": len(t._flist_done),
+        "total": t.meta.total if t.meta else 0,
+    }
 
 
 class xeHentai(HostInterface):
@@ -215,21 +226,21 @@ class xeHentai(HostInterface):
         self.logger.set_log_path(self.config["log_path"])
         return ERR_NO_ERROR, ""
 
-    def _add_task(self, url,*, enqueue_existed=False, **cfg_dict):
+    def _add_task(self, url, *, enqueue_existed=False, **cfg_dict):
         """Internal: create, register, and enqueue a new task. Returns (error_code, guid_or_none)."""
         url = url.strip()
         cfg = {k: v for k, v in cfg_dict.items() if k in self._TASK_CONFIG_KEYS}
-        
+
         download_ori = cfg.get("download_ori", self.config.get("download_ori"))
         if download_ori and not self.has_login:
             self.logger.warning(i18n.XEH_DOWNLOAD_ORI_NEED_LOGIN)
-            
+
         if not re.match(r"^%s/[^/]+/\d+/[^/]+/*#*$" % RESTR_SITE, url):
             return ERR_URL_NOT_RECOGNIZED, None
-        
+
         if not self.has_login and re.match(r"^https*://exhentai\.org", url):
             return ERR_CANT_DOWNLOAD_EXH, None
-            
+
         t = Task(url, cfg, self.logger, core_config=self.config)
 
         existing_guid = self._gid_to_guid.get(str(t.gid))
@@ -237,7 +248,10 @@ class xeHentai(HostInterface):
             if enqueue_existed:
                 with self._task_lock:
                     existing = self._all_tasks[existing_guid]
-                    if existing.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED) or existing.state < 0:
+                    if (
+                        existing.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED)
+                        or existing.state < 0
+                    ):
                         existing.url = t.url
                         existing.config = t.config
                         existing.set_phase_state(TASK_STATE_WAITING)
@@ -256,22 +270,21 @@ class xeHentai(HostInterface):
         self._save_session(task=True, guid=t.guid)
         return 0, t.guid
 
-
     def add_task(self, url, **cfg_dict):
         """Public/RPC-facing wrapper for adding a task."""
-        return self._add_task(url, enqueue_existed=True, **cfg_dict)
-    
-    
+        cfg_dict.setdefault("enqueue_existed", True)
+        return self._add_task(url, **cfg_dict)
+
     def add_tasks(self, urls, **cfg_dict):
         """Add multiple tasks. Returns a list of (error_code, guid_or_none) for each url."""
         results = []
+        cfg_dict.setdefault("enqueue_existed", True)
         for url in urls:
-            code, guid = self._add_task(url, enqueue_existed=True, **cfg_dict)
+            code, guid = self._add_task(url, **cfg_dict)
             if code != ERR_NO_ERROR:
                 return code, results
             results.append(guid)
         return ERR_NO_ERROR, results
-        
 
     def del_task(self, guid):
         if guid not in self._all_tasks:
@@ -287,7 +300,10 @@ class xeHentai(HostInterface):
         if guid not in self._all_tasks:
             return ERR_TASK_NOT_FOUND, None
         t = self._all_tasks[guid]
-        if t.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED, TASK_STATE_FAILED) or t.state < 0:
+        if (
+            t.state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED, TASK_STATE_FAILED)
+            or t.state < 0
+        ):
             return ERR_TASK_CANNOT_PAUSE, None
         t.set_phase_state(TASK_STATE_PAUSED)
         self._task_control.mark_task_processed(guid)
@@ -338,7 +354,14 @@ class xeHentai(HostInterface):
         self._save_session(task=True)
         tc._exit = XEH_STATE_CLEAN
 
-    def _save_session(self, *, task=False, proxy_store=False, cookies=False, guid: Optional[str]=None):
+    def _save_session(
+        self,
+        *,
+        task=False,
+        proxy_store=False,
+        cookies=False,
+        guid: Optional[str] = None,
+    ):
         errors = []
         if task:
             try:
@@ -395,7 +418,9 @@ class xeHentai(HostInterface):
 
         with self._task_lock:
             for guid, task in self._all_tasks.items():
-                state_name = state_2_names.get(task.state, "unknown" if task.state >= 0 else "error")
+                state_name = state_2_names.get(
+                    task.state, "unknown" if task.state >= 0 else f"error.{task.state}"
+                )
                 top_status = self._task_control.get_task_top_status(guid, task)
                 top_name = task_top_status_name(top_status)
                 if top_name not in grouped:
@@ -415,18 +440,6 @@ class xeHentai(HostInterface):
         gid: Optional[str] = None,
         url: Optional[str] = None,
     ):
-        def parse_task(t: Task):
-            top_status = self._task_control.get_task_top_status(t.guid, t)
-            return {
-                "guid": t.guid,
-                "gid": t.gid,
-                "url": t.url,
-                "top_status": task_top_status_name(top_status),
-                "state": state_2_names.get(t.state, "unknown"),
-                "phase_state": t.state,
-                "done": len(t._flist_done),
-                "total": t.meta.total if t.meta else 0,
-            }
 
         if guid:
             t = self._all_tasks.get(guid)
@@ -441,6 +454,58 @@ class xeHentai(HostInterface):
                 if task.url == url:
                     return ERR_NO_ERROR, parse_task(task)
         return ERR_TASK_NOT_FOUND, None
+
+    def find_tasks(
+        self,
+        *,
+        state: Optional[int] = None,
+        top_status: Optional[int] = None,
+        max_count: Optional[int] = None,
+    ):
+        max_count = max_count or 128
+        results = []
+        with self._task_lock:
+            for guid, task in self._all_tasks.items():
+                if state is not None and task.state != state:
+                    continue
+                t_top_status = self._task_control.get_task_top_status(guid, task)
+                if top_status is not None and t_top_status != top_status:
+                    continue
+                results.append(parse_task(task))
+                if len(results) >= max_count:
+                    break
+
+        return ERR_NO_ERROR, results
+
+    def retry_tasks(
+        self,
+        *,
+        guid: Optional[str] = None,
+        guids: Optional[list[str]] = None,
+        gid: Optional[str] = None,
+        url: Optional[str] = None,
+    ):
+        targets: List[Task] = []
+        if guid:
+            t = self._all_tasks.get(guid)
+            if t:
+                targets.append(t)
+        if guids:
+            for g in guids:
+                t = self._all_tasks.get(g)
+                if t:
+                    targets.append(t)
+        if gid or url:
+            for t in self._all_tasks.values():
+                if t.gid == gid or t.url == url:
+                    targets.append(t)
+
+        targets = [t for t in targets if t.state < 0]
+        for t in targets:
+            t.set_phase_state(TASK_STATE_WAITING)
+            self._task_control.enqueue_waiting_task(t.guid)
+            self._save_session(task=True, guid=t.guid)
+        return ERR_NO_ERROR, [parse_task(t) for t in targets]
 
     def load_session(self):
         legacy_session = {}
