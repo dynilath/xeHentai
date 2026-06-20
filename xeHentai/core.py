@@ -17,7 +17,6 @@ from . import session_store
 from . import util
 from . import proxy
 from . import filters
-from .web import WebServer
 from .i18n import i18n
 from .util import logger
 from .host_interface import HostInterface
@@ -143,7 +142,6 @@ class xeHentai(HostInterface):
         self.global_reuse_index = reuse_index.ensure_reuse_index()
         self._task_control = TaskControl(self)
         self.load_session()
-        self.rpc = None
 
     def _new_guid(self) -> str:
         # Keep backward-compatible 8-char guid while guaranteeing runtime uniqueness.
@@ -296,13 +294,6 @@ class xeHentai(HostInterface):
                 os.makedirs(self.config["dir"])
             except OSError as ex:  # Python >2.5
                 self.logger.error(i18n.ERR_CANNOT_CREATE_DIR % self.config["dir"])
-        if not self.rpc and self.config["webui_port"] and self.config["webui_host"]:
-            self.rpc = WebServer(
-                self,
-                self.config["webui_host"],
-                int(self.config["webui_port"]),
-            )
-            self.rpc.start()
         self.logger.set_log_path(self.config["log_path"])
         return ERR_NO_ERROR, ""
 
@@ -444,9 +435,6 @@ class xeHentai(HostInterface):
             self._dehydrate_task(guid)
         tc.join_all()
         self.logger.cleanup()
-        # Signal the web server to shut down gracefully.
-        if self.rpc:
-            self.rpc.stop()
         tc._exit = XEH_STATE_CLEAN
 
     def _save_session(

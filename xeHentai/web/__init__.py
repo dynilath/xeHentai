@@ -5,16 +5,21 @@ WebSocket endpoint, and UI page routes. `WebServer` wraps uvicorn in a daemon
 thread, replacing the legacy RPCServer.
 """
 
+from __future__ import annotations
+
 import asyncio
 import os
 import threading
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
 from xeHentai.const import TASK_STATE_FINISHED
+
+if TYPE_CHECKING:
+    from ..host import HostProtocol
 
 from .api_tasks import router as tasks_router
 from .api_config import router as config_router
@@ -40,7 +45,7 @@ def _render(name: str, context: dict) -> HTMLResponse:
     return HTMLResponse(template.render(**context))
 
 
-def create_app(xeH) -> FastAPI:
+def create_app(xeH: HostProtocol) -> FastAPI:
     """Build the FastAPI application with all routers and state."""
     app = FastAPI(
         title="xeHentai WebUI",
@@ -551,9 +556,14 @@ class WebServer:
 
     Replaces the legacy RPCServer thread. Uses programmatic uvicorn API
     so it can run in-process alongside the main asyncio task loop.
+
+    The `xeH` parameter receives the xeHentai host instance.  It is typed
+    as ``HostProtocol`` (defined in ``xeHentai.host``) rather than the
+    concrete ``xeHentai`` class, which avoids a type-level import cycle
+    between ``core.py`` and ``web/__init__.py``.
     """
 
-    def __init__(self, xeH, bind_host: str, bind_port: int, secret: str | None = None):
+    def __init__(self, xeH: HostProtocol, bind_host: str, bind_port: int, secret: str | None = None):
         self._xeH = xeH
         self._host = bind_host
         self._port = bind_port

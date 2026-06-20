@@ -10,6 +10,7 @@ import traceback
 from threading import Thread
 from .i18n import i18n
 from .core import xeHentai
+from .web import WebServer
 from .const import *
 from .const import __version__
 from .util import logger
@@ -50,6 +51,16 @@ def main(xeH, opt):
     if opt.username and opt.key and not xeH.has_login:
         xeH.login_exhentai(opt.username, opt.key)
 
+    # ── WebServer lifecycle (owned by the composition root, not xeHentai) ──
+    web_server = None
+    if xeH.config["webui_port"] and xeH.config["webui_host"]:
+        web_server = WebServer(
+            xeH,
+            xeH.config["webui_host"],
+            int(xeH.config["webui_port"]),
+        )
+        web_server.start()
+
     try:
         Thread(target = xeH._task_loop, name = "main").start()
         while xeH._exit < XEH_STATE_CLEAN:
@@ -64,6 +75,9 @@ def main(xeH, opt):
         xeH._cleanup()
     except KeyboardInterrupt:
         pass
+    finally:
+        if web_server:
+            web_server.stop()
     os._exit(0)
 
 def parse_opt():

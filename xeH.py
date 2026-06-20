@@ -1,5 +1,5 @@
 #!/usr/bin/env python
 
-from xeHentai import cli
+from cli import start
 
-cli.start()
+start()
