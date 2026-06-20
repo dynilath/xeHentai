@@ -1,0 +1,156 @@
+{% extends "base.html.j2" %}
+{% block title %}Read: {{ title or gid }} - xeHentai{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+    <!-- Header (comic mode: static; scroll mode: floating) -->
+    <div id="reader-header" class="flex items-center justify-between {% if scroll_mode %}fixed top-0 left-0 right-0 z-30 bg-white/90 backdrop-blur-sm shadow-sm px-6 py-3 transition-transform duration-300{% endif %}">
+        <div class="flex items-center gap-4">
+            <a href="/tasks/{{ guid }}" class="text-sm text-gray-500 hover:text-blue-600">&larr; Back</a>
+            <h1 class="text-lg font-bold text-gray-900 truncate max-w-lg">{{ title or gid }}</h1>
+        </div>
+        <div class="flex items-center gap-3">
+            <span id="page-counter" class="text-sm text-gray-500"></span>
+            <button id="mode-toggle" onclick="toggleMode()"
+                    class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 hover:bg-gray-100">
+                {% if scroll_mode %}Comic Mode{% else %}Scroll Mode{% endif %}
+            </button>
+        </div>
+    </div>
+
+    {% if images %}
+    <div id="reader-container" class="mx-auto {% if not scroll_mode %}max-w-4xl{% endif %}{% if scroll_mode %} pt-16{% endif %}">
+        {% if scroll_mode %}
+            {% for img in images %}
+            <div class="mb-1">
+                <img src="{{ img.url }}" alt="Page {{ img.fid }}"
+                     loading="lazy" class="w-full h-auto block cursor-pointer"
+                     onclick="showBar()" />
+            </div>
+            {% endfor %}
+        {% else %}
+            {% for img in images %}
+            <div id="page-{{ img.fid }}" class="reader-page {% if loop.index0 > 0 %}hidden{% endif %}">
+                <img src="{{ img.url }}" alt="Page {{ img.fid }}"
+                     class="w-full h-auto block cursor-pointer"
+                     onclick="nextPage()" />
+                <div class="text-center text-sm text-gray-400 mt-2">{{ img.fid }} / {{ total }}</div>
+            </div>
+            {% endfor %}
+            <div class="flex justify-between mt-4">
+                <button onclick="prevPage()" id="btn-prev"
+                        class="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm font-medium">&larr; Prev</button>
+                <button onclick="nextPage()" id="btn-next"
+                        class="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm font-medium">Next &rarr;</button>
+            </div>
+        {% endif %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-center py-12">No images available yet.</p>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var currentPage = {{ start_page | default(1) }};
+var totalPages = {{ total }};
+var scrollMode = {{ 'true' if scroll_mode else 'false' }};
+var winStart = {{ win_start | default(1) }};
+var loadedEnd = {{ win_end | default(total) }};
+var guid = "{{ guid }}";
+var batchHalf = 10;  // trigger preload at halfway point
+var preloading = false;
+
+function updateNav() {
+    var p = document.getElementById("btn-prev");
+    var n = document.getElementById("btn-next");
+    if (p) p.style.visibility = currentPage <= 1 ? "hidden" : "visible";
+    if (n) n.style.visibility = currentPage >= totalPages ? "hidden" : "visible";
+    document.getElementById("page-counter").textContent = currentPage + " / " + totalPages;
+}
+
+function padPage(n) {
+    return String(n).padStart(totalPages.toString().length, "0");
+}
+
+function preloadNextBatch(triggerPage) {
+    if (preloading || loadedEnd >= totalPages) return;
+    var nextFrom = loadedEnd + 1;
+    var nextTo = Math.min(loadedEnd + batchHalf, totalPages);
+    preloading = true;
+    htmx.ajax("GET", "/tasks/" + guid + "/pages?from=" + nextFrom + "&to=" + nextTo, {
+        target: "#reader-container",
+        swap: "beforeend"
+    }).then(function() {
+        loadedEnd = nextTo;
+        preloading = false;
+        // if we already passed the next threshold, trigger again
+        if (currentPage >= loadedEnd - batchHalf + 1 && loadedEnd < totalPages) {
+            preloadNextBatch(currentPage);
+        }
+    }).catch(function() {
+        preloading = false;
+    });
+}
+
+function showPage(n) {
+    if (n < 1 || n > totalPages) return;
+
+    // Preload next batch when we're at the halfway point
+    if (!scrollMode && n >= loadedEnd - batchHalf + 1 && loadedEnd < totalPages) {
+        preloadNextBatch(n);
+    }
+
+    var p = document.getElementById("page-" + padPage(n));
+    if (p) {
+        document.querySelectorAll(".reader-page").forEach(function(el) { el.classList.add("hidden"); });
+        p.classList.remove("hidden");
+        currentPage = n;
+        updateNav();
+        window.scrollTo({top: 0, behavior: "instant"});
+    } else if (n >= 1 && n <= totalPages) {
+        // outside window: reload at target page
+        var url = new URL(location.href);
+        url.searchParams.set("page", n);
+        location.href = url.toString();
+    }
+}
+
+function nextPage() { if (currentPage < totalPages) showPage(currentPage + 1); }
+function prevPage() { if (currentPage > 1) showPage(currentPage - 1); }
+
+function toggleMode() {
+    var url = new URL(location.href);
+    url.searchParams.set("scroll", scrollMode ? "0" : "1");
+    location.href = url.toString();
+}
+
+document.addEventListener("keydown", function(e) {
+    if (scrollMode) return;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === " ") { e.preventDefault(); nextPage(); }
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); prevPage(); }
+});
+
+updateNav();
+if (!scrollMode && currentPage > 1) showPage(currentPage);
+
+// Scroll mode: floating bar hide on scroll down, show on click/tap
+var lastScrollY = 0;
+var bar = document.getElementById("reader-header");
+if (scrollMode && bar) {
+    window.addEventListener("scroll", function() {
+        var sy = window.scrollY;
+        if (sy > lastScrollY && sy > 80) {
+            bar.style.transform = "translateY(-100%)";
+        } else if (sy < lastScrollY) {
+            bar.style.transform = "translateY(0)";
+        }
+        lastScrollY = sy;
+    }, {passive: true});
+}
+function showBar() {
+    if (bar && scrollMode) { bar.style.transform = "translateY(0)"; lastScrollY = window.scrollY; }
+}
+</script>
+{% endblock %}

@@ -17,7 +17,7 @@ from . import session_store
 from . import util
 from . import proxy
 from . import filters
-from .rpc import RPCServer
+from .web import WebServer
 from .i18n import i18n
 from .util import logger
 from .host_interface import HostInterface
@@ -296,22 +296,12 @@ class xeHentai(HostInterface):
                 os.makedirs(self.config["dir"])
             except OSError as ex:  # Python >2.5
                 self.logger.error(i18n.ERR_CANNOT_CREATE_DIR % self.config["dir"])
-        if not self.rpc and self.config["rpc_port"] and self.config["rpc_interface"]:
-            self.rpc = RPCServer(
+        if not self.rpc and self.config["webui_port"] and self.config["webui_host"]:
+            self.rpc = WebServer(
                 self,
-                (self.config["rpc_interface"], int(self.config["rpc_port"])),
-                secret=(
-                    None
-                    if "rpc_secret" not in self.config
-                    else self.config["rpc_secret"]
-                ),
-                logger=self.logger,
+                self.config["webui_host"],
+                int(self.config["webui_port"]),
             )
-            if (
-                not RE_LOCAL_ADDR.match(self.config["rpc_interface"])
-                and not self.config["rpc_secret"]
-            ):
-                self.logger.warning(i18n.RPC_TOO_OPEN % self.config["rpc_interface"])
             self.rpc.start()
         self.logger.set_log_path(self.config["log_path"])
         return ERR_NO_ERROR, ""
@@ -361,13 +351,13 @@ class xeHentai(HostInterface):
 
     def add_task(self, url, **cfg_dict):
         """Public/RPC-facing wrapper for adding a task."""
-        cfg_dict.setdefault("enqueue_existed", True)
+        cfg_dict.setdefault("enqueue_existed", False)
         return self._add_task(url, **cfg_dict)
 
     def add_tasks(self, urls, **cfg_dict):
         """Add multiple tasks. Returns a list of (error_code, guid_or_none) for each url."""
         results = []
-        cfg_dict.setdefault("enqueue_existed", True)
+        cfg_dict.setdefault("enqueue_existed", False)
         for url in urls:
             code, guid = self._add_task(url, **cfg_dict)
             if code != ERR_NO_ERROR:
@@ -377,10 +367,11 @@ class xeHentai(HostInterface):
 
     def del_task(self, guid):
         row = session_store.get_task_row(guid)
-        if row is None and guid not in self._active_tasks:
+        if row is None:
             return ERR_TASK_NOT_FOUND, None
-        # Cannot delete a task that is currently running.
         active = self._active_tasks.get(guid)
+        if active is None:
+            return ERR_TASK_NOT_FOUND, None
         cur_state = active.state if active else int(row.get("phase_state", TASK_STATE_WAITING))
         if TASK_STATE_PAUSED < cur_state < TASK_STATE_FINISHED:
             return ERR_DELETE_RUNNING_TASK, None
@@ -393,9 +384,11 @@ class xeHentai(HostInterface):
 
     def pause_task(self, guid):
         row = session_store.get_task_row(guid)
-        if row is None and guid not in self._active_tasks:
+        if row is None:
             return ERR_TASK_NOT_FOUND, None
         active = self._active_tasks.get(guid)
+        if active is None:
+            return ERR_TASK_NOT_FOUND, None
         cur_state = active.state if active else int(row.get("phase_state", TASK_STATE_WAITING))
         if (
             cur_state in (TASK_STATE_PAUSED, TASK_STATE_FINISHED, TASK_STATE_FAILED)
@@ -414,9 +407,11 @@ class xeHentai(HostInterface):
 
     def resume_task(self, guid):
         row = session_store.get_task_row(guid)
-        if row is None and guid not in self._active_tasks:
+        if row is None:
             return ERR_TASK_NOT_FOUND, None
         active = self._active_tasks.get(guid)
+        if active is None:
+            return ERR_TASK_NOT_FOUND, None
         cur_state = active.state if active else int(row.get("phase_state", TASK_STATE_WAITING))
         if TASK_STATE_PAUSED < cur_state < TASK_STATE_FINISHED:
             return ERR_TASK_CANNOT_RESUME, None
@@ -449,18 +444,9 @@ class xeHentai(HostInterface):
             self._dehydrate_task(guid)
         tc.join_all()
         self.logger.cleanup()
-        # let's send a request to rpc server to unblock it
+        # Signal the web server to shut down gracefully.
         if self.rpc:
-            self.rpc._exit = lambda x: True
-            import requests
-
-            try:
-                requests.get(
-                    "http://%s:%s/" % (self.cfg["rpc_interface"], self.cfg["rpc_port"])
-                )
-            except:
-                pass
-            self.rpc.join()
+            self.rpc.stop()
         tc._exit = XEH_STATE_CLEAN
 
     def _save_session(

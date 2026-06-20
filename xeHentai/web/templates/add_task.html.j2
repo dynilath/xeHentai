@@ -1,0 +1,203 @@
+{% extends "base.html.j2" %}
+{% block title %}Add Task - xeHentai{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-6">
+    <h1 class="text-2xl font-bold text-gray-900">Add Tasks</h1>
+
+    <div class="bg-white rounded-lg shadow-sm border p-6">
+        <!-- Drop zone -->
+        <div id="drop-zone"
+             class="relative border-2 border-dashed border-gray-300 rounded-lg p-6 mb-4 transition-colors hover:border-blue-400"
+             ondragover="dragOver(event)" ondragleave="dragLeave(event)" ondrop="dropFile(event)">
+            <div id="drop-hint" class="text-center text-sm text-gray-400 pointer-events-none">
+                Drop a <code class="text-xs bg-gray-100 px-1 rounded">.txt</code> file here to populate URLs
+            </div>
+            <label for="url-input" class="block text-sm font-medium text-gray-700 mb-2">
+                Gallery URLs <span class="text-gray-400 font-normal">(one per line)</span>
+            </label>
+            <textarea id="url-input"
+                      class="w-full h-64 rounded-lg border border-gray-300 px-4 py-3 text-sm font-mono resize-y focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="https://e-hentai.org/g/1234567/abc123def4/&#10;https://exhentai.org/g/7654321/fed321cba0/&#10;..."></textarea>
+            <div class="flex items-center justify-between mt-2">
+                <span id="url-count" class="text-sm text-gray-400">0 URLs</span>
+                <button type="button" onclick="clearInput()"
+                        class="text-xs text-gray-400 hover:text-gray-600 underline">Clear</button>
+            </div>
+        </div>
+
+        <label class="flex items-center gap-2 my-4 text-sm text-gray-700">
+            <input type="checkbox" id="enqueue-existed" class="rounded border-gray-300" />
+            Re-enqueue existing tasks (reset and add to queue if gid already exists)
+        </label>
+
+        <!-- Submit -->
+        <button id="submit-btn" onclick="submitTasks()"
+                class="w-full py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors">
+            Add Tasks
+        </button>
+    </div>
+
+    <!-- Log -->
+    <div class="bg-white rounded-lg shadow-sm border">
+        <div class="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
+            <h2 class="text-sm font-semibold text-gray-700">Log</h2>
+            <span id="progress" class="text-xs text-gray-400 hidden"></span>
+        </div>
+        <div id="log-container" class="p-4 max-h-96 overflow-y-auto space-y-2">
+            <div id="log-empty" class="text-sm text-gray-400 text-center py-4">Submit URLs to see results here.</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var BATCH_SIZE = 128;
+var busy = false;
+var logCount = 0;
+
+// ── Drag & drop ──────────────────────────────────────────────────────
+function dragOver(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.classList.add("border-blue-400", "bg-blue-50");
+}
+
+function dragLeave(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.classList.remove("border-blue-400", "bg-blue-50");
+}
+
+function dropFile(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.classList.remove("border-blue-400", "bg-blue-50");
+
+    var file = e.dataTransfer.files[0];
+    if (!file || (!file.name.endsWith(".txt") && !file.name.endsWith(".urls") && !file.name.endsWith(".csv"))) {
+        return;
+    }
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+        var text = ev.target.result.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        var ta = document.getElementById("url-input");
+        if (ta.value && ta.value.slice(-1) !== "\n") text = "\n" + text;
+        ta.value = (ta.value + text).trim();
+        updateCount();
+    };
+    reader.readAsText(file);
+}
+
+// ── URL parsing ──────────────────────────────────────────────────────
+function parseUrls() {
+    return document.getElementById("url-input").value
+        .split("\n")
+        .map(function(s) { return s.trim(); })
+        .filter(function(s) { return s.length > 0 && /^https?:\/\//.test(s); });
+}
+
+function updateCount() {
+    var n = parseUrls().length;
+    document.getElementById("url-count").textContent = n + " URL" + (n !== 1 ? "s" : "");
+}
+
+document.getElementById("url-input").addEventListener("input", updateCount);
+
+function clearInput() {
+    document.getElementById("url-input").value = "";
+    updateCount();
+}
+
+// ── Log helpers ──────────────────────────────────────────────────────
+function logEntry(cls, msg) {
+    logCount++;
+    var el = document.getElementById("log-empty");
+    if (el) el.remove();
+
+    var div = document.createElement("div");
+    div.className = "text-xs font-mono px-3 py-2 rounded border " + cls;
+    div.textContent = "[" + new Date().toLocaleTimeString() + "] " + msg;
+    var container = document.getElementById("log-container");
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+
+function logInfo(msg) {
+    logEntry("bg-blue-50 border-blue-200 text-blue-800", msg);
+}
+
+function logSuccess(msg) {
+    logEntry("bg-green-50 border-green-200 text-green-800", msg);
+}
+
+function logError(msg) {
+    logEntry("bg-red-50 border-red-200 text-red-800", msg);
+}
+
+// ── Submission ───────────────────────────────────────────────────────
+async function submitTasks() {
+    if (busy) return;
+    var urls = parseUrls();
+    if (urls.length === 0) {
+        logError("No valid URLs to submit.");
+        return;
+    }
+
+    busy = true;
+    var btn = document.getElementById("submit-btn");
+    btn.disabled = true;
+    btn.textContent = "Submitting...";
+    var progressEl = document.getElementById("progress");
+    progressEl.classList.remove("hidden");
+
+    var total = urls.length;
+    var batches = [];
+    for (var i = 0; i < total; i += BATCH_SIZE) {
+        batches.push(urls.slice(i, i + BATCH_SIZE));
+    }
+
+    logInfo("Submitting " + total + " URL" + (total !== 1 ? "s" : "") + " in " + batches.length + " batch" + (batches.length !== 1 ? "es" : "") + " (max " + BATCH_SIZE + " per batch)...");
+
+    var ok = 0;
+    var fail = 0;
+
+    for (var b = 0; b < batches.length; b++) {
+        progressEl.textContent = "Batch " + (b + 1) + " / " + batches.length;
+        var batchUrls = batches[b];
+        try {
+            var enqueueExisted = document.getElementById("enqueue-existed").checked;
+            var body = { urls: batchUrls };
+            if (enqueueExisted) body.enqueue_existed = true;
+            var resp = await fetch("/api/tasks/bulk", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            });
+
+            if (resp.ok) {
+                var data = await resp.json();
+                var created = batchUrls.length; // bulk endpoint returns message like "N tasks created"
+                ok += created;
+                logSuccess("Batch " + (b + 1) + ": " + data.message + " (sent " + batchUrls.length + " URLs)");
+            } else {
+                var errText = await resp.text();
+                fail += batchUrls.length;
+                logError("Batch " + (b + 1) + ": HTTP " + resp.status + " — " + (errText || "unknown error"));
+            }
+        } catch (ex) {
+            fail += batchUrls.length;
+            logError("Batch " + (b + 1) + ": network error — " + (ex.message || ex));
+        }
+    }
+
+    progressEl.classList.add("hidden");
+    logInfo("Done: " + ok + " succeeded, " + fail + " failed out of " + total + " total.");
+    btn.disabled = false;
+    btn.textContent = "Add Tasks";
+    busy = false;
+    clearInput();
+}
+</script>
+{% endblock %}

@@ -1,0 +1,94 @@
+{# Reusable Jinja2 macros for xeHentai WebUI #}
+
+{% macro status_badge(state, state_name, state_css) %}
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{ state_css }}">
+    {{ state_name }}
+</span>
+{% endmacro %}
+
+{% macro progress_bar(done, total) %}
+{% set pct = (done / total * 100)|round if total > 0 else 0 %}
+<div class="w-full bg-gray-200 rounded-full h-2.5">
+    <div class="bg-blue-600 h-2.5 rounded-full transition-all duration-500" style="width: {{ pct }}%"></div>
+</div>
+<span class="text-xs text-gray-500 mt-1">{{ done }}/{{ total }} ({{ pct }}%)</span>
+{% endmacro %}
+
+{% macro task_row(task) %}
+<tr id="task-row-{{ task.guid }}" class="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+    <td class="py-3 px-4">
+        <a href="/tasks/{{ task.guid }}" class="text-blue-600 hover:text-blue-800 font-mono text-sm">
+            {{ task.guid[:8] }}
+        </a>
+    </td>
+    <td class="py-3 px-4 text-sm text-gray-500 font-mono">{{ task.gid }}</td>
+    <td class="py-3 px-4 max-w-xs">
+        <div class="text-sm text-gray-900 truncate" title="{{ task.title }}">{{ task.title or task.gid }}</div>
+    </td>
+    <td class="py-3 px-4">
+        <span class="task-state inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{ task.state_css }}">{{ task.state_name }}</span>
+    </td>
+    <td class="py-3 px-4 w-48">
+        <div class="task-progress-bar w-full bg-gray-200 rounded-full h-2.5">
+            <div class="bg-blue-600 h-2.5 rounded-full transition-all duration-500" style="width: {{ (task.done / task.total * 100)|round if task.total > 0 else 0 }}%"></div>
+        </div>
+        <span class="task-progress-label text-xs text-gray-500 mt-1">{{ task.done }}/{{ task.total }} ({{ (task.done / task.total * 100)|round if task.total > 0 else 0 }}%)</span>
+    </td>
+    <td class="py-3 px-4">
+        <div class="flex space-x-2" hx-target="closest tr" hx-swap="outerHTML">
+            {% if task.state > 0 and task.state < 20 %}
+            <button hx-post="/api/tasks/{{ task.guid }}/pause"
+                    class="text-xs px-2 py-1 rounded bg-yellow-100 text-yellow-700 hover:bg-yellow-200">
+                Pause
+            </button>
+            {% elif task.state == 0 %}
+            <button hx-post="/api/tasks/{{ task.guid }}/resume"
+                    class="text-xs px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200">
+                Resume
+            </button>
+            {% elif task.state < 0 %}
+            <button hx-post="/api/tasks/retry" hx-ext="json-enc" hx-vals='{"guid":"{{ task.guid }}"}'
+                    hx-swap="none"
+                    class="text-xs px-2 py-1 rounded bg-orange-100 text-orange-700 hover:bg-orange-200">
+                Retry
+            </button>
+            {% endif %}
+            {% if task.state == 20 %}
+            <a href="/tasks/{{ task.guid }}/read"
+               class="text-xs px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200">
+                Read
+            </a>
+            {% endif %}
+            <button hx-delete="/api/tasks/{{ task.guid }}"
+                    hx-confirm="Delete this task?"
+                    class="text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200">
+                Delete
+            </button>
+        </div>
+    </td>
+</tr>
+{% endmacro %}
+
+{% macro pagination(total, offset, limit, base_url, states='', gid='', q='') %}
+{% set pages = (total / limit)|round(0, 'ceil')|int %}
+{% set current = (offset / limit)|int + 1 %}
+{% set qs = '' %}
+{% if states %}{% set qs = qs + '&states=' + states %}{% endif %}
+{% if gid %}{% set qs = qs + '&gid=' + gid %}{% endif %}
+{% if q %}{% set qs = qs + '&q=' + q %}{% endif %}
+{% if pages > 1 %}
+<div class="flex items-center justify-between mt-4">
+    <span class="text-sm text-gray-500">{{ total }} total, page {{ current }} of {{ pages }}</span>
+    <div class="flex space-x-1">
+        {% if offset > 0 %}
+        <a href="{{ base_url }}?offset={{ [offset - limit, 0]|max }}&limit={{ limit }}{{ qs }}"
+           class="px-3 py-1 text-sm border rounded hover:bg-gray-100">Prev</a>
+        {% endif %}
+        {% if offset + limit < total %}
+        <a href="{{ base_url }}?offset={{ offset + limit }}&limit={{ limit }}{{ qs }}"
+           class="px-3 py-1 text-sm border rounded hover:bg-gray-100">Next</a>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endmacro %}

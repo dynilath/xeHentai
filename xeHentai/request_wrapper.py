@@ -15,7 +15,8 @@ import urllib3
 from typing import Callable, Dict, Optional
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-urllib3.util.ssl_.DEFAULT_CIPHERS += ":HIGH:!DH:!aNULL"  # type: ignore
+if urllib3.util.ssl_ and hasattr(urllib3.util.ssl_, "DEFAULT_CIPHERS"):  # type: ignore
+    urllib3.util.ssl_.DEFAULT_CIPHERS += ":HIGH:!DH:!aNULL"  # type: ignore
 
 
 def _is_509gif(content: str) -> bool:

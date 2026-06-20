@@ -166,6 +166,35 @@ class TaskControl:
         self._running_set.discard(task_guid)
         self.set_task_top_status(task_guid, TASK_TOP_STATUS_PROCESSED)
 
+    def _emit_ws_task_state_change(self, task: Task, guid: str):
+        """Emit WebSocket task state change event if ws module is loaded."""
+        try:
+            from .web.ws import emit_task_state_change
+            emit_task_state_change(guid, task.state, self._runtime_top_status.get(guid, 0))
+        except ImportError:
+            pass
+
+    def _emit_ws_task_progress(self, task: Task, guid: str):
+        """Emit WebSocket task progress event (no state change, just progress)."""
+        try:
+            from .web.ws import emit_task_progress
+            emit_task_progress(
+                guid, task.gid, task.state,
+                len(task._flist_done),
+                task.meta.total if task.meta else 0,
+                task.meta.title if task.meta else "",
+            )
+        except ImportError:
+            pass
+
+    def _emit_ws_task_completed(self, task: Task, guid: str, state: str, error: str | None = None):
+        """Emit WebSocket task completed/failed event."""
+        try:
+            from .web.ws import emit_task_completed
+            emit_task_completed(guid, task.gid, state, error)
+        except ImportError:
+            pass
+
     def clear_task_top_status(self, task_guid: str) -> None:
         self._waiting_set.discard(task_guid)
         self._running_set.discard(task_guid)
@@ -601,6 +630,7 @@ class TaskControl:
                             guid=task_guid, fid=scan_result.fid, fname=img_file_name
                         )
                     )
+                    self._emit_ws_task_progress(task, task_guid)
 
                     log_task_state("img_downloaded")
                     return
@@ -694,6 +724,7 @@ class TaskControl:
 
         if task.state == TASK_STATE_WAITING:
             task.set_phase_state(TASK_STATE_GET_META)
+            self._emit_ws_task_state_change(task, task_guid)
 
         # Stage 1: GET_META
         # GET_META should always run for any task
@@ -725,6 +756,7 @@ class TaskControl:
 
         if task.state == TASK_STATE_GET_META:
             task.set_phase_state(TASK_STATE_SCAN_PAGE)
+            self._emit_ws_task_state_change(task, task_guid)
         else:
             missing = [
                 str(i + 1)
@@ -773,6 +805,7 @@ class TaskControl:
             self._host._save_session(task=True, proxy_store=True, guid=task_guid)
 
             task.set_phase_state(TASK_STATE_SCAN_IMG)
+            self._emit_ws_task_state_change(task, task_guid)
 
         # build page queue for later stages, do this after scan_page to ensure the queue is up to date with scanned pages
         await self._download_scheduler.submit(lambda: task.build_page_queue())
@@ -795,6 +828,7 @@ class TaskControl:
                 task.set_phase_state(TASK_STATE_MAKE_ARCHIVE)
             else:
                 task.set_phase_state(TASK_STATE_FINISHED)
+            self._emit_ws_task_state_change(task, task_guid)
 
         # After all pages are processed, make archive
         if task.state <= TASK_STATE_MAKE_ARCHIVE:
@@ -817,6 +851,7 @@ class TaskControl:
 
         task.set_phase_state(TASK_STATE_FINISHED)
         self.mark_task_processed(task_guid)
+        self._emit_ws_task_completed(task, task_guid, "finished")
         self.logger.info(i18n.TASK_FINISHED.format(guid=task.guid, gid=task.gid))
 
         task.cleanup_download_info()
@@ -879,6 +914,7 @@ class TaskControl:
                     if task:
                         task.set_phase_state(TASK_STATE_FINISHED)
                         self.mark_task_processed(task_guid)
+                        self._emit_ws_task_completed(task, task_guid, "finished")
                     return
                 except TaskAbort as ex:
                     self.logger.debug(
@@ -898,6 +934,10 @@ class TaskControl:
                     if task:
                         task.set_phase_state(ex.task_state)
                         self.mark_task_processed(task_guid)
+                        self._emit_ws_task_completed(
+                            task, task_guid, "failed",
+                            error=str(ex.reason) if hasattr(ex, 'reason') else str(ex),
+                        )
                         if ex.task_state == TASK_STATE_ERR_GALLERY_REMOVED:
                             self.logger.error(i18n.TS_ERR_GALLERY_REMOVED.format(guid=task_guid, gid=task.gid))
                             return
@@ -986,6 +1026,7 @@ class TaskControl:
 
                     self._host.last_task_guid = task_guid
                     self.mark_task_processing(task_guid)
+                    self._emit_ws_task_state_change(task, task_guid)
                     self.logger.info(
                         i18n.TASK_START.format(guid=task_guid, gid=task.gid)
                     )

@@ -4,10 +4,11 @@
 import json
 import os
 import sqlite3
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from .const import TASK_STATE_WAITING
+from .const import TASK_STATE_FINISHED, TASK_STATE_PAUSED, TASK_STATE_WAITING
 
 TASKS_FILE = 'h.tasks.json'
 TASKS_DB_FILE = 'h.tasks.db'
@@ -32,13 +33,28 @@ CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
 '''
 
 _TASKS_CACHE: Dict[str, Dict[str, Any]] = {}
+_schema_lock = threading.Lock()
+_schema_ensured = False
+
+
+def _ensure_schema_once(db_path: str = TASKS_DB_FILE) -> None:
+    """Run schema migration once per process lifetime (thread-safe)."""
+    global _schema_ensured
+    if _schema_ensured:
+        return
+    with _schema_lock:
+        if _schema_ensured:
+            return
+        _ensure_schema(db_path)
+        _schema_ensured = True
 
 
 def _connect(db_path: str = TASKS_DB_FILE) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA synchronous=NORMAL')
+    conn.execute('PRAGMA busy_timeout=5000')
     return conn
 
 
@@ -99,7 +115,8 @@ def _extract_task_row(task_payload: Dict[str, Any], fallback_guid: str) -> Dict[
     gid = str(payload.get('gid', '') or '')
     url = str(payload.get('url', '') or '')
     phase_state = int(payload.get('state', TASK_STATE_WAITING) or TASK_STATE_WAITING)
-    meta = payload.get('meta') if isinstance(payload.get('meta'), dict) else {}
+    _meta = payload.get('meta')
+    meta = _meta if isinstance(_meta, dict) else {}
     title = str(meta.get('title', '') or '')
     total = int(meta.get('total', 0) or 0)
     payload['guid'] = guid
@@ -118,7 +135,7 @@ def _extract_task_row(task_payload: Dict[str, Any], fallback_guid: str) -> Dict[
 
 
 def _save_tasks_sqlite(tasks: Dict[str, Any], db_path: str = TASKS_DB_FILE) -> None:
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     now_ts = int(time.time())
     try:
@@ -170,7 +187,7 @@ def _save_tasks_sqlite(tasks: Dict[str, Any], db_path: str = TASKS_DB_FILE) -> N
 
 
 def _load_tasks_sqlite(db_path: str = TASKS_DB_FILE) -> Dict[str, Any]:
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     try:
         rows = conn.execute(
@@ -221,7 +238,7 @@ def save_tasks(tasks: Dict[str, Any], path: str = TASKS_DB_FILE) -> None:
 
 
 def save_single_task(guid: str, task_payload: Dict[str, Any], db_path: str = TASKS_DB_FILE) -> None:
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     now_ts = int(time.time())
     try:
@@ -294,12 +311,45 @@ def _row_to_light_dict(row: sqlite3.Row) -> Dict[str, Any]:
     }
 
 
+def _parse_search_terms(q: str) -> List[str]:
+    """Parse a search query string into space-separated terms, respecting
+    double-quoted substrings within a term. Inner quotes are stripped.
+
+    Example: '测试 translation:"chinese text" misc:group'
+    → ['测试', 'translation:chinese text', 'misc:group']
+    """
+    if not q or not q.strip():
+        return []
+    terms = []
+    i = 0
+    q = q.strip()
+    while i < len(q):
+        if q[i] == ' ':
+            i += 1
+            continue
+        j = i
+        while j < len(q) and q[j] not in (' ', '"'):
+            j += 1
+        if j < len(q) and q[j] == '"':
+            k = q.index('"', j + 1) if '"' in q[j+1:] else len(q)
+            # include the quoted part but strip the quote chars themselves
+            term = q[i:j] + q[j+1:k]
+            i = k + 1
+        else:
+            term = q[i:j]
+            i = j
+        if term:
+            terms.append(term)
+    return terms
+
+
 def query_tasks(
     *,
     states: Optional[List[int]] = None,
     tags: Optional[List[str]] = None,
     gid: Optional[str] = None,
     url: Optional[str] = None,
+    q: Optional[str] = None,
     offset: int = 0,
     limit: int = 100,
     order_by: str = 'updated_at',
@@ -315,11 +365,14 @@ def query_tasks(
                 ``json_each`` so it has to read the payload column, making it
                 somewhat more expensive than the other filters.
       - gid/url: exact match.
+      - q:      space-separated search terms; ALL must match. Each term is
+                matched against title (LIKE) AND tags (LIKE). Quoted strings
+                like ``"gender change"`` are supported.
 
     Returns (total_count, [light_dict, ...]). The returned dicts never include
     the payload, even when ``tags`` filtering read it internally.
     """
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     order_col = _ORDER_BY_WHITELIST.get(order_by, 'updated_at')
     direction = 'DESC' if str(order_dir).upper() == 'DESC' else 'ASC'
 
@@ -349,6 +402,14 @@ def query_tasks(
     if url:
         where.append('url = ?')
         params.append(str(url))
+    if q:
+        terms = _parse_search_terms(q)
+        for term in terms:
+            where.append(
+                '(title LIKE ? OR EXISTS (SELECT 1 FROM json_each(json_extract(payload, \'$.meta.tags\')) '
+                'WHERE value LIKE ?))'
+            )
+            params.extend(['%' + term + '%', '%' + term + '%'])
 
     where_clause = (' WHERE ' + ' AND '.join(where)) if where else ''
     offset = max(0, int(offset or 0))
@@ -372,7 +433,7 @@ def query_tasks(
 
 def get_task_row(guid: str, db_path: str = TASKS_DB_FILE) -> Optional[Dict[str, Any]]:
     """Return lightweight columns for a single task, or None if not found."""
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     try:
         row = conn.execute(
@@ -385,7 +446,7 @@ def get_task_row(guid: str, db_path: str = TASKS_DB_FILE) -> Optional[Dict[str, 
 
 def find_guid_by_gid(gid: str, db_path: str = TASKS_DB_FILE) -> Optional[str]:
     """Return the guid for a given gallery id, or None. Uses the UNIQUE gid index."""
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     try:
         row = conn.execute(
@@ -398,7 +459,7 @@ def find_guid_by_gid(gid: str, db_path: str = TASKS_DB_FILE) -> Optional[str]:
 
 def find_guid_by_url(url: str, db_path: str = TASKS_DB_FILE) -> Optional[str]:
     """Return the guid for a given gallery url, or None."""
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     try:
         row = conn.execute(
@@ -411,7 +472,7 @@ def find_guid_by_url(url: str, db_path: str = TASKS_DB_FILE) -> Optional[str]:
 
 def load_task_payload(guid: str, db_path: str = TASKS_DB_FILE) -> Optional[Dict[str, Any]]:
     """Load and json-parse the full payload for a single task. Used for hydration."""
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     try:
         row = conn.execute(
@@ -446,7 +507,7 @@ def save_task_from_active(task, db_path: str = TASKS_DB_FILE) -> None:
 
 def update_task_state(guid: str, phase_state: int, db_path: str = TASKS_DB_FILE) -> None:
     """Lightweight state-only update (pause/resume/retry). Does not rewrite payload."""
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     now_ts = int(time.time())
     try:
@@ -461,7 +522,7 @@ def update_task_state(guid: str, phase_state: int, db_path: str = TASKS_DB_FILE)
 
 def delete_task(guid: str, db_path: str = TASKS_DB_FILE) -> None:
     """Delete a single task row by guid."""
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     try:
         with conn:
@@ -475,7 +536,7 @@ def delete_task(guid: str, db_path: str = TASKS_DB_FILE) -> None:
 
 def count_tasks_by_state(db_path: str = TASKS_DB_FILE) -> Dict[int, int]:
     """Return {phase_state: count} for all tasks. Single GROUP BY query."""
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     try:
         rows = conn.execute(
@@ -487,14 +548,16 @@ def count_tasks_by_state(db_path: str = TASKS_DB_FILE) -> Dict[int, int]:
 
 
 def list_waiting_guids(db_path: str = TASKS_DB_FILE) -> List[str]:
-    """Return guids of all WAITING tasks, oldest first. Used to rebuild the
-    in-memory waiting queue on startup without loading any Task objects."""
-    _ensure_schema(db_path)
+    """Return guids of all tasks that should be re-enqueued on startup, oldest
+    first.  Includes WAITING (1) as well as mid-processing states (2–19) that
+    were interrupted by a previous shutdown.  Excludes PAUSED (0), FINISHED
+    (20), and all error/terminal states (<0)."""
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            'SELECT guid FROM tasks WHERE phase_state = ? ORDER BY updated_at ASC',
-            (TASK_STATE_WAITING,),
+            'SELECT guid FROM tasks WHERE phase_state > ? AND phase_state < ? ORDER BY updated_at ASC',
+            (TASK_STATE_PAUSED, TASK_STATE_FINISHED),
         ).fetchall()
     finally:
         conn.close()
@@ -509,7 +572,7 @@ def count_active_tasks(
     """Count tasks whose phase_state is in [state_low, state_high) — i.e. tasks
     that are still being worked on (waiting through make_archive). Used by the
     CLI to decide whether the process can exit."""
-    _ensure_schema(db_path)
+    _ensure_schema_once(db_path)
     conn = _connect(db_path)
     try:
         row = conn.execute(

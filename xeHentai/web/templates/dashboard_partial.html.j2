@@ -1,0 +1,68 @@
+<div id="dashboard-content" class="space-y-6">
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+        <span class="text-sm text-gray-400">v{{ version }}</span>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div class="bg-white rounded-lg shadow-sm border p-4">
+            <div class="text-sm text-gray-500">Waiting</div>
+            <div class="text-2xl font-bold text-yellow-600">{{ waiting_count }}</div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm border p-4">
+            <div class="text-sm text-gray-500">Processing</div>
+            <div class="text-2xl font-bold text-blue-600">{{ processing_count }}</div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm border p-4">
+            <div class="text-sm text-gray-500">Proxy</div>
+            <div class="text-2xl font-bold {{ 'text-green-600' if proxy_enabled else 'text-gray-400' }}">
+                {{ proxy_count if proxy_enabled else 'Off' }}
+            </div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm border p-4">
+            <div class="text-sm text-gray-500">Version</div>
+            <div class="text-xl font-mono font-bold text-gray-700">{{ version }}</div>
+        </div>
+    </div>
+
+    <!-- Recent Tasks -->
+    <div class="bg-white rounded-lg shadow-sm border p-6">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold">Recent Tasks</h2>
+            <a href="/tasks" class="text-sm text-blue-600 hover:text-blue-800">View All</a>
+        </div>
+        {% if recent_tasks %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-left text-gray-500 border-b">
+                        <th class="pb-2 font-medium">GID</th>
+                        <th class="pb-2 font-medium">Title</th>
+                        <th class="pb-2 font-medium">State</th>
+                        <th class="pb-2 font-medium">Pages</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in recent_tasks %}
+                    <tr class="border-b border-gray-50 hover:bg-gray-50">
+                        <td class="py-2 font-mono text-xs">
+                            <a href="/tasks/{{ t.guid }}" class="text-blue-600 hover:text-blue-800">{{ t.gid }}</a>
+                        </td>
+                        <td class="py-2 truncate max-w-xs" title="{{ t.title }}">{{ t.title or t.gid }}</td>
+                        <td class="py-2">
+                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {{ t.state_css }}">
+                                {{ t.state_name }}
+                            </span>
+                        </td>
+                        <td class="py-2 text-gray-500">{{ t.total }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-gray-400 text-sm">No tasks yet.</p>
+        {% endif %}
+    </div>
+</div>

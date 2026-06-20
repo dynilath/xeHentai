@@ -4,26 +4,17 @@
 #      fffonion        <fffonion@gmail.com>
 
 import re
-import time
 import json
-import zipfile
 import traceback
-from hashlib import md5
 from threading import Thread
 from .const import *
 from .const import __version__
 from .i18n import i18n
 from socketserver import ThreadingMixIn
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from io import IOBase
-from io import BytesIO as StringIO
-from urllib.parse import urlparse
 
 cmdre = re.compile("([a-z])([A-Z])")
 pathre = re.compile("/(?:jsonrpc|img/|zip/|static/|ui/$)")
-staticre = re.compile("/static/")
-imgpathre = re.compile("/img/")
-zippathre = re.compile("/zip/")
 
 class RPCServer(Thread):
     def __init__(self, xeH, bind_addr, secret = None, logger = None, exit_check = None):
@@ -46,45 +37,17 @@ class RPCServer(Thread):
             while not self._exit("rpc"):
                 self.server.handle_request()
 
-def is_readable_obj(obj):
-    return hasattr(obj, "read")
-
-def is_file_obj(obj):
-    return isinstance(obj, IOBase)
-
 def is_str_obj(obj):
     return isinstance(obj, str)
 
-def hash_link(secret, url):
-    _ = "%s-xehentai-%s" % (secret if secret else "", url)
-    _ = _.encode('utf-8')
-    return md5(_).hexdigest()[:8]
+# ═══════════════════════════════════════════════════════════════════════════════
+# NOTE: hash_link, gen_thumbnail, _get_image_path, _get_archive_path, and the
+# image/zip GET handlers have been removed. The new REST API serves images via
+# content-addressed URLs at /api/img/{gid}/{fid}-{file_hash}.{ext} and archives
+# at /api/archive/{gid}. This module is kept for legacy JSON-RPC POST support
+# behind --legacy-rpc only.
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def gen_thumbnail(fh, args):
-    # returns a new file handler if resized
-    # and a boolean indicates there'e error
-    try:
-        from PIL import Image
-    except:
-        return fh, True
-    if 'w' not in args and 'h' not in args:
-        return fh, False
-    size = (int(args['w']) if 'w' in args else int(args['h']),
-            int(args['h']) if 'h' in args else int(args['w']))
-    if not is_file_obj(fh):
-        fh = StringIO(fh)
-    if fh and Image.isImageType(fh):
-        with Image.open(fh) as img:
-            img.thumbnail(size)
-            ret_fh = StringIO()
-            img.save(ret_fh, format=img.format)
-            ret = ret_fh.getvalue()
-            ret_fh.close()
-            fh.close()
-            return ret, False
-    else:
-        return fh, False
-    
 def jsonrpc_resp(request, ret = None, error_code = None, error_msg = None):
     r = {
         "id":None if not request["id"] else request["id"],
@@ -120,20 +83,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def version_string(self):
         return "xeHentai/%s" % __version__
-    
-    def serve_file(self, f):
-        f.seek(0, os.SEEK_END)
-        size = f.tell()
-        self.xeH.logger.debug("GET %s 200 %d %s" % (self.path, size, self.client_address[0]))
-        self.send_header("Content-Length", size)
-        f.seek(0, os.SEEK_SET)
-        self.end_headers()
-        while True:
-            buf = f.read(51200)
-            if not buf:
-                break
-            self.wfile.write(buf)
-        return size
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -149,77 +98,19 @@ class Handler(BaseHTTPRequestHandler):
         code = 200
         rt = b''
         mime = "text/html"
-        while True:
-            if imgpathre.match(self.path):
-                args = dict(q.split("=") for q in urlparse(self.path).query.split("&") if q)
-                _ = urlparse(self.path).path.split("/")
-                if len(_) < 5:
-                    code = 400
-                    break
-                _, _, _hash, guid, fid = _[:5]
-                right_hash = hash_link(self.secret, "%s/%s" % (guid, fid))
-                if right_hash != _hash:
-                    self.xeH.logger.warning("RPC: hash mismatch %s != %s" % (right_hash, _hash))
-                    code = 403
-                    break
-                path, f, mime = self.xeH._get_image_path(guid, fid)
-                if not f or not os.path.exists(os.path.join(path, f)):
-                    zipf = "%s.zip" % path
-                    if not os.path.exists(zipf):
-                        self.xeH.logger.warning("RPC: can't find %s" % f)
-                        code = 404
-                        break
-                    else:
-                        with zipfile.ZipFile(zipf, 'r') as z:
-                            try:
-                                rt = z.read(f)
-                            except Exception as ex:
-                                self.xeH.logger.warning("RPC: can't find %s in zipfile: %s" % (f, ex))
-                                code = 404
-                                break
-                else:
-                    rt = open(os.path.join(path, f), 'rb')
-                rt, _error = gen_thumbnail(rt, args)
-                if _error:
-                    self.xeH.logger.warning("RPC: PIL needed for generating thumbnail")
-            elif zippathre.match(self.path):
-                # args = urlparse(_).query
-                _ = urlparse(self.path).path.split("/")
-                if len(_) < 5:
-                    code = 400
-                    break
-                _, _, _hash, guid, fname = _[:5]
-                fname = fname.split('?')[0]
-                right_hash = hash_link(self.secret, "%s" % guid)
-                if right_hash != _hash:
-                    self.xeH.logger.warning("RPC: hash mismatch %s != %s" % (right_hash, _hash))
-                    code = 403
-                    break
-                f = self.xeH._get_archive_path(guid)
-                mime = 'application/zip'
-                if not f or not os.path.exists(f):
-                    self.xeH.logger.warning("RPC: can't find %s" % f)
-                    code = 404
-                    break
-                rt = open(f, 'rb')
-            else:
-                # fallback to rpc request
-                rt = jsonrpc_resp({"id":None}, error_code = ERR_RPC_INVALID_REQUEST)
-                mime = "application/json-rpc"
-            break
+        # Image/zip serving removed — use the new REST API (/api/img/... and /api/archive/...)
+        # Fallback: return JSON-RPC error for unrecognized paths
+        rt = jsonrpc_resp({"id":None}, error_code = ERR_RPC_INVALID_REQUEST)
+        mime = "application/json-rpc"
 
         self.send_response(code)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Type", mime)
         try:
-            if is_file_obj(rt):
-                size = self.serve_file(rt)
-                rt.close()
-            else:
-                self.xeH.logger.debug("GET %s 200 %d %s" % (self.path, len(rt), self.client_address[0]))
-                self.send_header("Content-Length", len(rt))
-                self.end_headers()
-                self.wfile.write(rt)
+            self.xeH.logger.debug("GET %s 200 %d %s" % (self.path, len(rt), self.client_address[0]))
+            self.send_header("Content-Length", len(rt))
+            self.end_headers()
+            self.wfile.write(rt if isinstance(rt, bytes) else rt.encode('utf-8'))
             self.wfile.write(b'\n')
         except ConnectionError as e:
             self.xeH.logger.debug('Connection Error : %s' % e)
@@ -421,76 +312,6 @@ class xeHentaiRPCExtended(object):
         const = globals().get(key)
         return [const] if isinstance(const, int) else None
     
-    def _get_image_path(self, guid, fid):
-        mime_map = {
-            "jpg": "image/jpeg",
-            "jepg": "image/jpeg",
-            "png": "image/png",
-            "gif": "image/gif",
-            "bmp": "image/bmp",
-            "webp": "image/webp"
-        }
-        t = self.xeH._hydrate_task(guid)
-        if t is None:
-            return None, None, None
-        try:
-            fid = str(fid)
-            f = t.get_fid_filename(fid)
-
-            ext = os.path.splitext(f)[1].lower()[1:] if f else ""
-            if ext not in mime_map:
-                mime = "application/octet-stream"
-            else:
-                mime = mime_map[ext]
-            return t.get_task_dir(), f, mime
-        finally:
-            # Only evict if this RPC call hydrated a previously-cold task. If the
-            # task is actively running, leave it in the active set.
-            self._evict_if_cold(guid, t)
-
-    def _get_archive_path(self, guid):
-        t = self.xeH._hydrate_task(guid)
-        if t is None:
-            return None
-        try:
-            st = time.time()
-            pth = t.make_archive(False)
-            et = time.time()
-            if et - st > 0.1:
-                self.xeH.logger.warning('RPC: %.2fs taken to get archive' % (et - st))
-            return pth
-        finally:
-            self._evict_if_cold(guid, t)
-
-    def get_image(self, guid, request_range=None):
-        t = self.xeH._hydrate_task(guid)
-        if t is None:
-            return ERR_TASK_NOT_FOUND, None
-        try:
-            start = 1
-            end = t.meta.total + 1
-            if request_range:
-                request_range = str(request_range)
-                _ = request_range.split(',')
-                if len(_) == 1:
-                    start = int(request_range)
-                else:
-                    start = int(_[0])
-                end = int(_[0]) + 1
-            rt = []
-            for fid in range(start, end):
-                fid_str = "%d" % fid
-                f = t.get_fid_filename(fid_str)
-                if not f:
-                    # File not resolvable (e.g. not yet downloaded / missing in
-                    # archive). Skip it rather than emitting a broken /None URL.
-                    continue
-                uri = "%s/%s" % (t.guid, fid)
-                rt.append('/img/%s/%s/%s' % (hash_link(self.secret, uri), uri, f))
-            return ERR_NO_ERROR, rt
-        finally:
-            self._evict_if_cold(guid, t)
-
     def _evict_if_cold(self, guid, task):
         """Dehydrate a task hydrated by an RPC call, unless it is currently
         being processed by the run loop (i.e. in the running set)."""

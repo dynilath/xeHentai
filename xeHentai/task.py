@@ -1056,7 +1056,11 @@ class Task(object):
         return ret
 
     def cleanup_download_info(self):
-        """Clean up download-related info to save memory after the task is finished."""
+        """Clean up download-related info to save memory after the task is finished.
+
+        Retains fid_2_img_hash_map and fid_2_file_name_map so image URLs remain
+        resolvable after task completion (needed by the WebUI REST API).
+        """
         if self.state != TASK_STATE_FINISHED:
             return
         if len(self._flist_done) != self.meta.total:
@@ -1064,10 +1068,36 @@ class Task(object):
 
         self.page_q = None
         self.reload_map = {}
-        self.fid_2_img_hash_map = {}
-        self.fid_2_file_name_map = {}
+        # Keep: self.fid_2_img_hash_map (content-addressable image URLs)
+        # Keep: self.fid_2_file_name_map (locate files in dir/archive)
         self.dumplicated_file_map = {}
         self.reuse.reset()
+
+    def rebuild_file_maps_from_zip(self):
+        """Rebuild fid_2_img_hash_map and fid_2_file_name_map from the zip archive.
+
+        Used for old tasks whose maps were cleared by a previous version of
+        cleanup_download_info, or for tasks imported from external archives.
+        """
+        import zipfile, hashlib
+        task_dir = self.get_task_dir()
+        zip_path = f"{task_dir}.zip"
+        if not os.path.isfile(zip_path):
+            return
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            members = sorted(
+                [m for m in zf.namelist() if not m.endswith("/")],
+                key=lambda m: os.path.splitext(m)[0]
+            )
+            for i, name in enumerate(members, 1):
+                fid_str = str(i)
+                data = zf.read(name)
+                file_hash = hashlib.md5(data).hexdigest()[:10]
+                self.fid_2_img_hash_map[fid_str] = file_hash
+                self.fid_2_file_name_map[fid_str] = name
+        # Update total if meta is missing
+        if self.meta and not self.meta.total:
+            self.meta.total = len(members)
 
     def from_dict(self, j, core_config=None):
         for k in self.__dict__:

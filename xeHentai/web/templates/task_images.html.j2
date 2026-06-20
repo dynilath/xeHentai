@@ -1,0 +1,28 @@
+{% set batch = all_images[image_offset:image_offset + page_size] %}
+<div id="image-grid">
+    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+        {% for img in batch %}
+        <a href="/tasks/{{ guid }}/read?page={{ img.fid }}"
+           class="relative group bg-gray-100 rounded-lg overflow-hidden aspect-square block">
+            <img src="{{ img.url }}" alt="Page {{ img.fid }}" loading="lazy"
+                 class="w-full h-full object-cover transition-transform group-hover:scale-105" />
+            <div class="absolute bottom-1 left-1 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded">#{{ img.fid }}</div>
+        </a>
+        {% endfor %}
+    </div>
+    <div class="flex items-center justify-between mt-3">
+        <span class="text-sm text-gray-500">{{ image_offset + 1 }}-{{ [image_offset + page_size, total] | min }} of {{ total }}</span>
+        <div class="flex gap-2">
+            {% if image_offset > 0 %}
+            <button hx-get="/tasks/{{ guid }}/images?offset={{ [image_offset - page_size, 0] | max }}"
+                    hx-target="#image-grid" hx-swap="outerHTML"
+                    class="px-3 py-1 text-sm border rounded hover:bg-gray-100">&larr; Prev</button>
+            {% endif %}
+            {% if image_offset + page_size < total %}
+            <button hx-get="/tasks/{{ guid }}/images?offset={{ image_offset + page_size }}"
+                    hx-target="#image-grid" hx-swap="outerHTML"
+                    class="px-3 py-1 text-sm border rounded hover:bg-gray-100">Next &rarr;</button>
+            {% endif %}
+        </div>
+    </div>
+</div>

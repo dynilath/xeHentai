@@ -1,0 +1,11 @@
+{% from "_macros.html.j2" import task_row %}
+{{ task_row({
+    "guid": guid,
+    "gid": gid,
+    "title": title,
+    "state": state,
+    "state_name": state_name,
+    "state_css": state_css,
+    "total": total,
+    "done": done,
+}) }}

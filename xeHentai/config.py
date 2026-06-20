@@ -27,12 +27,10 @@ proxy_image = True
 # if set to True, the value of proxy_image will be ignored
 proxy_image_only = False
 
-# bind jsonrpc server to this address
-rpc_interface = 'localhost'
-# bind jsonrpc server to this port
-rpc_port = None
-# jsonrpc secret string
-rpc_secret = None
+# bind WebUI server to this address
+webui_host = 'localhost'
+# bind WebUI server to this port (set to enable WebUI)
+webui_port = None
 
 # make an archive (.zip) after download and delete directory
 make_archive = False

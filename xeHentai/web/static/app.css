@@ -1,0 +1,35 @@
+/* xeHentai WebUI - Custom styles */
+
+/* Smooth toast animation */
+@keyframes slide-in {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+.animate-slide-in {
+    animation: slide-in 0.3s ease-out;
+}
+
+/* Image grid hover effects */
+.aspect-square {
+    aspect-ratio: 1 / 1;
+}
+
+/* Progress bar transition */
+.transition-all {
+    transition-property: all;
+}
+.duration-500 {
+    transition-duration: 500ms;
+}
+
+/* htmx loading indicator */
+.htmx-indicator {
+    opacity: 0;
+    transition: opacity 200ms ease-in;
+}
+.htmx-request .htmx-indicator {
+    opacity: 1;
+}
+.htmx-request.htmx-indicator {
+    opacity: 1;
+}

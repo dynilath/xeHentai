@@ -1,0 +1,121 @@
+{% extends "base.html.j2" %}
+{% from "_macros.html.j2" import status_badge, progress_bar, task_row, pagination %}
+{% block title %}Tasks - xeHentai{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-900">Tasks</h1>
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-white rounded-lg shadow-sm border p-4 space-y-3">
+        <form id="task-filter-form" hx-get="/tasks" hx-target="#task-table-container" hx-trigger="change from:#state-filter, submit" hx-indicator="#search-spinner">
+            <!-- Row 1: State + GID -->
+            <div class="flex gap-3 flex-wrap items-end">
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">State</label>
+                    <select id="state-filter" name="states" class="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+                        <option value="">All States</option>
+                        {% for val, name in available_states %}
+                        <option value="{{ val }}" {% if current_states == val|string %}selected{% endif %}>{{ name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">GID</label>
+                    <input type="text" name="gid" placeholder="Search by GID..." value="{{ current_gid }}"
+                           class="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+                </div>
+                <div>
+                    <button type="submit" class="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200">
+                        Filter
+                    </button>
+                </div>
+            </div>
+            <!-- Row 2: Search (full width) -->
+            <div class="mt-4">
+                <label class="block text-xs text-gray-500 mb-1">Search</label>
+                <div class="flex items-center gap-2">
+                    <input type="search" name="q" placeholder="title / tags (space-separated, ALL must match)..." value="{{ current_q }}"
+                           autocomplete="on"
+                           class="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm">
+                    <span id="search-spinner" class="htmx-indicator text-sm text-gray-400">searching...</span>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- Task Table -->
+    <div id="task-table-container">
+        <div class="bg-white rounded-lg shadow-sm border overflow-hidden">
+            <table class="w-full">
+                <thead>
+                    <tr class="text-left text-sm text-gray-500 border-b bg-gray-50">
+                        <th class="py-3 px-4 font-medium">GUID</th>
+                        <th class="py-3 px-4 font-medium">GID</th>
+                        <th class="py-3 px-4 font-medium">Title</th>
+                        <th class="py-3 px-4 font-medium">State</th>
+                        <th class="py-3 px-4 font-medium">Progress</th>
+                        <th class="py-3 px-4 font-medium">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if tasks %}
+                    {% for t in tasks %}
+                    {{ task_row(t) }}
+                    {% endfor %}
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="py-8 text-center text-gray-400">No tasks found</td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+        {{ pagination(total, offset, limit, '/tasks', current_states, current_gid, current_q) }}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+initWebSocket();
+
+function _updateRowProgress(data) {
+    var row = document.getElementById("task-row-" + data.guid);
+    if (!row) return;
+    var bar = row.querySelector(".task-progress-bar div");
+    var label = row.querySelector(".task-progress-label");
+    if (bar && label && data.total > 0) {
+        var pct = Math.round(data.done / data.total * 100);
+        bar.style.width = pct + "%";
+        label.textContent = data.done + "/" + data.total + " (" + pct + "%)";
+    }
+}
+
+function _refreshRow(guid) {
+    var row = document.getElementById("task-row-" + guid);
+    if (row) {
+        htmx.ajax("GET", "/tasks/" + guid + "/row", {target: row, swap: "outerHTML"});
+    }
+}
+
+// frequent progress events: DOM-only update
+window.addEventListener("ws:task_progress", function(e) {
+    if (e.detail) _updateRowProgress(e.detail);
+});
+
+// state transitions: server re-render the row (state badge + action buttons change)
+window.addEventListener("ws:task_state_change", function(e) {
+    if (e.detail) _refreshRow(e.detail.guid);
+});
+window.addEventListener("ws:task_completed", function(e) {
+    if (e.detail) {
+        _refreshRow(e.detail.guid);
+        if (e.detail.state === "finished") showToast("Task " + e.detail.gid + " completed!", "success");
+        else showToast("Task " + e.detail.gid + " failed", "error");
+    }
+});
+</script>
+{% endblock %}

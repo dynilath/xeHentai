@@ -1,0 +1,105 @@
+{% extends "base.html.j2" %}
+{% block title %}Config - xeHentai{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto space-y-6">
+    <h1 class="text-2xl font-bold text-gray-900">Configuration</h1>
+
+    <div class="bg-white rounded-lg shadow-sm border p-6">
+        <form hx-patch="/api/config" hx-target="#config-result" class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Download Directory</label>
+                    <input type="text" name="dir" value="{{ config.get('dir', '.') }}"
+                           class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Log Path</label>
+                    <input type="text" name="log_path" value="{{ config.get('log_path', 'eh.log') }}"
+                           class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Scan Threads</label>
+                    <input type="number" name="scan_thread_cnt" value="{{ config.get('scan_thread_cnt', 1) }}" min="1" max="20"
+                           class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Download Threads</label>
+                    <input type="number" name="download_thread_cnt" value="{{ config.get('download_thread_cnt', 5) }}" min="1" max="50"
+                           class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Async Task Concurrency</label>
+                    <input type="number" name="async_task_concurrency" value="{{ config.get('async_task_concurrency', 1) }}" min="1" max="10"
+                           class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Page Interval (s)</label>
+                    <input type="number" name="page_interval" value="{{ config.get('page_interval', 0.5) }}" step="0.1" min="0"
+                           class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Page Retry</label>
+                    <input type="number" name="page_retry" value="{{ config.get('page_retry', 3) }}" min="0"
+                           class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Page Timeout (s)</label>
+                    <input type="number" name="page_timeout" value="{{ config.get('page_timeout', 10) }}" min="1"
+                           class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Download Retry</label>
+                    <input type="number" name="download_retry" value="{{ config.get('download_retry', 5) }}" min="0"
+                           class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Download Timeout (s)</label>
+                    <input type="number" name="download_timeout" value="{{ config.get('download_timeout', 8) }}" min="1"
+                           class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm">
+                </div>
+            </div>
+
+            <div class="space-y-2 pt-2">
+                <label class="flex items-center gap-2">
+                    <input type="checkbox" name="make_archive" value="true"
+                           {% if config.get('make_archive') %}checked{% endif %} class="rounded border-gray-300">
+                    <span class="text-sm text-gray-700">Create archive by default</span>
+                </label>
+                <label class="flex items-center gap-2">
+                    <input type="checkbox" name="download_ori" value="true"
+                           {% if config.get('download_ori') %}checked{% endif %} class="rounded border-gray-300">
+                    <span class="text-sm text-gray-700">Download original images by default</span>
+                </label>
+                <label class="flex items-center gap-2">
+                    <input type="checkbox" name="jpn_title" value="true"
+                           {% if config.get('jpn_title', True) %}checked{% endif %} class="rounded border-gray-300">
+                    <span class="text-sm text-gray-700">Use Japanese title</span>
+                </label>
+                <label class="flex items-center gap-2">
+                    <input type="checkbox" name="delete_task_files" value="true"
+                           {% if config.get('delete_task_files') %}checked{% endif %} class="rounded border-gray-300">
+                    <span class="text-sm text-gray-700">Delete files on task removal</span>
+                </label>
+            </div>
+
+            <button type="submit"
+                    class="w-full py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors">
+                Save Configuration
+            </button>
+        </form>
+        <div id="config-result" class="mt-4"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.body.addEventListener("htmx:afterRequest", function(e) {
+    if (e.detail.target.id === "config-result" && e.detail.successful) {
+        document.getElementById("config-result").innerHTML =
+            '<div class="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800">Configuration saved!</div>';
+    }
+});
+</script>
+{% endblock %}
