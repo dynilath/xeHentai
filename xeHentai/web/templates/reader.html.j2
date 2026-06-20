@@ -37,14 +37,16 @@
                 <div class="text-center text-sm text-gray-400 mt-2">{{ img.fid }} / {{ total }}</div>
             </div>
             {% endfor %}
-            <div class="flex justify-between mt-4">
-                <button onclick="prevPage()" id="btn-prev"
-                        class="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm font-medium">&larr; Prev</button>
-                <button onclick="nextPage()" id="btn-next"
-                        class="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm font-medium">Next &rarr;</button>
-            </div>
         {% endif %}
     </div>
+    {% if not scroll_mode and images %}
+    <div id="reader-nav" class="flex justify-between mt-4 mx-auto max-w-4xl">
+        <button onclick="prevPage()" id="btn-prev"
+                class="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm font-medium">&larr; Prev</button>
+        <button onclick="nextPage()" id="btn-next"
+                class="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm font-medium">Next &rarr;</button>
+    </div>
+    {% endif %}
     {% else %}
     <p class="text-gray-400 text-center py-12">No images available yet.</p>
     {% endif %}
