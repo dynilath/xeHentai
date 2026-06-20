@@ -31,6 +31,16 @@ _RE_LEGACY_TITLE_STATUS = re.compile(
 )
 _RE_LEGACY_TITLE_RANGE = re.compile(r'(?<!\d)(\d+)\s*[-~]\s*(\d+)(?!\d)')
 
+_RE_TITLE_CHAPTER_RANGE = re.compile(
+    r'(?:\s*[-~]\s*)?'
+    r'(?:chapter|ch\.|chap\.|vol\.|volume|part|ep\.|episode)\s*'
+    r'\d+(?:[./]\d+){0,2}'
+    r'\s*[-~]\s*'
+    r'(?:(?:chapter|ch\.|chap\.|vol\.|volume|part|ep\.|episode)\s*)?'
+    r'\d+(?:[./]\d+){0,2}',
+    re.IGNORECASE,
+)
+
 SQL_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS title_index (
     normalized_title TEXT NOT NULL,
@@ -196,6 +206,7 @@ def normalize_title_exact(title: str) -> str:
 
 def normalize_title_series(title: str) -> str:
     title = normalize_title_exact(title)
+    title = _RE_TITLE_CHAPTER_RANGE.sub(' ', title)
     title = _RE_TITLE_RANGE.sub(' ', title)
     return _normalize_whitespace(title)
 
@@ -209,6 +220,7 @@ def _legacy_normalize_title_exact(title: str) -> str:
 
 def _legacy_normalize_title_series(title: str) -> str:
     title = _legacy_normalize_title_exact(title)
+    title = _RE_TITLE_CHAPTER_RANGE.sub(' ', title)
     title = _RE_LEGACY_TITLE_RANGE.sub(' ', title)
     return _normalize_whitespace(title)
 
