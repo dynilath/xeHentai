@@ -30,6 +30,15 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_phase_state ON tasks(phase_state);
 CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_state_updated ON tasks(phase_state, updated_at);
+
+CREATE TABLE IF NOT EXISTS task_tags (
+    guid TEXT NOT NULL,
+    tag  TEXT NOT NULL,
+    PRIMARY KEY (guid, tag)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON task_tags(tag);
 '''
 
 _TASKS_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -100,9 +109,35 @@ def _ensure_schema(db_path: str = TASKS_DB_FILE) -> None:
             '''
         )
 
+        # Tag normalization: one-time backfill from existing payload JSON.
+        # Guarded by COUNT(*) = 0 so re-runs are cheap (idempotent).
+        row = conn.execute('SELECT COUNT(*) FROM task_tags').fetchone()
+        if row[0] == 0:
+            conn.execute(
+                '''
+                INSERT OR IGNORE INTO task_tags (guid, tag)
+                SELECT tasks.guid, j.value
+                FROM tasks, json_each(json_extract(tasks.payload, '$.meta.tags')) AS j
+                WHERE json_extract(tasks.payload, '$.meta.tags') IS NOT NULL
+                '''
+            )
+
         conn.commit()
     finally:
         conn.close()
+
+
+def _sync_task_tags(conn: sqlite3.Connection, guid: str, payload: Dict[str, Any]) -> None:
+    """Synchronize task_tags rows from a task payload dict (within a transaction)."""
+    conn.execute('DELETE FROM task_tags WHERE guid = ?', (str(guid),))
+    meta = payload.get('meta')
+    if isinstance(meta, dict):
+        tags = meta.get('tags', [])
+        if tags:
+            conn.executemany(
+                'INSERT OR IGNORE INTO task_tags (guid, tag) VALUES (?, ?)',
+                [(str(guid), str(t)) for t in tags],
+            )
 
 
 def _coerce_payload_dict(payload: Any) -> Dict[str, Any]:
@@ -178,7 +213,11 @@ def _save_tasks_sqlite(tasks: Dict[str, Any], db_path: str = TASKS_DB_FILE) -> N
                         now_ts,
                     ),
                 )
+            # Maintain task_tags for upserted tasks.
+            for guid in to_upsert:
+                _sync_task_tags(conn, guid, tasks[guid])
             for guid in to_delete:
+                conn.execute('DELETE FROM task_tags WHERE guid = ?', (str(guid),))
                 conn.execute('DELETE FROM tasks WHERE guid = ?', (str(guid),))
 
         _TASKS_CACHE[db_path] = dict(tasks)
@@ -268,6 +307,8 @@ def save_single_task(guid: str, task_payload: Dict[str, Any], db_path: str = TAS
                     now_ts,
                 ),
             )
+            # Maintain task_tags from the payload dict.
+            _sync_task_tags(conn, row['guid'], task_payload)
         cached = _TASKS_CACHE.get(db_path)
         if cached is not None:
             cached[guid] = dict(task_payload)
@@ -361,9 +402,8 @@ def query_tasks(
     Filters (all AND-combined):
       - states: match tasks whose phase_state is in this list (OR within the list).
       - tags:   match tasks having ANY of these tags (OR within the list). Tags
-                live in the payload JSON (``$.meta.tags`` array); filtering uses
-                ``json_each`` so it has to read the payload column, making it
-                somewhat more expensive than the other filters.
+                are normalized into the ``task_tags`` table with an indexed
+                ``tag`` column for efficient exact-match and LIKE lookups.
       - gid/url: exact match.
       - q:      space-separated search terms; ALL must match. Each term is
                 matched against title (LIKE) AND tags (LIKE). Quoted strings
@@ -386,14 +426,14 @@ def query_tasks(
             where.append('phase_state IN (%s)' % placeholders)
             params.extend(normalized)
     if tags:
-        # OR-match tasks that carry any of the requested tags. Tags are stored
-        # as a JSON array under payload.meta.tags.
+        # OR-match tasks that carry any of the requested tags.
+        # Tags are normalized into the task_tags table (indexed by tag).
         normalized_tags = [str(t) for t in tags if t]
         if normalized_tags:
             tag_placeholders = ', '.join('?' for _ in normalized_tags)
             where.append(
-                'EXISTS (SELECT 1 FROM json_each(json_extract(payload, \'$.meta.tags\')) '
-                'WHERE value IN (%s))' % tag_placeholders
+                'EXISTS (SELECT 1 FROM task_tags WHERE guid = tasks.guid AND tag IN (%s))'
+                % tag_placeholders
             )
             params.extend(normalized_tags)
     if gid:
@@ -406,8 +446,7 @@ def query_tasks(
         terms = _parse_search_terms(q)
         for term in terms:
             where.append(
-                '(title LIKE ? OR EXISTS (SELECT 1 FROM json_each(json_extract(payload, \'$.meta.tags\')) '
-                'WHERE value LIKE ?))'
+                '(title LIKE ? OR EXISTS (SELECT 1 FROM task_tags WHERE guid = tasks.guid AND tag LIKE ?))'
             )
             params.extend(['%' + term + '%', '%' + term + '%'])
 
@@ -526,6 +565,7 @@ def delete_task(guid: str, db_path: str = TASKS_DB_FILE) -> None:
     conn = _connect(db_path)
     try:
         with conn:
+            conn.execute('DELETE FROM task_tags WHERE guid = ?', (str(guid),))
             conn.execute('DELETE FROM tasks WHERE guid = ?', (str(guid),))
     finally:
         conn.close()
