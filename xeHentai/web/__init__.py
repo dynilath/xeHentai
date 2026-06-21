@@ -11,6 +11,7 @@ import asyncio
 import os
 import threading
 from typing import Optional, TYPE_CHECKING
+from urllib.parse import quote
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -178,7 +179,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
         request: Request,
         states: Optional[str] = Query(None),
         gid: Optional[str] = Query(None),
-        q: Optional[str] = Query(None, description="Search title + tags"),
+        f_search: Optional[str] = Query(None, description="Search title + tags"),
         offset: int = Query(0),
         limit: int = Query(20),
     ):
@@ -188,8 +189,10 @@ def create_app(xeH: HostProtocol) -> FastAPI:
         from .api_tasks import _parse_states
 
         parsed_states = _parse_states(states)
+        if f_search:
+            f_search = f_search.replace('$', '')
         total, rows = session_store.query_tasks(
-            states=parsed_states, gid=gid, q=q,
+            states=parsed_states, gid=gid, q=f_search,
             offset=offset, limit=limit,
             order_by="updated_at", order_dir="DESC",
         )
@@ -211,6 +214,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             items.append({
                 "guid": guid,
                 "gid": row.get("gid", ""),
+                "url": row.get("url", ""),
                 "title": row.get("title", "") or row.get("url", ""),
                 "state": state,
                 "state_name": _state_name(state),
@@ -263,7 +267,8 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             "limit": limit,
             "current_states": states or "",
             "current_gid": gid or "",
-            "current_q": q or "",
+            "current_q": f_search or "",
+            "current_q_encoded": quote(f_search, safe='') if f_search else "",
             "available_states": available_states,
         }
         if request.headers.get("HX-Request"):
@@ -292,6 +297,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             return _render("task_row.html.j2", {
                 "guid": task.guid,
                 "gid": task.gid,
+                "url": task.url,
                 "title": task.meta.title if task.meta else task.gid,
                 "state": task.state,
                 "state_name": _state_name(task.state),

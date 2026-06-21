@@ -74,7 +74,7 @@ async def list_tasks(
     tags: Optional[str] = Query(None, description="Comma-separated tags (OR match)"),
     gid: Optional[str] = Query(None),
     url: Optional[str] = Query(None),
-    q: Optional[str] = Query(None, description="Space-separated search terms (title + tags, ALL must match)"),
+    f_search: Optional[str] = Query(None, description="Space-separated search terms (title + tags, ALL must match)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     order_by: str = Query("updated_at"),
@@ -84,6 +84,8 @@ async def list_tasks(
     xeH = request.app.state.xeH
     parsed_states = _parse_states(states)
     parsed_tags = _parse_tags(tags)
+    if f_search:
+        f_search = f_search.replace('$', '')
 
     from .. import session_store
 
@@ -92,7 +94,7 @@ async def list_tasks(
         tags=parsed_tags,
         gid=gid,
         url=url,
-        q=q,
+        q=f_search,
         offset=offset,
         limit=limit,
         order_by=order_by,

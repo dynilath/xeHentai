@@ -37,7 +37,7 @@
             <div class="mt-4">
                 <label class="block text-xs text-gray-500 mb-1">Search</label>
                 <div class="flex items-center gap-2">
-                    <input type="search" name="q" placeholder="title / tags (space-separated, ALL must match)..." value="{{ current_q }}"
+                    <input type="search" name="f_search" placeholder="title / tags (space-separated, ALL must match)..." value="{{ current_q|e }}"
                            autocomplete="on"
                            class="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm">
                     <span id="search-spinner" class="htmx-indicator text-sm text-gray-400">searching...</span>
@@ -52,7 +52,6 @@
             <table class="w-full">
                 <thead>
                     <tr class="text-left text-sm text-gray-500 border-b bg-gray-50">
-                        <th class="py-3 px-4 font-medium">GUID</th>
                         <th class="py-3 px-4 font-medium">GID</th>
                         <th class="py-3 px-4 font-medium">Title</th>
                         <th class="py-3 px-4 font-medium">State</th>
@@ -67,13 +66,13 @@
                     {% endfor %}
                     {% else %}
                     <tr>
-                        <td colspan="6" class="py-8 text-center text-gray-400">No tasks found</td>
+                        <td colspan="5" class="py-8 text-center text-gray-400">No tasks found</td>
                     </tr>
                     {% endif %}
                 </tbody>
             </table>
         </div>
-        {{ pagination(total, offset, limit, '/tasks', current_states, current_gid, current_q) }}
+        {{ pagination(total, offset, limit, '/tasks', current_states, current_gid, current_q_encoded) }}
     </div>
 </div>
 {% endblock %}

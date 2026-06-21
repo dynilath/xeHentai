@@ -4,7 +4,6 @@
         <table class="w-full">
             <thead>
                 <tr class="text-left text-sm text-gray-500 border-b bg-gray-50">
-                    <th class="py-3 px-4 font-medium">GUID</th>
                     <th class="py-3 px-4 font-medium">GID</th>
                     <th class="py-3 px-4 font-medium">Title</th>
                     <th class="py-3 px-4 font-medium">State</th>
@@ -19,11 +18,11 @@
                 {% endfor %}
                 {% else %}
                 <tr>
-                    <td colspan="6" class="py-8 text-center text-gray-400">No tasks found</td>
+                    <td colspan="5" class="py-8 text-center text-gray-400">No tasks found</td>
                 </tr>
                 {% endif %}
             </tbody>
         </table>
     </div>
-    {{ pagination(total, offset, limit, '/tasks', current_states, current_gid, current_q) }}
+    {{ pagination(total, offset, limit, '/tasks', current_states, current_gid, current_q_encoded) }}
 </div>
