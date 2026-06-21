@@ -1,10 +1,27 @@
 {% extends "base.html.j2" %}
 {% block title %}Read: {{ title or gid }} - xeHentai{% endblock %}
 
+{# Hide the main site nav (Dashboard/Tasks/Add/Config) on the reader page #}
+{% block nav %}{% endblock %}
+
+{# Strip all main wrapper padding/width — reader uses full viewport #}
+{% block main_class %}{% endblock %}
+
+{% block head %}
+<style>
+#reader-hint { transition: opacity 0.3s ease-out; }
+#reader-hint.dismissing { opacity: 0; pointer-events: none; }
+#reader-pull-tab { background-color: rgba(156, 163, 175, 0.5); transition: top 0.3s ease; }
+#reader-pull-tab:hover { background-color: rgba(107, 114, 128, 0.7); }
+#reader-pull-tab.locked { background-color: rgba(59, 130, 246, 0.65); }
+#reader-pull-tab.locked:hover { background-color: rgba(37, 99, 235, 0.75); }
+#reader-pull-tab.shifted { top: 3.5rem; }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="space-y-4">
-    <!-- Header (comic mode: static; scroll mode: floating) -->
-    <div id="reader-header" class="flex items-center justify-between {% if scroll_mode %}fixed top-0 left-0 right-0 z-30 bg-white/90 backdrop-blur-sm shadow-sm px-6 py-3 transition-transform duration-300{% endif %}">
+    <!-- Reader header: floating, hides on inactivity -->
+    <div id="reader-header" class="flex items-center justify-between fixed top-0 left-0 right-0 z-30 bg-white/90 backdrop-blur-sm shadow-sm px-6 py-3 transition-transform duration-300">
         <div class="flex items-center gap-4">
             <a href="/tasks/{{ guid }}" class="text-sm text-gray-500 hover:text-blue-600">&larr; Back</a>
             <h1 class="text-lg font-bold text-gray-900 truncate max-w-lg">{{ title or gid }}</h1>
@@ -18,8 +35,8 @@
         </div>
     </div>
 
-    {% if images %}
-    <div id="reader-container" class="mx-auto {% if not scroll_mode %}max-w-4xl{% endif %}{% if scroll_mode %} pt-16{% endif %}">
+{% if images %}
+    <div id="reader-container" class="mx-auto {% if not scroll_mode %}max-w-4xl{% endif %}">
         {% if scroll_mode %}
             {% for img in images %}
             <div class="mb-1">
@@ -30,27 +47,34 @@
             {% endfor %}
         {% else %}
             {% for img in images %}
-            <div id="page-{{ img.fid }}" class="reader-page {% if loop.index0 > 0 %}hidden{% endif %}">
+            <div id="page-{{ img.fid }}" class="reader-page flex flex-col items-center justify-center min-h-screen{% if loop.index0 > 0 %} hidden{% endif %}">
                 <img src="{{ img.url }}" alt="Page {{ img.fid }}"
-                     class="w-full h-auto block cursor-pointer"
-                     onclick="nextPage()" />
-                <div class="text-center text-sm text-gray-400 mt-2">{{ img.fid }} / {{ total }}</div>
+                     class="max-w-full max-h-screen object-contain cursor-pointer select-none"
+                     onclick="handleImageClick(event)"
+                     draggable="false" />
             </div>
             {% endfor %}
         {% endif %}
     </div>
-    {% if not scroll_mode and images %}
-    <div id="reader-nav" class="flex justify-between mt-4 mx-auto max-w-4xl">
-        <button onclick="prevPage()" id="btn-prev"
-                class="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm font-medium">&larr; Prev</button>
-        <button onclick="nextPage()" id="btn-next"
-                class="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm font-medium">Next &rarr;</button>
+    <!-- First-visit click zone hint overlay (full viewport, below header) -->
+    <div id="reader-hint" class="fixed inset-0 z-25 hidden">
+        <div class="absolute top-0 bottom-0 left-0 w-1/5 bg-black/30 flex items-center justify-center cursor-pointer"
+             onclick="dismissHint()">
+            <span class="text-white text-lg font-bold bg-black/50 px-4 py-2 rounded-lg select-none">◀ 上一页</span>
+        </div>
+        <div class="absolute top-0 bottom-0 left-[20%] right-0 bg-black/10 flex items-center justify-center cursor-pointer"
+             onclick="dismissHint()">
+            <span class="text-white text-lg font-bold bg-black/50 px-4 py-2 rounded-lg select-none">下一页 ▶</span>
+        </div>
     </div>
-    {% endif %}
-    {% else %}
+    <!-- Pull-tab: toggle header visibility lock (top-left) -->
+    <div id="reader-pull-tab" class="fixed top-0 left-0 z-35 w-10 h-[60px] rounded-br-lg cursor-pointer transition-colors flex items-center justify-center select-none"
+         onclick="toggleHeaderLock()" title="Click to pin header">
+        <span class="text-white text-xl font-bold leading-none">↑</span>
+    </div>
+{% else %}
     <p class="text-gray-400 text-center py-12">No images available yet.</p>
-    {% endif %}
-</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -61,16 +85,8 @@ var scrollMode = {{ 'true' if scroll_mode else 'false' }};
 var winStart = {{ win_start | default(1) }};
 var loadedEnd = {{ win_end | default(total) }};
 var guid = "{{ guid }}";
-var batchHalf = 10;  // trigger preload at halfway point
+var batchHalf = 10;
 var preloading = false;
-
-function updateNav() {
-    var p = document.getElementById("btn-prev");
-    var n = document.getElementById("btn-next");
-    if (p) p.style.visibility = currentPage <= 1 ? "hidden" : "visible";
-    if (n) n.style.visibility = currentPage >= totalPages ? "hidden" : "visible";
-    document.getElementById("page-counter").textContent = currentPage + " / " + totalPages;
-}
 
 function padPage(n) {
     return String(n).padStart(totalPages.toString().length, "0");
@@ -80,6 +96,7 @@ function preloadNextBatch(triggerPage) {
     if (preloading || loadedEnd >= totalPages) return;
     var nextFrom = loadedEnd + 1;
     var nextTo = Math.min(loadedEnd + batchHalf, totalPages);
+    if (nextFrom > nextTo) return;
     preloading = true;
     htmx.ajax("GET", "/tasks/" + guid + "/pages?from=" + nextFrom + "&to=" + nextTo, {
         target: "#reader-container",
@@ -87,8 +104,8 @@ function preloadNextBatch(triggerPage) {
     }).then(function() {
         loadedEnd = nextTo;
         preloading = false;
-        // if we already passed the next threshold, trigger again
-        if (currentPage >= loadedEnd - batchHalf + 1 && loadedEnd < totalPages) {
+        // chain next batch if still in range
+        if (loadedEnd < totalPages && currentPage >= loadedEnd - batchHalf + 1) {
             preloadNextBatch(currentPage);
         }
     }).catch(function() {
@@ -98,12 +115,9 @@ function preloadNextBatch(triggerPage) {
 
 function showPage(n) {
     if (n < 1 || n > totalPages) return;
-
-    // Preload next batch when we're at the halfway point
     if (!scrollMode && n >= loadedEnd - batchHalf + 1 && loadedEnd < totalPages) {
         preloadNextBatch(n);
     }
-
     var p = document.getElementById("page-" + padPage(n));
     if (p) {
         document.querySelectorAll(".reader-page").forEach(function(el) { el.classList.add("hidden"); });
@@ -112,7 +126,7 @@ function showPage(n) {
         updateNav();
         window.scrollTo({top: 0, behavior: "instant"});
     } else if (n >= 1 && n <= totalPages) {
-        // outside window: reload at target page
+        // missing from DOM: full reload at target page
         var url = new URL(location.href);
         url.searchParams.set("page", n);
         location.href = url.toString();
@@ -121,6 +135,10 @@ function showPage(n) {
 
 function nextPage() { if (currentPage < totalPages) showPage(currentPage + 1); }
 function prevPage() { if (currentPage > 1) showPage(currentPage - 1); }
+
+function updateNav() {
+    document.getElementById("page-counter").textContent = currentPage + " / " + totalPages;
+}
 
 function toggleMode() {
     var url = new URL(location.href);
@@ -134,25 +152,127 @@ document.addEventListener("keydown", function(e) {
     else if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); prevPage(); }
 });
 
+// Click zone: left 1/5 → prev, right 4/5 → next
+function handleImageClick(e) {
+    if (scrollMode) { showBar(); return; }
+    var rect = e.target.getBoundingClientRect();
+    var xRatio = (e.clientX - rect.left) / rect.width;
+    if (xRatio < 0.2) {
+        prevPage();
+        // Immediately hide header same as next page
+        if (bar && !headerLocked) {
+            if (hideTimer) clearTimeout(hideTimer);
+            bar.style.transform = "translateY(-100%)";
+            shiftTab(false);
+        }
+    } else {
+        nextPage();
+        // Immediately hide header on next page
+        if (bar && !headerLocked) {
+            if (hideTimer) clearTimeout(hideTimer);
+            bar.style.transform = "translateY(-100%)";
+            shiftTab(false);
+        }
+    }
+}
+
+// First-visit hint overlay (localStorage)
+(function() {
+    var HINT_KEY = "xehentai-reader-hint-shown";
+    if (scrollMode || localStorage.getItem(HINT_KEY)) return;
+    var hint = document.getElementById("reader-hint");
+    if (!hint) return;
+    hint.classList.remove("hidden");
+    // Auto-dismiss after 8 seconds
+    setTimeout(function() { dismissHint(); }, 8000);
+})();
+
+function dismissHint() {
+    var hint = document.getElementById("reader-hint");
+    if (!hint || hint.classList.contains("dismissing")) return;
+    hint.classList.add("dismissing");
+    setTimeout(function() { hint.classList.add("hidden"); }, 300);
+    localStorage.setItem("xehentai-reader-hint-shown", "1");
+}
+
 updateNav();
 if (!scrollMode && currentPage > 1) showPage(currentPage);
 
-// Scroll mode: floating bar hide on scroll down, show on click/tap
+// Floating bar logic
 var lastScrollY = 0;
 var bar = document.getElementById("reader-header");
+var hideTimer = null;
+var headerLocked = false;
+
+function toggleHeaderLock() {
+    headerLocked = !headerLocked;
+    var tab = document.getElementById("reader-pull-tab");
+    if (headerLocked) {
+        if (tab) tab.classList.add("locked");
+        showBar();
+        if (hideTimer) clearTimeout(hideTimer);
+    } else {
+        if (tab) tab.classList.remove("locked");
+        resetHideTimer();
+    }
+}
+
+function shiftTab(visible) {
+    var tab = document.getElementById("reader-pull-tab");
+    if (!tab) return;
+    var span = tab ? tab.querySelector("span") : null;
+    if (visible) {
+        tab.classList.add("shifted");
+        if (span) span.textContent = "↓";
+    } else {
+        tab.classList.remove("shifted");
+        if (span) span.textContent = "↑";
+    }
+}
+
 if (scrollMode && bar) {
     window.addEventListener("scroll", function() {
         var sy = window.scrollY;
         if (sy > lastScrollY && sy > 80) {
             bar.style.transform = "translateY(-100%)";
+            shiftTab(false);
         } else if (sy < lastScrollY) {
             bar.style.transform = "translateY(0)";
+            shiftTab(true);
         }
         lastScrollY = sy;
     }, {passive: true});
+} else if (!scrollMode && bar) {
+    // Comic mode: header only shows when mouse near top edge, or when locked via pull-tab
+    function resetHideTimer() {
+        if (headerLocked) return;
+        bar.style.transform = "translateY(0)";
+        shiftTab(true);
+        if (hideTimer) clearTimeout(hideTimer);
+        hideTimer = setTimeout(function() {
+            if (!headerLocked) { bar.style.transform = "translateY(-100%)"; shiftTab(false); }
+        }, 2000);
+    }
+    document.addEventListener("mousemove", function(e) {
+        if (!headerLocked && e.clientY < 60) {
+            resetHideTimer();
+        }
+    }, {passive: true});
+    // Initial: show briefly then hide
+    resetHideTimer();
 }
+
 function showBar() {
-    if (bar && scrollMode) { bar.style.transform = "translateY(0)"; lastScrollY = window.scrollY; }
+    if (bar) { bar.style.transform = "translateY(0)"; shiftTab(true); lastScrollY = window.scrollY; }
+}
+function hideBar() {
+    if (bar && !scrollMode) {
+        if (hideTimer) clearTimeout(hideTimer);
+        hideTimer = setTimeout(function() {
+            bar.style.transform = "translateY(-100%)";
+            shiftTab(false);
+        }, 2000);
+    }
 }
 </script>
 {% endblock %}

@@ -401,11 +401,11 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 if file_name and file_hash:
                     ext = file_name.rsplit(".", 1)[-1] if "." in file_name else "jpg"
                     fragments.append(
-                        f'<div id="page-{fid_str}" class="reader-page hidden">'
+                        f'<div id="page-{fid_str}" class="reader-page flex flex-col items-center justify-center min-h-screen hidden">'
                         f'<img src="/api/img/{task.gid}/{fid_str}-{file_hash}.{ext}"'
-                        f' alt="Page {fid_str}" class="w-full h-auto block cursor-pointer"'
-                        f' onclick="nextPage()" />'
-                        f'<div class="text-center text-sm text-gray-400 mt-2">{fid_str} / {total}</div>'
+                        f' alt="Page {fid_str}" class="max-w-full max-h-screen object-contain cursor-pointer select-none"'
+                        f' onclick="handleImageClick(event)"'
+                        f' draggable="false" />'
                         f'</div>'
                     )
             return HTMLResponse("".join(fragments))
