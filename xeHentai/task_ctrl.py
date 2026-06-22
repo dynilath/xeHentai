@@ -625,7 +625,7 @@ class TaskControl:
                     )
 
                     img_file_name = task.reload_map[scan_result.img_url][1]
-                    self.logger.info(
+                    self.logger.debug(
                         i18n.XEH_FILE_DOWNLOADED.format(
                             guid=task_guid, fid=scan_result.fid, fname=img_file_name
                         )
@@ -635,7 +635,7 @@ class TaskControl:
                     log_task_state("img_downloaded")
                     return
                 except ScanDownloadSkip as ex:
-                    self.logger.info(
+                    self.logger.debug(
                         i18n.DF_FILE_DOWNLOADED_SKIPPED.format(
                             guid=task_guid,
                             fid=ex.result.fid if ex.result else None,

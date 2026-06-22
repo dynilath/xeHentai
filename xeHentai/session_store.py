@@ -2,11 +2,14 @@
 # coding:utf-8
 
 import json
+import logging
 import os
 import sqlite3
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+_log = logging.getLogger('xeHentai.session_store')
 
 from .const import TASK_STATE_FINISHED, TASK_STATE_PAUSED, TASK_STATE_WAITING
 
@@ -39,6 +42,14 @@ CREATE TABLE IF NOT EXISTS task_tags (
 ) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON task_tags(tag);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
+    title,
+    content='',
+    contentless_delete=1,
+    tokenize='trigram',
+    detail='full'
+);
 '''
 
 _TASKS_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -109,8 +120,7 @@ def _ensure_schema(db_path: str = TASKS_DB_FILE) -> None:
             '''
         )
 
-        # Tag normalization: one-time backfill from existing payload JSON.
-        # Guarded by COUNT(*) = 0 so re-runs are cheap (idempotent).
+        # Tag normalization: one-time backfill from payload JSON.
         row = conn.execute('SELECT COUNT(*) FROM task_tags').fetchone()
         if row[0] == 0:
             conn.execute(
@@ -122,21 +132,70 @@ def _ensure_schema(db_path: str = TASKS_DB_FILE) -> None:
                 '''
             )
 
+        # Backfill bare tag values (text after ':') for tags that have a
+        # namespace prefix.  Idempotent via INSERT OR IGNORE.
+        conn.execute(
+            '''
+            INSERT OR IGNORE INTO task_tags (guid, tag)
+            SELECT guid,
+                   LTRIM(SUBSTR(tag, INSTR(tag, ':') + 1))
+            FROM task_tags
+            WHERE INSTR(tag, ':') > 0
+              AND LTRIM(SUBSTR(tag, INSTR(tag, ':') + 1)) != ''
+            '''
+        )
+
+        # Backfill tasks_fts from the tasks table so existing rows are
+        # searchable.  Idempotent: skips if FTS already populated.
+        fts_cnt = conn.execute('SELECT COUNT(*) FROM tasks_fts').fetchone()[0]
+        if fts_cnt == 0:
+            conn.execute(
+                '''
+                INSERT INTO tasks_fts(rowid, title)
+                SELECT rowid, title FROM tasks WHERE title IS NOT NULL
+                '''
+            )
+
         conn.commit()
     finally:
         conn.close()
 
 
+def _bare_tag_value(tag: str) -> Optional[str]:
+    """Extract the value part of a namespace:value tag for exact-match lookups.
+
+    Returns the substring after the first ':', or None if the tag has no ':'
+    and should not produce a separate bare-value row.
+    """
+    colon = tag.find(':')
+    if colon >= 0:
+        after = tag[colon + 1:]
+        return after.strip() if after.strip() else None
+    return None
+
+
 def _sync_task_tags(conn: sqlite3.Connection, guid: str, payload: Dict[str, Any]) -> None:
-    """Synchronize task_tags rows from a task payload dict (within a transaction)."""
+    """Synchronize task_tags rows from a task payload dict (within a transaction).
+
+    For each namespace:value tag, both the full tag AND the bare value
+    (text after ':') are stored.  This enables the hybrid search path:
+      - tag = 'namespace:value' → exact namespace:value filter
+      - tag = 'value'          → exact value match from free-text terms
+    """
     conn.execute('DELETE FROM task_tags WHERE guid = ?', (str(guid),))
     meta = payload.get('meta')
     if isinstance(meta, dict):
         tags = meta.get('tags', [])
         if tags:
+            rows = [(str(guid), str(t)) for t in tags]
+            # Also insert bare values for tags that have a namespace prefix.
+            for t in tags:
+                bv = _bare_tag_value(str(t))
+                if bv is not None:
+                    rows.append((str(guid), bv))
             conn.executemany(
                 'INSERT OR IGNORE INTO task_tags (guid, tag) VALUES (?, ?)',
-                [(str(guid), str(t)) for t in tags],
+                rows,
             )
 
 
@@ -309,6 +368,12 @@ def save_single_task(guid: str, task_payload: Dict[str, Any], db_path: str = TAS
             )
             # Maintain task_tags from the payload dict.
             _sync_task_tags(conn, row['guid'], task_payload)
+            # Sync FTS5 index: insert/replace the title column.
+            conn.execute(
+                'INSERT OR REPLACE INTO tasks_fts(rowid, title) '
+                'SELECT rowid, ? FROM tasks WHERE guid = ?',
+                (row['title'], row['guid']),
+            )
         cached = _TASKS_CACHE.get(db_path)
         if cached is not None:
             cached[guid] = dict(task_payload)
@@ -350,6 +415,69 @@ def _row_to_light_dict(row: sqlite3.Row) -> Dict[str, Any]:
         'title': str(row['title'] or '') if row['title'] is not None else '',
         'total': int(row['total'] or 0) if row['total'] is not None else 0,
     }
+
+
+def _parse_search_query(q: str) -> Tuple[List[str], List[Tuple[str, str]]]:
+    """Split a search query into free-text terms and structured tag filters.
+
+    - Terms containing ':' and NOT wrapped in double quotes are treated as
+      ``namespace:value`` tag filters.
+    - Quoted terms (``"..."``) are ALWAYS free-text, even if they contain ':'.
+      Quotes serve as both grouping (multi-word terms stay together) and
+      literal-text marker for ':'.
+    - All other terms (CJK text, bare words) become free-text terms matched
+      against the FTS title index AND via exact tag value lookup.
+    - A bare ``namespace:`` (no value after ':') yields a prefix filter.
+
+    Returns (free_terms, tag_filters) where each tag_filter is (ns, val).
+
+    Example:
+        'male:feminization "breast expansion" 私は女の子が好'
+        → (['breast expansion', '私は女の子が好'], [('male', 'feminization')])
+    """
+    if not q or not q.strip():
+        return [], []
+
+    # Parse raw string preserving quote state so we know which terms were
+    # explicitly quoted (→ always free-text, even with ':' inside).
+    raw_terms: List[Tuple[str, bool]] = []  # (term, was_quoted)
+    i = 0
+    q = q.strip()
+    while i < len(q):
+        if q[i] == ' ':
+            i += 1
+            continue
+        if q[i] == '"':
+            j = q.index('"', i + 1) if '"' in q[i + 1:] else len(q)
+            term = q[i + 1:j]
+            i = j + 1
+            if term:
+                raw_terms.append((term, True))
+        else:
+            j = i
+            while j < len(q) and q[j] not in (' ', '"'):
+                j += 1
+            term = q[i:j]
+            i = j
+            if term:
+                raw_terms.append((term, False))
+
+    free_terms: List[str] = []
+    tag_filters: List[Tuple[str, str]] = []
+    for term, was_quoted in raw_terms:
+        if was_quoted:
+            # Quoted terms are always free-text (literal text grouping).
+            free_terms.append(term)
+            continue
+        colon = term.find(':')
+        if colon >= 0:
+            ns = term[:colon].strip()
+            val = term[colon + 1:].strip()
+            if ns:
+                tag_filters.append((ns, val))
+                continue
+        free_terms.append(term)
+    return free_terms, tag_filters
 
 
 def _parse_search_terms(q: str) -> List[str]:
@@ -405,13 +533,16 @@ def query_tasks(
                 are normalized into the ``task_tags`` table with an indexed
                 ``tag`` column for efficient exact-match and LIKE lookups.
       - gid/url: exact match.
-      - q:      space-separated search terms; ALL must match. Each term is
-                matched against title (LIKE) AND tags (LIKE). Quoted strings
-                like ``"gender change"`` are supported.
+      - q:      space-separated search terms; ALL must match.  Terms containing
+                ':' are treated as ``namespace:value`` tag filters (exact or
+                prefix match via the task_tags index).  All other terms are
+                free-text: matched against title via FTS5 trigram AND against
+                tag bare values via exact index lookup.
 
     Returns (total_count, [light_dict, ...]). The returned dicts never include
     the payload, even when ``tags`` filtering read it internally.
     """
+    t0 = time.perf_counter()
     _ensure_schema_once(db_path)
     order_col = _ORDER_BY_WHITELIST.get(order_by, 'updated_at')
     direction = 'DESC' if str(order_dir).upper() == 'DESC' else 'ASC'
@@ -443,31 +574,67 @@ def query_tasks(
         where.append('url = ?')
         params.append(str(url))
     if q:
-        terms = _parse_search_terms(q)
-        for term in terms:
+        free_terms, tag_filters = _parse_search_query(q)
+        # --- Path A: FTS title + exact tag value for each free-text term ---
+        for term in free_terms:
             where.append(
-                '(title LIKE ? OR EXISTS (SELECT 1 FROM task_tags WHERE guid = tasks.guid AND tag LIKE ?))'
+                '(tasks.rowid IN '
+                '(SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?) '
+                'OR EXISTS (SELECT 1 FROM task_tags WHERE guid = tasks.guid AND tag = ?))'
             )
-            params.extend(['%' + term + '%', '%' + term + '%'])
+            # FTS5 MATCH with double-quoted term for phrase/substring matching.
+            fts_query = '"%s"' % term.replace('"', '""')
+            params.extend([fts_query, term])
+        # --- Path B: structured namespace:value tag filters ---
+        for ns, val in tag_filters:
+            if val:
+                # Exact match: tag = 'namespace:value'
+                where.append(
+                    'EXISTS (SELECT 1 FROM task_tags WHERE guid = tasks.guid AND tag = ?)'
+                )
+                params.append('%s:%s' % (ns, val))
+            else:
+                # Prefix match: tag LIKE 'namespace:%'
+                where.append(
+                    'EXISTS (SELECT 1 FROM task_tags WHERE guid = tasks.guid AND tag LIKE ?)'
+                )
+                params.append('%s:%%' % ns)
 
     where_clause = (' WHERE ' + ' AND '.join(where)) if where else ''
     offset = max(0, int(offset or 0))
     limit = max(1, min(1000, int(limit or 100)))
+    t1 = time.perf_counter()
 
     conn = _connect(db_path)
     try:
+        t2 = time.perf_counter()
         total = conn.execute(
             'SELECT COUNT(*) FROM tasks%s' % where_clause, params
         ).fetchone()[0]
+        t3 = time.perf_counter()
         rows = conn.execute(
             'SELECT %s FROM tasks%s ORDER BY %s %s LIMIT ? OFFSET ?'
             % (_LIGHT_COLUMNS, where_clause, order_col, direction),
             params + [limit, offset],
         ).fetchall()
+        t4 = time.perf_counter()
     finally:
         conn.close()
 
-    return int(total or 0), [_row_to_light_dict(r) for r in rows]
+    result_total = int(total or 0)
+    result_rows = [_row_to_light_dict(r) for r in rows]
+    t5 = time.perf_counter()
+
+    _log.info(
+        'query_tasks | total=%d returned=%d | build=%.1fms count=%.1fms select=%.1fms rows=%.1fms total=%.1fms | '
+        'states=%s tags=%s gid=%s q=%s order=%s/%s limit=%d offset=%d',
+        result_total, len(result_rows),
+        (t1 - t0) * 1000, (t3 - t2) * 1000, (t4 - t3) * 1000,
+        (t5 - t4) * 1000, (t5 - t0) * 1000,
+        states, tags, gid, q, order_by, order_dir, limit, offset,
+    )
+
+    return result_total, result_rows
 
 
 def get_task_row(guid: str, db_path: str = TASKS_DB_FILE) -> Optional[Dict[str, Any]]:
@@ -566,6 +733,10 @@ def delete_task(guid: str, db_path: str = TASKS_DB_FILE) -> None:
     try:
         with conn:
             conn.execute('DELETE FROM task_tags WHERE guid = ?', (str(guid),))
+            conn.execute(
+                'DELETE FROM tasks_fts WHERE rowid = (SELECT rowid FROM tasks WHERE guid = ?)',
+                (str(guid),),
+            )
             conn.execute('DELETE FROM tasks WHERE guid = ?', (str(guid),))
     finally:
         conn.close()
@@ -697,6 +868,20 @@ def import_tasks_from_json(json_path: str = TASKS_FILE, db_path: str = TASKS_DB_
         deduped[row['guid']] = json.loads(row['payload'])
 
     _save_tasks_sqlite(deduped, db_path)
+
+    # Backfill tasks_fts for newly imported tasks.
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            '''
+            INSERT OR REPLACE INTO tasks_fts(rowid, title)
+            SELECT rowid, title FROM tasks WHERE title IS NOT NULL
+            '''
+        )
+    finally:
+        conn.close()
+
     return {
         'source': len(tasks),
         'imported': len(deduped),
