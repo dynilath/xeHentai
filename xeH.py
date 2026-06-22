@@ -16,22 +16,30 @@ from threading import Thread
 
 from xeHentai.config_loader import bootstrap_config
 from xeHentai.core import xeHentai
+from xeHentai.util.logger import Logger
 from xeHentai.web import WebServer
 
 
 def main():
     # ── First-run bootstrap ─────────────────────────────────────────────
-    _config, was_created = bootstrap_config()
+    _yaml_config, was_created = bootstrap_config()
     if was_created:
         print("config.yml has been generated from the default template.")
         print("Please review and edit it, then run this program again.")
         sys.exit(0)
 
-    print("xeHentai — starting...")
+    _cfg = _yaml_config.to_flat_dict()
+
+    # ── Logger (created before core so we can log "starting") ───────────
+    log = Logger()
+    log.set_console_level(_cfg.get("log_level_console", "DEBUG"))
+    log.set_file_level(_cfg.get("log_level_file", "DEBUG"))
+    log.set_log_path(_cfg.get("log_path", "eh.log"))
+
+    log.info("xeHentai — starting...")
 
     # ── Bootstrap core ──────────────────────────────────────────────────
-    xeH = xeHentai()
-    log = xeH.logger
+    xeH = xeHentai(config=_cfg, log=log)
     log.info("xeHentai %s started.", xeH.verstr)
 
     # ── Start Web UI ────────────────────────────────────────────────────

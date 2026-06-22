@@ -103,9 +103,9 @@ class xeHentai(HostInterface):
         "jpn_title",
     )
 
-    def __init__(self):
+    def __init__(self, config=None, log=None):
         self.verstr = f"{__version__}{'-dev' if DEVELOPMENT else ''}"
-        self.logger = logger.Logger()
+        self.logger = log or logger.Logger()
         self.tasks: Queue[str] = Queue()  # for queueing, stores guid only
         self.last_task_guid = None
         self._task_lock: RLock = RLock()
@@ -113,12 +113,17 @@ class xeHentai(HostInterface):
         # async_task_concurrency). All other tasks live in SQLite and are
         # hydrated on demand. The DB is the single source of truth.
         self._active_tasks: dict[str, Task] = {}
-        _yaml_config = load_config()
-        _cfg = _yaml_config.to_flat_dict()
+        if config is not None:
+            _cfg = dict(config)
+        else:
+            _yaml_config = load_config()
+            _cfg = _yaml_config.to_flat_dict()
         self.config = CoreConfig(_cfg)
         # backward compatibility for older code paths
         self.cfg = self.config
         self.proxy = None
+        self.logger.debug("config: %s", dict(self.config))
+        self._rebuild_proxy_pool(self.config["proxy"])
         self.cookies = {"nw": "1"}
         self.headers = {
             "User-Agent": util.make_ua(),
@@ -260,10 +265,11 @@ class xeHentai(HostInterface):
         self._save_proxy_store(store)
 
     def update_config(self, **cfg_dict):
+        self.logger.debug("config update: %s", cfg_dict)
         self.config.update(cfg_dict)
         self.logger.set_console_level(self.config["log_level_console"])
         self.logger.set_file_level(self.config["log_level_file"])
-        self.logger.debug("cfg %s" % self.config)
+        self.logger.debug("config: %s", dict(self.config))
         if "proxy" in cfg_dict:
             self._rebuild_proxy_pool(self.config["proxy"])
             self.logger.debug(

@@ -47,7 +47,6 @@ class ProxyState:
 DEFAULT_HALF_LIFE = 600
 DEFAULT_FAIL_PENALTY = 0.3
 DEFAULT_SUCCESS_REWARD = 0.05
-DEFAULT_DISABLE_THRESHOLD = 0.15
 
 
 class ProxyControl(object):
@@ -58,7 +57,6 @@ class ProxyControl(object):
         half_life: float = DEFAULT_HALF_LIFE,
         fail_penalty: float = DEFAULT_FAIL_PENALTY,
         success_reward: float = DEFAULT_SUCCESS_REWARD,
-        disable_threshold: float = DEFAULT_DISABLE_THRESHOLD,
     ):
 
         def clamp(value: float) -> float:
@@ -69,7 +67,6 @@ class ProxyControl(object):
         self.half_life = max(1e-3, float(half_life))
         self.fail_penalty = clamp(fail_penalty)
         self.success_reward = clamp(success_reward)
-        self.disable_threshold = clamp(disable_threshold)
         self.state = ProxyState(last_update=time.time())
 
     def import_state(self, data: Dict[str, Any]) -> None:
@@ -98,10 +95,6 @@ class ProxyControl(object):
         self.success_reward = min(
             max(_to_float(data.get("success_reward"), self.success_reward), 0.0), 1.0
         )
-        self.disable_threshold = min(
-            max(_to_float(data.get("disable_threshold"), self.disable_threshold), 0.0),
-            1.0,
-        )
 
         self.state.score = min(
             max(_to_float(state.get("score"), self.state.score), 0.0), 1.0
@@ -119,7 +112,6 @@ class ProxyControl(object):
             "half_life": self.half_life,
             "fail_penalty": self.fail_penalty,
             "success_reward": self.success_reward,
-            "disable_threshold": self.disable_threshold,
             "state": {
                 "score": self.state.score,
                 "cooldown_until": self.state.cooldown_until,
@@ -128,11 +120,7 @@ class ProxyControl(object):
             },
         }
 
-    def set_disable_after_failures(self, fail_count):
-        fail_count = max(1.0, float(fail_count))
-        self.disable_threshold = pow(1 - self.fail_penalty, fail_count)
-
-    def set_good_threshold(self, threshold):
+    def set_heal_after(self, threshold):
         threshold = max(1.0, float(threshold))
         self.success_reward = min(1.0, 1.0 / threshold)
 

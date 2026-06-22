@@ -95,16 +95,6 @@ class TaskControl:
         )
         self._archive_scheduler = Scheduler(workers=1)
 
-        self._host.logger.info(
-            "Scan threads count: {}".format(host.config["scan_thread_cnt"])
-        )
-        self._host.logger.info(
-            "Download threads count: {}".format(host.config["download_thread_cnt"])
-        )
-        self._host.logger.info(
-            "Async task concurrency: {}".format(host.config["async_task_concurrency"])
-        )
-
     @property
     def logger(self):
         return self._host.logger

@@ -132,8 +132,7 @@ class ConfigUpdateRequest(BaseModel):
     log_level_console: Optional[str] = None
     log_level_file: Optional[str] = None
     delete_task_files: Optional[bool] = None
-    proxy_disable_threshold: Optional[int] = None
-    proxy_good_threshold: Optional[int] = None
+    proxy_heal_after: Optional[int] = None
 
 
 # ── System ──────────────────────────────────────────────────────────────────

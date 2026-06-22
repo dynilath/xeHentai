@@ -2,8 +2,8 @@
 
 On first run, if no ``config.yml`` exists in the working directory, a copy
 of the default template (``xeHentai/config.default.yml``) is automatically
-created.  Users edit the local ``config.yml`` — the template is never
-overwritten.
+created with localized comments matching the system locale.  Users edit the
+local ``config.yml`` — the template is never overwritten.
 
 Provides ``load_config()`` (used by the core) and ``bootstrap_config()``
 (used by the entry point to detect first-run).
@@ -11,9 +11,12 @@ Provides ``load_config()`` (used by the core) and ``bootstrap_config()``
 
 from __future__ import annotations
 
+import importlib
+import locale as _locale_mod
 import os
+import re
 import shutil
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import yaml
 
@@ -47,12 +50,52 @@ def _parse_config(path: str) -> XeHentaiConfig:
     return XeHentaiConfig.model_validate(raw)
 
 
+def _resolve_config_tags() -> Dict[str, str]:
+    """Return the locale-appropriate config comment tag dict."""
+    try:
+        loc = (_locale_mod.getdefaultlocale()[0] or "en_us").lower()
+        if loc in ("zh_cn", "zh_sg"):
+            loc = "zh_hans"
+        mod = importlib.import_module("xeHentai.i18n.%s" % loc)
+        return getattr(mod, "config_tags", {})
+    except Exception:
+        from .i18n.en_us import config_tags
+        return config_tags
+
+
+_TAG_RE = re.compile(r"(#[ \t]*-*[ \t]*)\{%(\w+)%}([ \t]*-*)")
+
+
+def _apply_config_tags(template_path: str, output_path: str) -> None:
+    """Read the template, replace ``# {%tag%}`` with localized comments,
+    and write the result to *output_path*."""
+    tags = _resolve_config_tags()
+
+    with open(template_path, "r", encoding="utf-8") as fh:
+        content = fh.read()
+
+    def _replace(m: re.Match) -> str:
+        prefix = m.group(1).rstrip()
+        key = m.group(2)
+        suffix = m.group(3).lstrip()
+        text = tags.get(key, key)
+        if suffix:
+            return "%s %s %s" % (prefix, text, suffix)
+        return "%s %s" % (prefix, text)
+
+    content = _TAG_RE.sub(_replace, content)
+
+    with open(output_path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+
 def bootstrap_config() -> Tuple[XeHentaiConfig, bool]:
     """Entry-point config loader with first-run detection.
 
-    If ``config.yml`` does not exist, copies the default template into CWD,
-    loads it, and returns ``(config, True)`` — the caller should inform the
-    user and exit so they can review the generated file.
+    If ``config.yml`` does not exist, copies the default template into CWD
+    with localized comments, loads it, and returns ``(config, True)`` — the
+    caller should inform the user and exit so they can review the generated
+    file.
 
     If ``config.yml`` already exists, returns ``(config, False)`` — normal
     startup can proceed.
@@ -72,7 +115,7 @@ def bootstrap_config() -> Tuple[XeHentaiConfig, bool]:
         )
 
     cwd_path = os.path.join(os.getcwd(), "config.yml")
-    shutil.copy2(template, cwd_path)
+    _apply_config_tags(template, cwd_path)
     return _parse_config(cwd_path), True
 
 

@@ -94,3 +94,35 @@ CF_SCANDOWNLOADSKIP_EXISTING = "file already exists, skip downloading"
 # error messages
 TS_ERR_GALLERY_REMOVED = "[guid={guid} gid={gid}] gallery has been removed, may need to change IP to access or wait until it's visible in exhentai"
 TS_ERR_GALLERY_NOT_FOUND = "[guid={guid} gid={gid}] gallery not found, may be incorrect url or gallery not created"
+
+# ── Config template tags (replaced at first-run bootstrap) ──────────────
+
+config_tags = {
+    "header": "xeHentai configuration",
+    "gateway_section": "Gateway (Web UI + REST API)",
+    "gateway_host": 'Bind address, "0.0.0.0" to listen on all interfaces',
+    "gateway_port": "Listen port",
+    "download_section": "Download",
+    "download_dir": "Download root directory",
+    "download_ori": "Download original images (requires ExHentai login)",
+    "jpn_title": "Prefer Japanese title",
+    "delete_task_files": "Delete files when deleting a task",
+    "proxy_section": "Proxy",
+    "proxy_servers": 'Proxy server list, e.g. ["http://127.0.0.1:7890"]',
+    "proxy_image": "Use proxy for image downloads",
+    "proxy_image_only": "Only proxy image downloads, not pages",
+    "proxy_heal_after": "Consecutive successes to fully recover a proxy",
+    "performance_section": "Performance / Concurrency",
+    "scan_thread_cnt": "Page-scan thread count",
+    "download_thread_cnt": "Image-download thread count",
+    "async_task_concurrency": "Max concurrent tasks",
+    "page_interval": "Interval between page requests (seconds)",
+    "page_retry": "Page request retry count",
+    "page_timeout": "Page request timeout (seconds)",
+    "download_retry": "Image download retry count",
+    "download_timeout": "Image download timeout (seconds)",
+    "logging_section": "Logging",
+    "log_path": "Log file path",
+    "log_level_console": "Console log level: DEBUG/INFO/WARNING/ERROR/CRITICAL",
+    "log_level_file": "File log level: DEBUG/INFO/WARNING/ERROR/CRITICAL",
+}

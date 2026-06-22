@@ -95,3 +95,35 @@ CF_SCANDOWNLOADSKIP_EXISTING = "文件已存在，跳过下载"
 # error messages
 TS_ERR_GALLERY_REMOVED = "[guid={guid} gid={gid}] 图集被移除，可能需要换个IP进行访问，或者等待里站可见"
 TS_ERR_GALLERY_NOT_FOUND = "[guid={guid} gid={gid}] 无法找到图集，可能地址错误或者图集未创建"
+
+# ── Config template tags (replaced at first-run bootstrap) ──────────────
+
+config_tags = {
+    "header": "xeHentai 配置文件",
+    "gateway_section": "Gateway 设置 (Web UI + REST API)",
+    "gateway_host": '监听地址，"0.0.0.0" 表示监听所有网络接口',
+    "gateway_port": "监听端口",
+    "download_section": "下载设置",
+    "download_dir": "下载根目录",
+    "download_ori": "是否下载原图（需要登录 ExHentai）",
+    "jpn_title": "优先使用日文标题",
+    "delete_task_files": "删除任务时同时删除已下载的文件",
+    "proxy_section": "代理设置",
+    "proxy_servers": '代理服务器列表，例如: ["http://127.0.0.1:7890"]',
+    "proxy_image": "代理也用于图片下载",
+    "proxy_image_only": "仅代理图片下载，不代理页面请求",
+    "proxy_heal_after": "连续成功多少次后完全恢复代理",
+    "performance_section": "性能 / 并发设置",
+    "scan_thread_cnt": "扫描页面线程数",
+    "download_thread_cnt": "下载图片线程数",
+    "async_task_concurrency": "最大同时执行的任务数",
+    "page_interval": "页面请求间隔（秒）",
+    "page_retry": "页面请求重试次数",
+    "page_timeout": "页面请求超时（秒）",
+    "download_retry": "图片下载重试次数",
+    "download_timeout": "图片下载超时（秒）",
+    "logging_section": "日志设置",
+    "log_path": "日志文件路径",
+    "log_level_console": "控制台日志级别: DEBUG/INFO/WARNING/ERROR/CRITICAL",
+    "log_level_file": "文件日志级别: DEBUG/INFO/WARNING/ERROR/CRITICAL",
+}

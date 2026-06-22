@@ -39,8 +39,7 @@ class ProxyConfig(BaseModel):
     servers: List[str] = Field(default_factory=list, description="Proxy server URLs (socks5/http/glype)")
     image: bool = Field(default=True, description="Use proxy for image downloads too")
     image_only: bool = Field(default=False, description="Only proxy image downloads, not pages")
-    disable_threshold: int = Field(default=16, ge=0, description="Consecutive failures before disabling a proxy")
-    good_threshold: int = Field(default=16, ge=0, description="Consecutive successes before marking proxy good")
+    heal_after: int = Field(default=16, ge=0, description="Consecutive successes to fully recover a proxy")
 
 
 class PerformanceConfig(BaseModel):
@@ -94,8 +93,7 @@ class XeHentaiConfig(BaseModel):
         "proxy.servers": "proxy",
         "proxy.image": "proxy_image",
         "proxy.image_only": "proxy_image_only",
-        "proxy.disable_threshold": "proxy_disable_threshold",
-        "proxy.good_threshold": "proxy_good_threshold",
+        "proxy.heal_after": "proxy_heal_after",
         # performance
         "performance.scan_thread_cnt": "scan_thread_cnt",
         "performance.download_thread_cnt": "download_thread_cnt",
