@@ -824,10 +824,7 @@ class TaskControl:
             if self._task_should_abort(task):
                 raise TaskAbort("task aborted before make_archive")
             self._host._save_session(task=True, proxy_store=True, guid=task_guid)
-            if task.config.get("make_archive"):
-                task.set_phase_state(TASK_STATE_MAKE_ARCHIVE)
-            else:
-                task.set_phase_state(TASK_STATE_FINISHED)
+            task.set_phase_state(TASK_STATE_MAKE_ARCHIVE)
             self._emit_ws_task_state_change(task, task_guid)
 
         # After all pages are processed, make archive

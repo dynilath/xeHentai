@@ -62,11 +62,6 @@
 
             <div class="space-y-2 pt-2">
                 <label class="flex items-center gap-2">
-                    <input type="checkbox" name="make_archive" value="true"
-                           {% if config.get('make_archive') %}checked{% endif %} class="rounded border-gray-300">
-                    <span class="text-sm text-gray-700">Create archive by default</span>
-                </label>
-                <label class="flex items-center gap-2">
                     <input type="checkbox" name="download_ori" value="true"
                            {% if config.get('download_ori') %}checked{% endif %} class="rounded border-gray-300">
                     <span class="text-sm text-gray-700">Download original images by default</span>

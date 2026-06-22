@@ -7,19 +7,11 @@ from .models import ConfigResponse, ConfigUpdateRequest
 
 router = APIRouter(prefix="/api", tags=["config"])
 
-# Keys to exclude from the config API response
-_CONFIG_EXCLUDE_PREFIXES = ("rpc_",)
-_CONFIG_EXCLUDE_KEYS = ("urls",)
-
 
 def _clean_config_for_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Filter out internal/rpc-only config keys for the API response."""
-    return {
-        k: v
-        for k, v in cfg.items()
-        if not any(k.startswith(p) for p in _CONFIG_EXCLUDE_PREFIXES)
-        and k not in _CONFIG_EXCLUDE_KEYS
-    }
+    """Filter out internal-only config keys for the API response."""
+    # All config keys are now public; no prefix-based filtering needed.
+    return dict(cfg)
 
 
 @router.get("/config", response_model=ConfigResponse)

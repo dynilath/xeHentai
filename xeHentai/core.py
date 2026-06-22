@@ -26,14 +26,7 @@ from .const import __version__
 from queue import Queue
 
 from .task_config import CoreConfig
-from . import config as default_config
-
-sys.path.insert(1, FILEPATH)
-try:
-    import config
-except ImportError:
-    config = default_config
-sys.path.pop(1)
+from .config_loader import load_config
 
 
 state_2_names = {
@@ -106,10 +99,8 @@ def _top_name_for_state(state: int) -> str:
 class xeHentai(HostInterface):
     _TASK_CONFIG_KEYS = (
         "download_ori",
-        "make_archive",
         "delete_task_files",
         "jpn_title",
-        "download_range",
     )
 
     def __init__(self):
@@ -122,11 +113,8 @@ class xeHentai(HostInterface):
         # async_task_concurrency). All other tasks live in SQLite and are
         # hydrated on demand. The DB is the single source of truth.
         self._active_tasks: dict[str, Task] = {}
-        _cfg = {
-            k: v for k, v in default_config.__dict__.items() if not k.startswith("_")
-        }
-        # note that ignored_errors are overwritten using val from custom config
-        _cfg.update({k: v for k, v in config.__dict__.items() if not k.startswith("_")})
+        _yaml_config = load_config()
+        _cfg = _yaml_config.to_flat_dict()
         self.config = CoreConfig(_cfg)
         # backward compatibility for older code paths
         self.cfg = self.config
@@ -272,14 +260,7 @@ class xeHentai(HostInterface):
         self._save_proxy_store(store)
 
     def update_config(self, **cfg_dict):
-        self.config.update(
-            {k: v for k, v in cfg_dict.items() if k not in ("ignored_errors",)}
-        )
-        # merge ignored errors list
-        if "ignored_errors" in cfg_dict and cfg_dict["ignored_errors"]:
-            self.config["ignored_errors"] = list(
-                set(self.config["ignored_errors"] + cfg_dict["ignored_errors"])
-            )
+        self.config.update(cfg_dict)
         self.logger.set_console_level(self.config["log_level_console"])
         self.logger.set_file_level(self.config["log_level_file"])
         self.logger.debug("cfg %s" % self.config)
@@ -451,7 +432,7 @@ class xeHentai(HostInterface):
             # (their state changes go through update_task_state / _dehydrate_task).
             if guid:
                 t = self._active_tasks.get(guid)
-                if t and self.config["save_tasks"]:
+                if t:
                     try:
                         session_store.save_task_from_active(t)
                     except Exception as ex:

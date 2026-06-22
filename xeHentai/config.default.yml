@@ -1,0 +1,43 @@
+# ============================================================
+# xeHentai 默认配置模板
+# 首次运行时会自动复制到项目根目录的 config.yml
+# 请编辑根目录的 config.yml 进行自定义，不要修改此文件
+# ============================================================
+
+# --- Gateway 设置 (Web UI + REST API) ---
+gateway:
+  host: "localhost"          # 监听地址，"0.0.0.0" 表示监听所有网络接口
+  port: 8010                 # 监听端口
+
+# --- 下载设置 ---
+download:
+  dir: "./download"          # 下载根目录
+  download_ori: false        # 是否下载原图（需要登录 ExHentai）
+  jpn_title: true            # 优先使用日文标题
+  delete_task_files: false   # 删除任务时同时删除已下载的文件
+
+# --- 代理设置 ---
+# 支持的代理类型: socks5h://, socks5://, http://, https://
+proxy:
+  servers: []                # 代理服务器列表，例如: ["http://127.0.0.1:7890"]
+  image: true                # 代理也用于图片下载
+  image_only: false          # 仅代理图片下载，不代理页面请求
+  disable_threshold: 16      # 连续失败多少次后禁用代理
+  good_threshold: 16         # 连续成功多少次后标记代理为正常
+
+# --- 性能 / 并发设置 ---
+performance:
+  scan_thread_cnt: 1         # 扫描页面线程数
+  download_thread_cnt: 5     # 下载图片线程数
+  async_task_concurrency: 1  # 最大同时执行的任务数
+  page_interval: 1           # 页面请求间隔（秒）
+  page_retry: 3              # 页面请求重试次数
+  page_timeout: 10           # 页面请求超时（秒）
+  download_retry: 5          # 图片下载重试次数
+  download_timeout: 8        # 图片下载超时（秒）
+
+# --- 日志设置 ---
+logging:
+  path: "eh.log"             # 日志文件路径
+  level_console: "DEBUG"     # 控制台日志级别: DEBUG/INFO/WARNING/ERROR/CRITICAL
+  level_file: "INFO"        # 文件日志级别: DEBUG/INFO/WARNING/ERROR/CRITICAL

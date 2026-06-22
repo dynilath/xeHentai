@@ -49,7 +49,7 @@
                     class="px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700">
                 Delete
             </button>
-            {% if make_archive or state == 20 %}
+            {% if state == 20 %}
             <a href="/api/archive/{{ gid }}"
                class="px-4 py-2 bg-gray-600 text-white text-sm rounded-lg hover:bg-gray-700">
                 Download Archive

@@ -18,6 +18,7 @@ verinfo.txt
 .atomignore
 make.bat
 config.py
+config.yml
 README.html
 CHANGELOG.html
 .vs/xeHentai/v15/.suo
@@ -30,3 +31,4 @@ __pycache__
 *.db-shm
 *.zip
 .ai/
+/config.yml

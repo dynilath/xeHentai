@@ -492,7 +492,6 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 "finished_at": finished_at,
                 "tag_groups": _tag_groups,
                 "newer_versions": nv_enriched,
-                "make_archive": task.config.get("make_archive", False),
                 "all_images": all_images,
                 "image_offset": 0,
                 "page_size": 18,

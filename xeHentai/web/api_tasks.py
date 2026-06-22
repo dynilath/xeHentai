@@ -185,7 +185,6 @@ async def get_task(guid: str, request: Request):
             done=len(task._flist_done),
             tags=task.meta.tags if task.meta else [],
             newer_versions=task.meta.newer_versions if task.meta else [],
-            make_archive=task.config.get("make_archive", False),
             download_ori=task.config.get("download_ori", False),
         )
     finally:

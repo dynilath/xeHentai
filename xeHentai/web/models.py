@@ -9,10 +9,8 @@ from pydantic import BaseModel, Field
 class TaskCreateRequest(BaseModel):
     url: str = Field(..., description="Gallery URL to download")
     download_ori: Optional[bool] = None
-    make_archive: Optional[bool] = None
     delete_task_files: Optional[bool] = None
     jpn_title: Optional[bool] = None
-    download_range: Optional[str] = None
     dir: Optional[str] = None
     proxy_image_only: Optional[bool] = None
     proxy_image: Optional[bool] = None
@@ -27,10 +25,8 @@ class TaskCreateRequest(BaseModel):
 class TaskBulkRequest(BaseModel):
     urls: List[str] = Field(..., min_length=1, description="List of gallery URLs")
     download_ori: Optional[bool] = None
-    make_archive: Optional[bool] = None
     delete_task_files: Optional[bool] = None
     jpn_title: Optional[bool] = None
-    download_range: Optional[str] = None
     dir: Optional[str] = None
     proxy_image_only: Optional[bool] = None
     proxy_image: Optional[bool] = None
@@ -88,7 +84,6 @@ class TaskDetailResponse(BaseModel):
     done: int
     tags: List[Any] = Field(default_factory=list)
     newer_versions: List[Dict[str, Any]] = Field(default_factory=list)
-    make_archive: bool = False
     download_ori: bool = False
 
 
@@ -103,11 +98,9 @@ class ConfigResponse(BaseModel):
     dir: str = "."
     download_ori: bool = False
     jpn_title: bool = True
-    rename_ori: bool = False
     proxy: List[str] = Field(default_factory=list)
     proxy_image: bool = True
     proxy_image_only: bool = False
-    make_archive: bool = False
     scan_thread_cnt: int = 1
     download_thread_cnt: int = 5
     async_task_concurrency: int = 1
@@ -118,22 +111,16 @@ class ConfigResponse(BaseModel):
     download_timeout: int = 8
     log_level_console: str = "DEBUG"
     log_level_file: str = "DEBUG"
-    save_tasks: bool = False
     delete_task_files: bool = False
-    download_range: Optional[str] = None
-    ignored_errors: List[int] = Field(default_factory=list)
-    web_ui_enabled: bool = True
 
 
 class ConfigUpdateRequest(BaseModel):
     dir: Optional[str] = None
     download_ori: Optional[bool] = None
     jpn_title: Optional[bool] = None
-    rename_ori: Optional[bool] = None
     proxy: Optional[List[str]] = None
     proxy_image: Optional[bool] = None
     proxy_image_only: Optional[bool] = None
-    make_archive: Optional[bool] = None
     scan_thread_cnt: Optional[int] = None
     download_thread_cnt: Optional[int] = None
     async_task_concurrency: Optional[int] = None
@@ -144,11 +131,7 @@ class ConfigUpdateRequest(BaseModel):
     download_timeout: Optional[int] = None
     log_level_console: Optional[str] = None
     log_level_file: Optional[str] = None
-    save_tasks: Optional[bool] = None
     delete_task_files: Optional[bool] = None
-    download_range: Optional[str] = None
-    ignored_errors: Optional[List[int]] = None
-    web_ui_enabled: Optional[bool] = None
     proxy_disable_threshold: Optional[int] = None
     proxy_good_threshold: Optional[int] = None
 
