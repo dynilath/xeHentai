@@ -194,7 +194,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
         total, rows = session_store.query_tasks(
             states=parsed_states, gid=gid, q=f_search,
             offset=offset, limit=limit,
-            order_by="updated_at", order_dir="DESC",
+            order_by="gid", order_dir="DESC",
         )
 
         items = []

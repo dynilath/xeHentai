@@ -399,7 +399,7 @@ _LIGHT_COLUMNS = 'guid, gid, url, phase_state, title, total'
 
 _ORDER_BY_WHITELIST = {
     'updated_at': 'updated_at',
-    'gid': 'gid',
+    'gid': "CAST(NULLIF(gid, '') AS INTEGER)",
     'phase_state': 'phase_state',
     'title': 'title',
     'guid': 'guid',
