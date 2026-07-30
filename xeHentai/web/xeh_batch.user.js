@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         xeHentai Batch Submit
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Batch submit e-hentai/exhentai gallery URLs to the connected xeHentai server
 // @include      http*://*e-hentai.org/*
 // @author       Da'Inihlus
@@ -147,7 +147,7 @@
       if(existing) {
         existing.prev = prev_gid;
       }
-      else if (setDefault || config.batchesHistory.length < 5) {
+      else if (setDefault) {
         config.batchesHistory.push({
           search: searchStr,
           prev: prev_gid,
