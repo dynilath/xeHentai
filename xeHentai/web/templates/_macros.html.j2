@@ -70,13 +70,15 @@
 </tr>
 {% endmacro %}
 
-{% macro pagination(total, offset, limit, base_url, states='', gid='', f_search='') %}
+{% macro pagination(total, offset, limit, base_url, states='', gid='', f_search='', order_by='gid', order_dir='DESC') %}
 {% set pages = (total / limit)|round(0, 'ceil')|int %}
 {% set current = (offset / limit)|int + 1 %}
 {% set qs = '' %}
 {% if states %}{% set qs = qs + '&states=' + states %}{% endif %}
 {% if gid %}{% set qs = qs + '&gid=' + gid %}{% endif %}
 {% if f_search %}{% set qs = qs + '&f_search=' + f_search %}{% endif %}
+{% if order_by %}{% set qs = qs + '&order_by=' + order_by %}{% endif %}
+{% if order_dir %}{% set qs = qs + '&order_dir=' + order_dir %}{% endif %}
 {% if pages > 1 %}
 <div class="flex items-center justify-between mt-4">
     <span class="text-sm text-gray-500">{{ total }} total, page {{ current }} of {{ pages }}</span>

@@ -1,6 +1,6 @@
 {% extends "base.html.j2" %}
 {% from "_macros.html.j2" import status_badge, progress_bar, task_row, pagination %}
-{% block title %}Tasks - xeHentai{% endblock %}
+{% block title %}xeHentai{% endblock %}
 
 {% block content %}
 <div class="space-y-6">
@@ -10,22 +10,48 @@
 
     <!-- Filters -->
     <div class="bg-white rounded-lg shadow-sm border p-4 space-y-3">
-        <form id="task-filter-form" hx-get="/tasks" hx-target="#task-table-container" hx-trigger="change from:#state-filter, submit" hx-indicator="#search-spinner">
-            <!-- Row 1: State + GID -->
+        <form id="task-filter-form" hx-get="/tasks" hx-target="#task-table-container" hx-trigger="change from:#state-filter, change from:#order-by, change from:#order-dir, submit" hx-indicator="#search-spinner">
+            <!-- Row 1: State + GID + Sort + Filter -->
             <div class="flex gap-3 flex-wrap items-end">
                 <div>
                     <label class="block text-xs text-gray-500 mb-1">State</label>
-                    <select id="state-filter" name="states" class="rounded-lg border border-gray-300 px-3 py-2 text-sm">
-                        <option value="">All States</option>
-                        {% for val, name in available_states %}
-                        <option value="{{ val }}" {% if current_states == val|string %}selected{% endif %}>{{ name }}</option>
-                        {% endfor %}
-                    </select>
+                    <details id="state-filter" class="relative">
+                        <summary class="cursor-pointer rounded-lg border border-gray-300 px-3 py-2 text-sm bg-white select-none">
+                            {% if current_states_list %}
+                            States ({{ current_states_list|length }})
+                            {% else %}
+                            All States
+                            {% endif %}
+                        </summary>
+                        <div class="absolute z-10 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg p-3 w-60 max-h-80 overflow-y-auto">
+                            {% for val, name in available_states %}
+                            <label class="flex items-center gap-2 text-sm py-1 cursor-pointer hover:bg-gray-50">
+                                <input type="checkbox" name="states" value="{{ val }}" class="rounded"
+                                       {% if val|string in current_states_list %}checked{% endif %}>
+                                {{ name }}
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </details>
                 </div>
                 <div>
                     <label class="block text-xs text-gray-500 mb-1">GID</label>
                     <input type="text" name="gid" placeholder="Search by GID..." value="{{ current_gid }}"
                            class="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">Sort By</label>
+                    <select id="order-by" name="order_by" class="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+                        <option value="gid" {% if current_order_by == 'gid' %}selected{% endif %}>GID</option>
+                        <option value="updated_at" {% if current_order_by == 'updated_at' %}selected{% endif %}>Updated At</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">Direction</label>
+                    <select id="order-dir" name="order_dir" class="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+                        <option value="DESC" {% if current_order_dir == 'DESC' %}selected{% endif %}>Newest First</option>
+                        <option value="ASC" {% if current_order_dir == 'ASC' %}selected{% endif %}>Oldest First</option>
+                    </select>
                 </div>
                 <div>
                     <button type="submit" class="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200">
@@ -48,6 +74,14 @@
 
     <!-- Task Table -->
     <div id="task-table-container">
+        {% if retryable_guids %}
+        <div class="flex justify-end mb-2">
+            <button id="retry-page-btn" data-retry-guids='{{ retryable_guids|tojson }}'
+                    class="px-4 py-2 bg-orange-100 text-orange-700 text-sm font-medium rounded-lg hover:bg-orange-200">
+                Retry Page ({{ retryable_guids|length }})
+            </button>
+        </div>
+        {% endif %}
         <div class="bg-white rounded-lg shadow-sm border overflow-hidden">
             <table class="w-full">
                 <thead>
@@ -72,7 +106,7 @@
                 </tbody>
             </table>
         </div>
-        {{ pagination(total, offset, limit, '/tasks', current_states, current_gid, current_q_encoded) }}
+        {{ pagination(total, offset, limit, '/tasks', current_states, current_gid, current_q_encoded, current_order_by, current_order_dir) }}
     </div>
 </div>
 {% endblock %}
@@ -80,6 +114,54 @@
 {% block scripts %}
 <script>
 initWebSocket();
+
+// Retry all retryable tasks on the current page.
+// Event delegation survives htmx partial swaps (the button lives inside
+// #task-table-container which gets re-rendered).
+document.addEventListener("click", async function(e) {
+    var btn = e.target.closest("#retry-page-btn");
+    if (!btn) return;
+    var guids = JSON.parse(btn.dataset.retryGuids || "[]");
+    if (!guids.length) return;
+    btn.disabled = true;
+    var origText = btn.textContent;
+    btn.textContent = "Retrying...";
+    try {
+        var resp = await fetch("/api/tasks/retry", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({guids: guids})
+        });
+        if (!resp.ok) {
+            var err = await resp.json().catch(function() { return {}; });
+            throw new Error(err.detail || ("HTTP " + resp.status));
+        }
+        showToast("Retried " + guids.length + " task(s)", "success");
+        // Re-fetch with the CURRENT filter form values (states/gid/search/
+        // sort). htmx partial swaps never update the address bar, so
+        // window.location.search can't be trusted here — re-submitting the
+        // form serializes exactly what the user has selected.
+        var form = document.getElementById("task-filter-form");
+        if (form) {
+            form.requestSubmit();
+        } else {
+            htmx.ajax("GET", "/tasks", {target: "#task-table-container", swap: "outerHTML"});
+        }
+    } catch (err) {
+        showToast("Retry failed: " + err.message, "error");
+        btn.disabled = false;
+        btn.textContent = origText;
+    }
+});
+
+// Keep the multi-select summary label in sync when checkboxes change.
+document.addEventListener("change", function(e) {
+    if (e.target.matches('#state-filter input[name="states"]')) {
+        var n = document.querySelectorAll('#state-filter input[name="states"]:checked').length;
+        var summary = document.querySelector("#state-filter summary");
+        if (summary) summary.textContent = n ? "States (" + n + ")" : "All States";
+    }
+});
 
 function _updateRowProgress(data) {
     var row = document.getElementById("task-row-" + data.guid);

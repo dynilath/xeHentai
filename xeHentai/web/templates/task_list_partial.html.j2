@@ -1,5 +1,13 @@
 {% from "_macros.html.j2" import task_row, pagination %}
 <div id="task-table-container">
+    {% if retryable_guids %}
+    <div class="flex justify-end mb-2">
+        <button id="retry-page-btn" data-retry-guids='{{ retryable_guids|tojson }}'
+                class="px-4 py-2 bg-orange-100 text-orange-700 text-sm font-medium rounded-lg hover:bg-orange-200">
+            Retry Page ({{ retryable_guids|length }})
+        </button>
+    </div>
+    {% endif %}
     <div class="bg-white rounded-lg shadow-sm border overflow-hidden">
         <table class="w-full">
             <thead>
@@ -24,5 +32,5 @@
             </tbody>
         </table>
     </div>
-    {{ pagination(total, offset, limit, '/tasks', current_states, current_gid, current_q_encoded) }}
+    {{ pagination(total, offset, limit, '/tasks', current_states, current_gid, current_q_encoded, current_order_by, current_order_dir) }}
 </div>

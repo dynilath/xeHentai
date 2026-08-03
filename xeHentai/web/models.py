@@ -52,6 +52,7 @@ class TaskListParams(BaseModel):
 
 class TaskRetryRequest(BaseModel):
     guid: Optional[str] = None
+    guids: Optional[List[str]] = None
     gid: Optional[str] = None
     url: Optional[str] = None
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-from typing import Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 from urllib.parse import quote
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import HTMLResponse
@@ -177,27 +177,38 @@ def create_app(xeH: HostProtocol) -> FastAPI:
     @app.get("/tasks", response_class=HTMLResponse)
     async def ui_task_list(
         request: Request,
-        states: Optional[str] = Query(None),
+        states: Optional[List[str]] = Query(None),
         gid: Optional[str] = Query(None),
         f_search: Optional[str] = Query(None, description="Search title + tags"),
         offset: int = Query(0),
         limit: int = Query(20),
+        order_by: str = Query("gid"),
+        order_dir: str = Query("DESC", pattern="^(ASC|DESC)$"),
     ):
         xeH = request.app.state.xeH
         from .. import session_store
         from ..const import TASK_STATE_FINISHED
         from .api_tasks import _parse_states
 
-        parsed_states = _parse_states(states)
+        if order_by not in ("gid", "updated_at"):
+            order_by = "gid"
+        if str(order_dir).upper() not in ("ASC", "DESC"):
+            order_dir = "DESC"
+
+        # Multi-select checkboxes submit ?states=1&states=-1 (multiple params),
+        # while pagination links use ?states=1,-1 (comma-joined). Normalize both.
+        states_str = ",".join(states) if states else None
+        parsed_states = _parse_states(states_str)
         if f_search:
             f_search = f_search.replace('$', '')
         total, rows = session_store.query_tasks(
             states=parsed_states, gid=gid, q=f_search,
             offset=offset, limit=limit,
-            order_by="gid", order_dir="DESC",
+            order_by=order_by, order_dir=order_dir,
         )
 
         items = []
+        retryable_guids = []
         for row in rows:
             guid = row.get("guid", "")
             state = int(row.get("phase_state", 0))
@@ -210,6 +221,9 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 total_pages = active.meta.total if active.meta else total_pages
             elif state == TASK_STATE_FINISHED:
                 done = total_pages
+
+            if state < 0:
+                retryable_guids.append(guid)
 
             items.append({
                 "guid": guid,
@@ -265,10 +279,14 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             "total": total,
             "offset": offset,
             "limit": limit,
-            "current_states": states or "",
+            "current_states": states_str or "",
+            "current_states_list": [s for s in (states_str or "").split(",") if s],
             "current_gid": gid or "",
             "current_q": f_search or "",
             "current_q_encoded": quote(f_search, safe='') if f_search else "",
+            "current_order_by": order_by,
+            "current_order_dir": order_dir,
+            "retryable_guids": retryable_guids,
             "available_states": available_states,
         }
         if request.headers.get("HX-Request"):

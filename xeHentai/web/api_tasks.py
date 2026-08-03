@@ -153,7 +153,7 @@ async def create_tasks_bulk(body: TaskBulkRequest, request: Request):
 async def retry_tasks(body: TaskRetryRequest, request: Request):
     """Retry failed tasks matching the given criteria."""
     xeH = request.app.state.xeH
-    ret, _ = xeH.retry_tasks(guid=body.guid, gid=body.gid, url=body.url)
+    ret, _ = xeH.retry_tasks(guid=body.guid, guids=body.guids, gid=body.gid, url=body.url)
     if ret != 0:
         raise HTTPException(status_code=400, detail=f"Retry failed (code={ret})")
     return SuccessResponse(message="Tasks retried")
