@@ -32,3 +32,5 @@ __pycache__
 *.zip
 .ai/
 /config.yml
+
+.workbuddy/
