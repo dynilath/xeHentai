@@ -82,10 +82,12 @@
         <div class="mb-3">
             <span class="text-xs font-semibold uppercase text-gray-400 tracking-wider">{{ cat }}</span>
             <div class="flex flex-wrap gap-1.5 mt-1">
-                {% for val in items %}
-                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
-                    {{ val }}
-                </span>
+                {% for item in items %}
+                <a href="/tasks?f_search={{ item.search }}"
+                   title="Search tasks with tag: {{ item.label }}"
+                   class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 border border-transparent">
+                    {{ item.label }}
+                </a>
                 {% endfor %}
             </div>
         </div>

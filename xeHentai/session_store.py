@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_phase_state ON tasks(phase_state);
 CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_state_updated ON tasks(phase_state, updated_at);
+-- Expression index matching the gid ORDER BY (CAST(NULLIF(gid,'') AS INTEGER))
+-- so the default /tasks sort scans the index instead of a full table sort.
+CREATE INDEX IF NOT EXISTS idx_tasks_gid_num ON tasks((CAST(NULLIF(gid, '') AS INTEGER)));
 
 CREATE TABLE IF NOT EXISTS task_tags (
     guid TEXT NOT NULL,

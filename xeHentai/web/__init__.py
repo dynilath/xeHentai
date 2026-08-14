@@ -469,7 +469,11 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 nv_guid = session_store.find_guid_by_gid(str(nv.get("gid", "")))
                 nv_enriched.append({**nv, "guid": nv_guid})
 
-            # Group tags by prefix
+            # Group tags by prefix. Each entry carries the display label and
+            # the full namespace:value tag (URL-encoded) so the template can
+            # link it to /tasks?f_search=<tag> for tag-based search.
+            # Tags containing spaces are double-quoted so the search parser
+            # keeps them as a single term (still exact-matched via task_tags).
             _tag_categories = [
                 "language", "parody", "character", "cosplayer",
                 "group", "artist", "male", "female", "mixed",
@@ -478,15 +482,22 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             _tag_groups["other"] = []
             for tag in (task.meta.tags if task.meta else []):
                 tag_str = str(tag)
+                search_tag = '"%s"' % tag_str if " " in tag_str else tag_str
                 placed = False
                 for cat in _tag_categories:
                     prefix = cat + ":"
                     if tag_str.startswith(prefix):
-                        _tag_groups[cat].append(tag_str[len(prefix):])
+                        _tag_groups[cat].append({
+                            "label": tag_str[len(prefix):],
+                            "search": quote(search_tag, safe=''),
+                        })
                         placed = True
                         break
                 if not placed:
-                    _tag_groups["other"].append(tag_str)
+                    _tag_groups["other"].append({
+                        "label": tag_str,
+                        "search": quote(search_tag, safe=''),
+                    })
 
             # Get updated_at for finished tasks
             finished_at = ""
