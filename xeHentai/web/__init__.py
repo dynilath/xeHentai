@@ -13,7 +13,7 @@ import threading
 from typing import List, Optional, TYPE_CHECKING
 from urllib.parse import quote
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
@@ -331,6 +331,15 @@ def create_app(xeH: HostProtocol) -> FastAPI:
     async def ui_task_read(guid: str, request: Request,
                             scroll: int = Query(0, description="1=scroll mode"),
                             page: int = Query(1, description="Start at page")):
+        """Legacy query-param URL: redirect to the path-based reader URL."""
+        target = f"/tasks/{guid}/read/{max(1, page)}"
+        if scroll:
+            target += "?scroll=1"
+        return RedirectResponse(target, status_code=307)
+
+    @app.get("/tasks/{guid}/read/{page:int}", response_class=HTMLResponse)
+    async def ui_task_read_page(guid: str, page: int, request: Request,
+                                 scroll: int = Query(0, description="1=scroll mode")):
         xeH = request.app.state.xeH
         task = xeH._get_active_task(guid)
         cold = task is None

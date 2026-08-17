@@ -39,7 +39,7 @@
             </button>
             {% endif %}
             {% if state == 20 %}
-            <a href="/tasks/{{ guid }}/read"
+            <a href="/tasks/{{ guid }}/read/1"
                class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">
                 Read
             </a>
@@ -120,7 +120,7 @@
         <h2 class="text-lg font-semibold mb-4">Images ({{ total }})</h2>
         {% include "task_images.html.j2" %}
         {% if total > 18 %}
-        <a href="/tasks/{{ guid }}/read" class="inline-block mt-4 text-sm text-blue-600 hover:text-blue-800">
+        <a href="/tasks/{{ guid }}/read/1" class="inline-block mt-4 text-sm text-blue-600 hover:text-blue-800">
             View all {{ total }} images in reader &rarr;
         </a>
         {% endif %}
