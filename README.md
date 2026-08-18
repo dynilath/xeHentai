@@ -58,6 +58,9 @@ changed from the Web UI's Config page.
 | `performance.async_task_concurrency` | Max concurrent tasks | `1` |
 | `performance.page_interval` | Interval between page requests (s) | `0.5` |
 | `logging.path` | Log file path | `eh.log` |
+| `subscription.enabled` | Enable gallery subscription checks | `true` |
+| `subscription.check_interval` | Hours between subscription checks | `24` |
+| `subscription.check_pacing` | Seconds between gallery checks in one round | `5` |
 
 See `config.yml` for the full list.
 

@@ -95,6 +95,18 @@ CF_SCANDOWNLOADSKIP_EXISTING = "file already exists, skip downloading"
 TS_ERR_GALLERY_REMOVED = "[guid={guid} gid={gid}] gallery has been removed, may need to change IP to access or wait until it's visible in exhentai"
 TS_ERR_GALLERY_NOT_FOUND = "[guid={guid} gid={gid}] gallery not found, may be incorrect url or gallery not created"
 
+# ── Gallery subscriptions ────────────────────────────────────────────────
+SUB_STARTED = "subscription manager started"
+SUB_STOPPED = "subscription manager stopped"
+SUB_DISABLED = "subscription checks disabled by config"
+SUB_NEW_VERSION = "[sub id={sid} gid={gid}] new version detected: {url} (added {added})"
+SUB_LINK_REPLACED = "[sub id={sid}] subscription now tracks gid {new_gid} (was {old_gid}): {url}"
+SUB_ADD_TASK_OK = "[sub id={sid}] new-version download task added [guid={guid}]: {url}"
+SUB_ADD_TASK_FAIL = "[sub id={sid}] failed to add new-version download task [ret={ret}]: {url}"
+SUB_CHECK_OK = "[sub id={sid} gid={gid}] up to date"
+SUB_CHECK_ERROR = "[sub id={sid} gid={gid}] check failed: {error}"
+SUB_ROUND_ABORT_BANNED = "subscription round aborted (IP banned), remaining checks deferred by {defer}s"
+
 # ── Config template tags (replaced at first-run bootstrap) ──────────────
 
 config_tags = {
@@ -125,4 +137,8 @@ config_tags = {
     "log_path": "Log file path",
     "log_level_console": "Console log level: DEBUG/INFO/WARNING/ERROR/CRITICAL",
     "log_level_file": "File log level: DEBUG/INFO/WARNING/ERROR/CRITICAL",
+    "subscription_section": "Gallery Subscriptions",
+    "subscription_enabled": "Enable periodic checks for subscribed galleries",
+    "subscription_check_interval": "Hours between subscription checks",
+    "subscription_check_pacing": "Seconds between individual gallery checks in one round",
 }

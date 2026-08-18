@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .task import Task
     from .task_ctrl import TaskControl
+    from .subscription import SubscriptionManager
 
 
 class HostProtocol(Protocol):
@@ -35,6 +36,8 @@ class HostProtocol(Protocol):
     def has_login(self) -> bool: ...
     @property
     def _task_control(self) -> "TaskControl": ...
+    @property
+    def _subscriptions(self) -> "SubscriptionManager": ...
 
     # ── task hydration / eviction ───────────────────────────────────────
     def _get_active_task(self, guid: str) -> Optional["Task"]: ...

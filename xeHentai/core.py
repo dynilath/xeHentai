@@ -17,6 +17,7 @@ from . import session_store
 from . import util
 from . import proxy
 from . import filters
+from .subscription import SubscriptionManager
 from .i18n import i18n
 from .util import logger
 from .host_interface import HostInterface
@@ -134,6 +135,7 @@ class xeHentai(HostInterface):
         self.has_login = False
         self.global_reuse_index = reuse_index.ensure_reuse_index()
         self._task_control = TaskControl(self)
+        self._subscriptions = SubscriptionManager(self)
         self.load_session()
 
     def _new_guid(self) -> str:

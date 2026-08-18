@@ -113,6 +113,9 @@ class ConfigResponse(BaseModel):
     log_level_console: str = "DEBUG"
     log_level_file: str = "DEBUG"
     delete_task_files: bool = False
+    subscription_enabled: bool = True
+    subscription_check_interval: float = 24.0
+    subscription_check_pacing: float = 5.0
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -134,6 +137,31 @@ class ConfigUpdateRequest(BaseModel):
     log_level_file: Optional[str] = None
     delete_task_files: Optional[bool] = None
     proxy_heal_after: Optional[int] = None
+    subscription_enabled: Optional[bool] = None
+    subscription_check_interval: Optional[float] = Field(None, ge=0.1)
+    subscription_check_pacing: Optional[float] = Field(None, ge=0)
+
+
+# ── Subscriptions ───────────────────────────────────────────────────────────
+
+class SubscriptionCreateRequest(BaseModel):
+    url: str = Field(..., description="Gallery URL to subscribe to")
+
+
+class SubscriptionItemResponse(BaseModel):
+    id: int
+    gid: str
+    url: str
+    title: str = ""
+    enabled: bool = True
+    last_check_at: Optional[int] = None
+    next_check_at: int = 0
+    last_status: str = ""
+    last_error: str = ""
+    last_new_version_url: str = ""
+    version_count: int = 0
+    created_at: int = 0
+    task_guid: Optional[str] = None
 
 
 # ── System ──────────────────────────────────────────────────────────────────

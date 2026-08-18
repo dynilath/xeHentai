@@ -1,0 +1,147 @@
+{% extends "base.html.j2" %}
+{% block title %}Subscriptions - xeHentai{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-900">Gallery Subscriptions</h1>
+        <span class="text-sm text-gray-500">
+            {% if subscription_enabled %}
+            Check interval: every {{ check_interval }} h
+            {% else %}
+            <span class="text-red-600 font-medium">Checks disabled in config</span>
+            {% endif %}
+        </span>
+    </div>
+
+    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
+        Subscribed galleries are re-checked periodically. When the site reports a newer
+        version, the newest version is downloaded automatically and the subscription
+        link moves to it. Old tasks and files are kept.
+    </div>
+
+    <!-- Add subscription -->
+    <div class="bg-white rounded-lg shadow-sm border p-4">
+        <form id="sub-add-form" hx-post="/api/subscriptions" hx-ext="json-enc" hx-swap="none">
+            <div class="flex gap-2">
+                <input type="text" name="url" required
+                       placeholder="https://e-hentai.org/g/1234567/somehash/"
+                       class="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-sm font-mono">
+                <button type="submit"
+                        class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shrink-0">
+                    Subscribe
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Subscriptions Table -->
+    <div class="bg-white rounded-lg shadow-sm border overflow-hidden">
+        <table class="w-full">
+            <thead>
+                <tr class="text-left text-sm text-gray-500 border-b bg-gray-50">
+                    <th class="py-3 px-4 font-medium">Gallery</th>
+                    <th class="py-3 px-4 font-medium">GID</th>
+                    <th class="py-3 px-4 font-medium">Status</th>
+                    <th class="py-3 px-4 font-medium">Last Check</th>
+                    <th class="py-3 px-4 font-medium">Next Check</th>
+                    <th class="py-3 px-4 font-medium">Versions</th>
+                    <th class="py-3 px-4 font-medium">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if items %}
+                {% for s in items %}
+                <tr class="border-b last:border-b-0 hover:bg-gray-50" id="sub-row-{{ s.id }}">
+                    <td class="py-3 px-4 max-w-md">
+                        {% if s.task_guid %}
+                        <a href="/tasks/{{ s.task_guid }}" class="text-sm text-blue-600 hover:underline break-words">{{ s.title }}</a>
+                        {% else %}
+                        <a href="{{ s.url }}" target="_blank" rel="noopener" class="text-sm text-gray-700 hover:text-blue-600 hover:underline break-words">{{ s.title }}</a>
+                        {% endif %}
+                        {% if s.last_error %}
+                        <div class="text-xs text-red-500 mt-0.5 break-all" title="{{ s.last_error }}">{{ s.last_error|truncate(80) }}</div>
+                        {% endif %}
+                    </td>
+                    <td class="py-3 px-4 text-sm text-gray-500 font-mono whitespace-nowrap">{{ s.gid }}</td>
+                    <td class="py-3 px-4">
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{ s.status_css }}">
+                            {{ s.status_label }}
+                        </span>
+                    </td>
+                    <td class="py-3 px-4 text-sm text-gray-500 whitespace-nowrap">{{ s.last_check }}</td>
+                    <td class="py-3 px-4 text-sm text-gray-500 whitespace-nowrap">{{ s.next_check }}</td>
+                    <td class="py-3 px-4 text-sm text-gray-500">{{ s.version_count }}</td>
+                    <td class="py-3 px-4">
+                        <div class="flex gap-1.5 flex-wrap">
+                            <button hx-post="/api/subscriptions/{{ s.id }}/check" hx-swap="none"
+                                    hx-on:htmx:afterRequest="window._subAction(event)"
+                                    class="px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-medium rounded hover:bg-blue-100 border border-blue-200">
+                                Check now
+                            </button>
+                            {% if s.enabled %}
+                            <button hx-post="/api/subscriptions/{{ s.id }}/pause" hx-swap="none"
+                                    hx-on:htmx:afterRequest="window._subAction(event)"
+                                    class="px-2.5 py-1 bg-yellow-50 text-yellow-700 text-xs font-medium rounded hover:bg-yellow-100 border border-yellow-200">
+                                Pause
+                            </button>
+                            {% else %}
+                            <button hx-post="/api/subscriptions/{{ s.id }}/resume" hx-swap="none"
+                                    hx-on:htmx:afterRequest="window._subAction(event)"
+                                    class="px-2.5 py-1 bg-green-50 text-green-700 text-xs font-medium rounded hover:bg-green-100 border border-green-200">
+                                Resume
+                            </button>
+                            {% endif %}
+                            <button hx-delete="/api/subscriptions/{{ s.id }}" hx-swap="none"
+                                    hx-confirm="Unsubscribe this gallery?"
+                                    hx-on:htmx:afterRequest="window._subAction(event)"
+                                    class="px-2.5 py-1 bg-red-50 text-red-700 text-xs font-medium rounded hover:bg-red-100 border border-red-200">
+                                Delete
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% else %}
+                <tr>
+                    <td colspan="7" class="py-8 text-center text-gray-400">
+                        No subscriptions yet — add a gallery URL above, or use the
+                        Subscribe button on a task page.
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Shared handler for row action buttons: reload on success, toast on failure.
+window._subAction = function(e) {
+    if (e.detail.successful) {
+        window.location.reload();
+    } else {
+        var xhr = e.detail.xhr;
+        var detail = "";
+        try { detail = JSON.parse(xhr.responseText).detail || ""; } catch (err) {}
+        showToast("Action failed: " + (detail || ("HTTP " + xhr.status)), "error");
+    }
+};
+
+// Add-subscribe form: reload on success, toast on duplicate/invalid URL.
+document.body.addEventListener("htmx:afterRequest", function(e) {
+    if (e.detail.elt && e.detail.elt.id === "sub-add-form") {
+        if (e.detail.successful) {
+            showToast("Subscribed!", "success");
+            window.location.reload();
+        } else {
+            var detail = "";
+            try { detail = JSON.parse(e.detail.xhr.responseText).detail || ""; } catch (err) {}
+            showToast("Subscribe failed: " + (detail || ("HTTP " + e.detail.xhr.status)), "error");
+        }
+    }
+});
+</script>
+{% endblock %}

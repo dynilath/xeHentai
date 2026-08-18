@@ -53,6 +53,24 @@ CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
     tokenize='trigram',
     detail='full'
 );
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    gid TEXT NOT NULL UNIQUE,
+    url TEXT NOT NULL,
+    sethash TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_check_at INTEGER,
+    next_check_at INTEGER NOT NULL DEFAULT 0,
+    last_status TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    last_new_version_url TEXT NOT NULL DEFAULT '',
+    version_count INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_next_check ON subscriptions(next_check_at);
 '''
 
 _TASKS_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -890,3 +908,251 @@ def import_tasks_from_json(json_path: str = TASKS_FILE, db_path: str = TASKS_DB_
         'imported': len(deduped),
         'skipped': skipped,
     }
+
+
+# ---------------------------------------------------------------------------
+# Gallery subscriptions.
+#
+# A subscription tracks ONE gallery URL. When the gallery is superseded by a
+# newer version, the row's url/gid/sethash are replaced in place (version_count
+# tracks how many times this happened). Dedup is by gid (UNIQUE index).
+# ---------------------------------------------------------------------------
+
+_SUBSCRIPTION_COLUMNS = (
+    'id, gid, url, sethash, title, enabled, last_check_at, next_check_at, '
+    'last_status, last_error, last_new_version_url, version_count, created_at'
+)
+
+
+def _row_to_subscription(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        'id': int(row['id']),
+        'gid': str(row['gid'] or ''),
+        'url': str(row['url'] or ''),
+        'sethash': str(row['sethash'] or ''),
+        'title': str(row['title'] or ''),
+        'enabled': bool(row['enabled']),
+        'last_check_at': int(row['last_check_at']) if row['last_check_at'] is not None else None,
+        'next_check_at': int(row['next_check_at'] or 0),
+        'last_status': str(row['last_status'] or ''),
+        'last_error': str(row['last_error'] or ''),
+        'last_new_version_url': str(row['last_new_version_url'] or ''),
+        'version_count': int(row['version_count'] or 0),
+        'created_at': int(row['created_at'] or 0),
+    }
+
+
+def add_subscription(
+    gid: str,
+    url: str,
+    sethash: str = '',
+    title: str = '',
+    *,
+    next_check_at: int = 0,
+    db_path: str = TASKS_DB_FILE,
+) -> Optional[Dict[str, Any]]:
+    """Insert a subscription. Returns the row, or None if gid already exists."""
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                '''
+                INSERT INTO subscriptions
+                    (gid, url, sethash, title, next_check_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (str(gid), str(url), str(sethash), str(title),
+                 int(next_check_at), int(time.time())),
+            )
+            new_id = int(cur.lastrowid or 0)
+        row = conn.execute(
+            'SELECT %s FROM subscriptions WHERE id = ?' % _SUBSCRIPTION_COLUMNS,
+            (new_id,),
+        ).fetchone()
+        return _row_to_subscription(row) if row else None
+    except sqlite3.IntegrityError:
+        return None
+    finally:
+        conn.close()
+
+
+def get_subscription(sub_id: int, db_path: str = TASKS_DB_FILE) -> Optional[Dict[str, Any]]:
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            'SELECT %s FROM subscriptions WHERE id = ?' % _SUBSCRIPTION_COLUMNS,
+            (int(sub_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+    return _row_to_subscription(row) if row else None
+
+
+def get_subscription_by_gid(gid: str, db_path: str = TASKS_DB_FILE) -> Optional[Dict[str, Any]]:
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            'SELECT %s FROM subscriptions WHERE gid = ?' % _SUBSCRIPTION_COLUMNS,
+            (str(gid),),
+        ).fetchone()
+    finally:
+        conn.close()
+    return _row_to_subscription(row) if row else None
+
+
+def list_subscriptions(db_path: str = TASKS_DB_FILE) -> List[Dict[str, Any]]:
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            'SELECT %s FROM subscriptions ORDER BY created_at DESC' % _SUBSCRIPTION_COLUMNS
+        ).fetchall()
+    finally:
+        conn.close()
+    return [_row_to_subscription(r) for r in rows]
+
+
+def list_due_subscriptions(now_ts: int, db_path: str = TASKS_DB_FILE) -> List[Dict[str, Any]]:
+    """Enabled subscriptions whose next_check_at is due, oldest first."""
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            '''
+            SELECT %s FROM subscriptions
+            WHERE enabled = 1 AND next_check_at <= ?
+            ORDER BY next_check_at ASC
+            ''' % _SUBSCRIPTION_COLUMNS,
+            (int(now_ts),),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [_row_to_subscription(r) for r in rows]
+
+
+def next_subscription_check_time(db_path: str = TASKS_DB_FILE) -> Optional[int]:
+    """Soonest next_check_at among enabled subscriptions, or None if empty."""
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            'SELECT MIN(next_check_at) FROM subscriptions WHERE enabled = 1'
+        ).fetchone()
+    finally:
+        conn.close()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def update_subscription_fields(sub_id: int, fields: Dict[str, Any], db_path: str = TASKS_DB_FILE) -> bool:
+    """Update arbitrary columns on a subscription row. Returns True if a row changed.
+
+    The `gid` column is excluded here — use replace_subscription_link() for
+    link replacement so the UNIQUE constraint is handled properly.
+    """
+    allowed = {
+        'url', 'sethash', 'title', 'enabled', 'last_check_at', 'next_check_at',
+        'last_status', 'last_error', 'last_new_version_url', 'version_count',
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    sets = ', '.join('%s = ?' % k for k in updates)
+    params = list(updates.values()) + [int(sub_id)]
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                'UPDATE subscriptions SET %s WHERE id = ?' % sets, params
+            )
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def replace_subscription_link(
+    sub_id: int,
+    new_gid: str,
+    new_url: str,
+    new_sethash: str = '',
+    new_title: str = '',
+    *,
+    last_new_version_url: str = '',
+    db_path: str = TASKS_DB_FILE,
+) -> bool:
+    """Point a subscription at a new gallery version.
+
+    If another row already tracks new_gid (e.g. the user subscribed to the
+    newer version independently), that older conflicting row is removed so the
+    UNIQUE gid index holds one row per gallery version.
+    """
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    new_gid = str(new_gid)
+    try:
+        with conn:
+            conn.execute(
+                'DELETE FROM subscriptions WHERE gid = ? AND id != ?',
+                (new_gid, int(sub_id)),
+            )
+            cur = conn.execute(
+                '''
+                UPDATE subscriptions SET
+                    gid = ?, url = ?, sethash = ?,
+                    title = CASE WHEN ? != '' THEN ? ELSE title END,
+                    version_count = version_count + 1,
+                    last_status = 'new_version',
+                    last_new_version_url = ?
+                WHERE id = ?
+                ''',
+                (new_gid, str(new_url), str(new_sethash),
+                 str(new_title), str(new_title), str(last_new_version_url),
+                 int(sub_id)),
+            )
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_subscription(sub_id: int, db_path: str = TASKS_DB_FILE) -> bool:
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                'DELETE FROM subscriptions WHERE id = ?', (int(sub_id),)
+            )
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def schedule_subscription_check(sub_id: int, next_check_at: int, db_path: str = TASKS_DB_FILE) -> bool:
+    """Set the next check time (0 = due immediately)."""
+    return update_subscription_fields(sub_id, {'next_check_at': int(next_check_at)}, db_path)
+
+
+def defer_due_subscriptions(from_ts: int, defer_s: int, db_path: str = TASKS_DB_FILE) -> int:
+    """Push all currently-due subscriptions forward by defer_s seconds.
+
+    Used when a check round is aborted (e.g. IP ban) so the next round
+    retries later instead of hammering the site immediately.
+    """
+    _ensure_schema_once(db_path)
+    conn = _connect(db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                '''
+                UPDATE subscriptions
+                SET next_check_at = ? + ?
+                WHERE enabled = 1 AND next_check_at <= ?
+                ''',
+                (int(from_ts), int(defer_s), int(from_ts)),
+            )
+            return cur.rowcount
+    finally:
+        conn.close()

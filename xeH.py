@@ -53,6 +53,11 @@ def main():
     task_thread = Thread(target=xeH._task_loop, name="task-loop", daemon=True)
     task_thread.start()
 
+    # ── Start gallery subscription loop ──────────────────────────────────
+    # Always started; the loop itself honors subscription_enabled at runtime
+    # so toggling the config from the Web UI takes effect without restart.
+    xeH._subscriptions.start()
+
     # ── Shutdown handling ───────────────────────────────────────────────
     shutdown = [False]
 
@@ -71,6 +76,7 @@ def main():
 
     # ── Cleanup ─────────────────────────────────────────────────────────
     log.info("Cleaning up...")
+    xeH._subscriptions.stop()
     xeH._term_threads()
     try:
         xeH._cleanup()

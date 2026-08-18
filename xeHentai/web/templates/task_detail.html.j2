@@ -55,6 +55,22 @@
                 Download Archive
             </a>
             {% endif %}
+            {% if subscribed %}
+            <button hx-delete="/api/subscriptions/{{ subscription_id }}" hx-swap="none"
+                    hx-confirm="Unsubscribe this gallery?"
+                    hx-on:htmx:afterRequest="window._subToggle(event)"
+                    class="px-4 py-2 bg-yellow-100 text-yellow-800 text-sm rounded-lg hover:bg-yellow-200 border border-yellow-300"
+                    title="Stop watching this gallery for new versions">
+                Subscribed &#10003;
+            </button>
+            {% else %}
+            <button hx-post="/api/subscriptions" hx-ext="json-enc" hx-vals='{"url":"{{ url }}"}' hx-swap="none"
+                    hx-on:htmx:afterRequest="window._subToggle(event)"
+                    class="px-4 py-2 bg-blue-50 text-blue-700 text-sm rounded-lg hover:bg-blue-100 border border-blue-200"
+                    title="Watch this gallery and auto-download newer versions">
+                Subscribe
+            </button>
+            {% endif %}
         </div>
     </div>
 
@@ -137,6 +153,17 @@
 {% block scripts %}
 <script>
 initWebSocket();
+
+// Subscribe / Unsubscribe button handler: reload on success, toast on failure.
+window._subToggle = function(e) {
+    if (e.detail.successful) {
+        window.location.reload();
+    } else {
+        var detail = "";
+        try { detail = JSON.parse(e.detail.xhr.responseText).detail || ""; } catch (err) {}
+        showToast("Subscription action failed: " + (detail || ("HTTP " + e.detail.xhr.status)), "error");
+    }
+};
 
 // Listen for task progress updates to this specific task
 window.addEventListener("ws:task_progress", function(e) {

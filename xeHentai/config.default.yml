@@ -35,3 +35,9 @@ logging:
   path: eh.log               # {%log_path%}
   level_console: INFO        # {%log_level_console%}
   level_file: INFO           # {%log_level_file%}
+
+# --- {%subscription_section%} ---
+subscription:
+  enabled: true              # {%subscription_enabled%}
+  check_interval: 24         # {%subscription_check_interval%}
+  check_pacing: 5            # {%subscription_check_pacing%}

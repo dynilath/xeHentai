@@ -96,6 +96,18 @@ CF_SCANDOWNLOADSKIP_EXISTING = "文件已存在，跳过下载"
 TS_ERR_GALLERY_REMOVED = "[guid={guid} gid={gid}] 图集被移除，可能需要换个IP进行访问，或者等待里站可见"
 TS_ERR_GALLERY_NOT_FOUND = "[guid={guid} gid={gid}] 无法找到图集，可能地址错误或者图集未创建"
 
+# ── Gallery subscriptions ────────────────────────────────────────────────
+SUB_STARTED = "订阅管理器已启动"
+SUB_STOPPED = "订阅管理器已停止"
+SUB_DISABLED = "订阅检查已在配置中关闭"
+SUB_NEW_VERSION = "[sub id={sid} gid={gid}] 检测到新版本: {url} (added {added})"
+SUB_LINK_REPLACED = "[sub id={sid}] 订阅已指向新版本 gid {new_gid} (原 gid {old_gid}): {url}"
+SUB_ADD_TASK_OK = "[sub id={sid}] 已添加新版本下载任务 [guid={guid}]: {url}"
+SUB_ADD_TASK_FAIL = "[sub id={sid}] 添加新版本下载任务失败 [ret={ret}]: {url}"
+SUB_CHECK_OK = "[sub id={sid} gid={gid}] 已是最新版本"
+SUB_CHECK_ERROR = "[sub id={sid} gid={gid}] 检查失败: {error}"
+SUB_ROUND_ABORT_BANNED = "订阅检查中止（IP 被封），剩余检查顺延 {defer} 秒"
+
 # ── Config template tags (replaced at first-run bootstrap) ──────────────
 
 config_tags = {
@@ -126,4 +138,8 @@ config_tags = {
     "log_path": "日志文件路径",
     "log_level_console": "控制台日志级别: DEBUG/INFO/WARNING/ERROR/CRITICAL",
     "log_level_file": "文件日志级别: DEBUG/INFO/WARNING/ERROR/CRITICAL",
+    "subscription_section": "画廊订阅",
+    "subscription_enabled": "启用订阅画廊的周期性更新检查",
+    "subscription_check_interval": "订阅检查间隔（小时）",
+    "subscription_check_pacing": "同一轮检查中相邻画廊之间的间隔（秒）",
 }

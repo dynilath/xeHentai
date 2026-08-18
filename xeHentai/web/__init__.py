@@ -26,6 +26,7 @@ from .api_tasks import router as tasks_router
 from .api_config import router as config_router
 from .api_system import router as system_router
 from .api_media import router as media_router
+from .api_subscriptions import router as subscriptions_router
 from .userscript import router as userscript_router
 from .ws import manager
 
@@ -63,6 +64,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
     app.include_router(config_router)
     app.include_router(system_router)
     app.include_router(media_router)
+    app.include_router(subscriptions_router)
     app.include_router(userscript_router)
 
     # Static files
@@ -133,6 +135,29 @@ def create_app(xeH: HostProtocol) -> FastAPI:
         if state == TASK_STATE_PAUSED:
             return "bg-yellow-100 text-yellow-800"
         return "bg-blue-100 text-blue-800"
+
+    def _fmt_ts(ts) -> str:
+        import time as _time
+        if not ts:
+            return "—"
+        try:
+            return _time.strftime("%Y-%m-%d %H:%M", _time.localtime(int(ts)))
+        except (TypeError, ValueError):
+            return "—"
+
+    def _sub_status(sub: dict) -> tuple[str, str]:
+        """(label, css) for a subscription row's display status."""
+        if not sub.get("enabled", True):
+            return "paused", "bg-gray-100 text-gray-600"
+        return {
+            "": ("pending", "bg-gray-100 text-gray-600"),
+            "ok": ("up to date", "bg-green-100 text-green-800"),
+            "new_version": ("new version found", "bg-yellow-100 text-yellow-800"),
+            "removed": ("gallery removed", "bg-red-100 text-red-800"),
+            "not_found": ("not found", "bg-red-100 text-red-800"),
+            "exh_only": ("exh only", "bg-orange-100 text-orange-800"),
+            "error": ("error", "bg-red-100 text-red-800"),
+        }.get(str(sub.get("last_status", "")), (str(sub.get("last_status", "")) or "unknown", "bg-gray-100 text-gray-600"))
 
     @app.get("/", response_class=HTMLResponse)
     async def ui_dashboard(request: Request):
@@ -478,6 +503,10 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 nv_guid = session_store.find_guid_by_gid(str(nv.get("gid", "")))
                 nv_enriched.append({**nv, "guid": nv_guid})
 
+            # Subscription state for the subscribe/unsubscribe button
+            sub_row = session_store.get_subscription_by_gid(str(task.gid))
+            subscription_id = int(sub_row["id"]) if sub_row else None
+
             # Group tags by prefix. Each entry carries the display label and
             # the full namespace:value tag (URL-encoded) so the template can
             # link it to /tasks?f_search=<tag> for tag-based search.
@@ -530,6 +559,8 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 "finished_at": finished_at,
                 "tag_groups": _tag_groups,
                 "newer_versions": nv_enriched,
+                "subscription_id": subscription_id,
+                "subscribed": subscription_id is not None,
                 "all_images": all_images,
                 "image_offset": 0,
                 "page_size": 18,
@@ -581,6 +612,38 @@ def create_app(xeH: HostProtocol) -> FastAPI:
         return _render("add_task.html.j2", {
             "current_path": str(request.url.path),
         })
+
+    @app.get("/subscriptions", response_class=HTMLResponse)
+    async def ui_subscriptions(request: Request):
+        """Gallery subscriptions management page."""
+        xeH = request.app.state.xeH
+        from .. import session_store
+
+        items = []
+        for row in session_store.list_subscriptions():
+            status_label, status_css = _sub_status(row)
+            items.append({
+                "id": int(row["id"]),
+                "gid": row.get("gid", ""),
+                "url": row.get("url", ""),
+                "title": row.get("title", "") or row.get("url", ""),
+                "enabled": bool(row.get("enabled", True)),
+                "status_label": status_label,
+                "status_css": status_css,
+                "last_error": row.get("last_error", ""),
+                "last_check": _fmt_ts(row.get("last_check_at")),
+                "next_check": _fmt_ts(row.get("next_check_at")) if row.get("enabled", True) else "—",
+                "version_count": int(row.get("version_count", 0) or 0),
+                "task_guid": session_store.find_guid_by_gid(str(row.get("gid", ""))),
+            })
+
+        ctx = {
+            "current_path": str(request.url.path),
+            "items": items,
+            "check_interval": xeH.config.get("subscription_check_interval", 24.0),
+            "subscription_enabled": xeH.config.get("subscription_enabled", True),
+        }
+        return _render("subscriptions.html.j2", ctx)
 
     @app.get("/config", response_class=HTMLResponse)
     async def ui_config(request: Request):

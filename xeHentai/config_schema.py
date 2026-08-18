@@ -63,6 +63,14 @@ class LoggingConfig(BaseModel):
     level_file: str = Field(default="DEBUG", description="File log level (DEBUG/INFO/WARNING/ERROR/CRITICAL)")
 
 
+class SubscriptionConfig(BaseModel):
+    """Gallery subscription (new-version watch) settings."""
+
+    enabled: bool = Field(default=True, description="Enable periodic gallery subscription checks")
+    check_interval: float = Field(default=24.0, ge=0.1, description="Hours between subscription checks")
+    check_pacing: float = Field(default=5.0, ge=0, description="Seconds between individual gallery checks in one round")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Root model
 # ═══════════════════════════════════════════════════════════════════════════
@@ -76,6 +84,7 @@ class XeHentaiConfig(BaseModel):
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     performance: PerformanceConfig = Field(default_factory=PerformanceConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    subscription: SubscriptionConfig = Field(default_factory=SubscriptionConfig)
 
     # ── Flat-dict bridge ─────────────────────────────────────────────────
 
@@ -107,6 +116,10 @@ class XeHentaiConfig(BaseModel):
         "logging.path": "log_path",
         "logging.level_console": "log_level_console",
         "logging.level_file": "log_level_file",
+        # subscription
+        "subscription.enabled": "subscription_enabled",
+        "subscription.check_interval": "subscription_check_interval",
+        "subscription.check_pacing": "subscription_check_pacing",
     }
 
     # Reverse mapping: flat → nested (dot-separated)
