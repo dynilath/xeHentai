@@ -53,18 +53,18 @@
                 {% if items %}
                 {% for s in items %}
                 <tr class="border-b last:border-b-0 hover:bg-gray-50" id="sub-row-{{ s.id }}">
-                    <td class="py-3 px-4 max-w-md">
+                    <td class="py-3 px-4 max-w-xs">
                         {% if s.task_guid %}
-                        <a href="/tasks/{{ s.task_guid }}" class="text-sm text-blue-600 hover:underline break-words">{{ s.title }}</a>
+                        <a href="/tasks/{{ s.task_guid }}" class="text-sm text-blue-600 hover:underline truncate block" title="{{ s.title|e }}">{{ s.title }}</a>
                         {% else %}
-                        <a href="{{ s.url }}" target="_blank" rel="noopener" class="text-sm text-gray-700 hover:text-blue-600 hover:underline break-words">{{ s.title }}</a>
+                        <span class="text-sm text-gray-700 truncate block" title="{{ s.title|e }}">{{ s.title }}</span>
                         {% endif %}
                         {% if s.last_error %}
                         <div class="text-xs text-red-500 mt-0.5 break-all" title="{{ s.last_error }}">{{ s.last_error|truncate(80) }}</div>
                         {% endif %}
                     </td>
                     <td class="py-3 px-4 text-sm text-gray-500 font-mono whitespace-nowrap">{{ s.gid }}</td>
-                    <td class="py-3 px-4">
+                    <td class="py-3 px-4 whitespace-nowrap">
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{ s.status_css }}">
                             {{ s.status_label }}
                         </span>
@@ -72,8 +72,8 @@
                     <td class="py-3 px-4 text-sm text-gray-500 whitespace-nowrap">{{ s.last_check }}</td>
                     <td class="py-3 px-4 text-sm text-gray-500 whitespace-nowrap">{{ s.next_check }}</td>
                     <td class="py-3 px-4 text-sm text-gray-500">{{ s.version_count }}</td>
-                    <td class="py-3 px-4">
-                        <div class="flex gap-1.5 flex-wrap">
+                    <td class="py-3 px-4 whitespace-nowrap">
+                        <div class="flex gap-1.5">
                             <button hx-post="/api/subscriptions/{{ s.id }}/check" hx-swap="none"
                                     hx-on:htmx:afterRequest="window._subAction(event)"
                                     class="px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-medium rounded hover:bg-blue-100 border border-blue-200">
