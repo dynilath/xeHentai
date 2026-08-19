@@ -642,10 +642,8 @@ def create_app(xeH: HostProtocol) -> FastAPI:
 
         items = []
         for row in session_store.list_subscriptions():
-            status_label, status_css = _sub_status(row)
-            # Link the gallery name only when its task is finished; active
-            # tasks report their live state, cold tasks their DB phase_state.
             task_guid = session_store.find_guid_by_gid(str(row.get("gid", "")))
+            task_state = None
             if task_guid is not None:
                 active = xeH._get_active_task(task_guid)
                 if active is not None:
@@ -653,8 +651,14 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 else:
                     trow = session_store.get_task_row(task_guid)
                     task_state = int(trow.get("phase_state", 0)) if trow else None
-                if task_state != TASK_STATE_FINISHED:
-                    task_guid = None
+            # The Gallery column links to the task whenever one exists.
+            # Status shows the live task state while it is running (scanning,
+            # downloading, ...) and falls back to the subscription state
+            # (usually "up to date") once the task is finished or absent.
+            if task_state is not None and task_state != TASK_STATE_FINISHED:
+                status_label, status_css = _state_name(task_state), _state_css(task_state)
+            else:
+                status_label, status_css = _sub_status(row)
             items.append({
                 "id": int(row["id"]),
                 "gid": row.get("gid", ""),

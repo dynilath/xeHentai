@@ -252,6 +252,20 @@ class SubscriptionManager:
             "last_status": "ok",
             "last_error": "",
         }
+        # No newer version: if the gallery still has no task, create one
+        # now. Task creation is deferred to the check round (instead of
+        # subscription creation) so failures are retried here periodically.
+        if session_store.find_guid_by_gid(gid) is None:
+            ret, task_guid = self._host.add_task(url)
+            if ret != 0:
+                self.logger.warning(
+                    i18n.SUB_TASK_ADD_FAIL.format(sid=sub_id, gid=gid, ret=ret, url=url)
+                )
+                fields["last_error"] = "add task failed (ret=%d): %s" % (ret, url)
+            else:
+                self.logger.info(
+                    i18n.SUB_TASK_ADDED.format(sid=sub_id, gid=gid, guid=task_guid, url=url)
+                )
         if title and not sub.get("title"):
             fields["title"] = title
         session_store.update_subscription_fields(sub_id, fields)

@@ -44,33 +44,33 @@
                 Read
             </a>
             {% endif %}
-            <button hx-delete="/api/tasks/{{ guid }}" hx-confirm="Delete this task?"
-                    hx-on:htmx:afterRequest="window.location.href='/tasks'"
-                    class="px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700">
-                Delete
-            </button>
-            {% if state == 20 %}
-            <a href="/api/archive/{{ gid }}"
-               class="px-4 py-2 bg-gray-600 text-white text-sm rounded-lg hover:bg-gray-700">
-                Download Archive
-            </a>
-            {% endif %}
             {% if subscribed %}
             <button hx-delete="/api/subscriptions/{{ subscription_id }}" hx-swap="none"
                     hx-confirm="Unsubscribe this gallery?"
                     hx-on:htmx:afterRequest="window._subToggle(event)"
-                    class="px-4 py-2 bg-yellow-100 text-yellow-800 text-sm rounded-lg hover:bg-yellow-200 border border-yellow-300"
+                    class="px-4 py-2 bg-yellow-500 text-white text-sm rounded-lg hover:bg-yellow-600"
                     title="Stop watching this gallery for new versions">
                 Subscribed &#10003;
             </button>
             {% else %}
             <button hx-post="/api/subscriptions" hx-ext="json-enc" hx-vals='{"url":"{{ url }}"}' hx-swap="none"
                     hx-on:htmx:afterRequest="window._subToggle(event)"
-                    class="px-4 py-2 bg-blue-50 text-blue-700 text-sm rounded-lg hover:bg-blue-100 border border-blue-200"
+                    class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
                     title="Watch this gallery and auto-download newer versions">
                 Subscribe
             </button>
             {% endif %}
+            {% if state == 20 %}
+            <a href="/api/archive/{{ gid }}"
+               class="px-4 py-2 bg-gray-600 text-white text-sm rounded-lg hover:bg-gray-700">
+                Download Archive
+            </a>
+            {% endif %}
+            <button hx-delete="/api/tasks/{{ guid }}" hx-confirm="Delete this task?"
+                    hx-on:htmx:afterRequest="window.location.href='/tasks'"
+                    class="px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700">
+                Delete
+            </button>
         </div>
     </div>
 

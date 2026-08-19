@@ -1,4 +1,6 @@
 {% set batch = all_images[image_offset:image_offset + page_size] %}
+{% set total_pages = ((total + page_size - 1) // page_size) if total > 0 else 1 %}
+{% set current_page = (image_offset // page_size) + 1 %}
 <div id="image-grid">
     <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
         {% for img in batch %}
@@ -11,18 +13,49 @@
         {% endfor %}
     </div>
     <div class="flex items-center justify-between mt-3">
-        <span class="text-sm text-gray-500">{{ image_offset + 1 }}-{{ [image_offset + page_size, total] | min }} of {{ total }}</span>
-        <div class="flex gap-2">
+        <span class="text-sm text-gray-500">Page {{ current_page }} of {{ total_pages }}</span>
+        <div class="flex items-center gap-2">
+            {% if total_pages > 1 %}
+            {% if current_page > 1 %}
+            <button hx-get="/tasks/{{ guid }}/images?offset=0"
+                    hx-target="#image-grid" hx-swap="outerHTML"
+                    class="px-3 py-1 text-sm border rounded hover:bg-gray-100">&laquo; First</button>
+            {% endif %}
             {% if image_offset > 0 %}
             <button hx-get="/tasks/{{ guid }}/images?offset={{ [image_offset - page_size, 0] | max }}"
                     hx-target="#image-grid" hx-swap="outerHTML"
                     class="px-3 py-1 text-sm border rounded hover:bg-gray-100">&larr; Prev</button>
             {% endif %}
+            <form class="flex items-center gap-1" onsubmit="event.preventDefault(); jumpImagePage();">
+                <input id="image-page-jump" type="number" min="1" max="{{ total_pages }}" value="{{ current_page }}"
+                       class="w-16 px-2 py-1 text-sm border rounded" aria-label="Jump to page">
+                <button type="submit" class="px-3 py-1 text-sm border rounded hover:bg-gray-100">Go</button>
+            </form>
             {% if image_offset + page_size < total %}
             <button hx-get="/tasks/{{ guid }}/images?offset={{ image_offset + page_size }}"
                     hx-target="#image-grid" hx-swap="outerHTML"
                     class="px-3 py-1 text-sm border rounded hover:bg-gray-100">Next &rarr;</button>
             {% endif %}
+            {% if current_page < total_pages %}
+            <button hx-get="/tasks/{{ guid }}/images?offset={{ (total_pages - 1) * page_size }}"
+                    hx-target="#image-grid" hx-swap="outerHTML"
+                    class="px-3 py-1 text-sm border rounded hover:bg-gray-100">Last &raquo;</button>
+            {% endif %}
+            {% endif %}
         </div>
     </div>
 </div>
+<script>
+function jumpImagePage() {
+    var input = document.getElementById("image-page-jump");
+    var n = parseInt(input && input.value, 10);
+    var totalPages = {{ total_pages }};
+    if (!n || n < 1) n = 1;
+    if (n > totalPages) n = totalPages;
+    var offset = (n - 1) * {{ page_size }};
+    htmx.ajax("GET", "/tasks/{{ guid }}/images?offset=" + offset, {
+        target: "#image-grid",
+        swap: "outerHTML"
+    });
+}
+</script>
