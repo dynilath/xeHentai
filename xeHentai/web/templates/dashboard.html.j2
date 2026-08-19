@@ -59,7 +59,7 @@
                                 {{ t.state_name }}
                             </span>
                         </td>
-                        <td class="py-2 text-gray-500">{{ t.total }}</td>
+                        <td class="py-2 text-gray-500">{% if t.done is not none %}{{ t.done }}/{{ t.total }}{% else %}{{ t.total }}{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -75,14 +75,26 @@
 {% block scripts %}
 <script>
 initWebSocket();
-window.addEventListener("ws:task_state_change", function() {
+var _dashRefreshTimer = null;
+function _refreshDashboard() {
     htmx.ajax("GET", "/", {target: "#dashboard-content", swap: "outerHTML"});
-});
-window.addEventListener("ws:task_completed", function() {
-    htmx.ajax("GET", "/", {target: "#dashboard-content", swap: "outerHTML"});
-    if (event.detail) {
-        if (event.detail.state === "finished") showToast("Task " + event.detail.gid + " completed!", "success");
-        else showToast("Task " + event.detail.gid + " failed", "error");
+}
+function _refreshDashboardDebounced() {
+    // task_progress fires per downloaded image; coalesce into one refresh per second
+    if (_dashRefreshTimer) return;
+    _dashRefreshTimer = setTimeout(function() {
+        _dashRefreshTimer = null;
+        _refreshDashboard();
+    }, 1000);
+}
+window.addEventListener("ws:task_state_change", _refreshDashboard);
+window.addEventListener("ws:task_added", _refreshDashboard);
+window.addEventListener("ws:task_progress", _refreshDashboardDebounced);
+window.addEventListener("ws:task_completed", function(e) {
+    _refreshDashboard();
+    if (e.detail) {
+        if (e.detail.state === "finished") showToast("Task " + e.detail.gid + " completed!", "success");
+        else showToast("Task " + e.detail.gid + " failed", "error");
     }
 });
 </script>

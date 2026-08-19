@@ -169,18 +169,34 @@ def create_app(xeH: HostProtocol) -> FastAPI:
         _, recent_rows = session_store.query_tasks(
             limit=10, order_by="updated_at", order_dir="DESC"
         )
+        from ..const import TASK_STATE_FINISHED
         recent = []
         for row in recent_rows:
             guid = row.get("guid", "")
             state = int(row.get("phase_state", 0))
+            total_pages = int(row.get("total", 0) or 0)
+            title = row.get("title", "") or row.get("url", "")
+            # DB rows lag behind stage boundaries; overlay the live in-memory
+            # task like ui_task_list does so WS-triggered refreshes show truth.
+            done = None
+            active = xeH._get_active_task(guid)
+            if active is not None:
+                state = active.state
+                total_pages = active.meta.total if active.meta else total_pages
+                if active.meta and active.meta.title:
+                    title = active.meta.title
+                done = len(active._flist_done)
+            elif state == TASK_STATE_FINISHED:
+                done = total_pages
             recent.append({
                 "guid": guid,
                 "gid": row.get("gid", ""),
-                "title": row.get("title", "") or row.get("url", ""),
+                "title": title,
                 "state": state,
                 "state_name": _state_name(state),
                 "state_css": _state_css(state),
-                "total": int(row.get("total", 0) or 0),
+                "total": total_pages,
+                "done": done,
             })
 
         ctx = {
@@ -541,8 +557,13 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             finished_at = ""
             if task.state == TASK_STATE_FINISHED:
                 row = session_store.get_task_row(guid)
-                if row:
-                    finished_at = row.get("updated_at", "") or ""
+                if row and row.get("updated_at"):
+                    finished_at = _fmt_ts(row.get("updated_at"))
+
+            # _flist_done is not serialized; cold finished tasks hydrate with done=0
+            done = len(task._flist_done)
+            if done == 0 and task.state == TASK_STATE_FINISHED:
+                done = total
 
             return _render("task_detail.html.j2", {
                 "current_path": str(request.url.path),
@@ -555,7 +576,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 "title": task.meta.title if task.meta else "",
                 "title_japanese": task.meta.title_japanese if task.meta else "",
                 "total": total,
-                "done": len(task._flist_done),
+                "done": done,
                 "finished_at": finished_at,
                 "tag_groups": _tag_groups,
                 "newer_versions": nv_enriched,

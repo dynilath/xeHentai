@@ -318,6 +318,11 @@ class xeHentai(HostInterface):
                     existing.cleanup()
                     self._task_control.enqueue_waiting_task(existing.guid)
                     self._dehydrate_task(existing.guid)
+                    try:
+                        from .web.ws import emit_task_added
+                        emit_task_added(existing.guid, existing.gid)
+                    except ImportError:
+                        pass
             return 0, existing_guid
 
         # Ensure the new guid is unique across active set and DB.
@@ -327,6 +332,11 @@ class xeHentai(HostInterface):
         t.set_phase_state(TASK_STATE_WAITING)
         session_store.save_task_from_active(t)
         self._task_control.enqueue_waiting_task(t.guid)
+        try:
+            from .web.ws import emit_task_added
+            emit_task_added(t.guid, t.gid)
+        except ImportError:
+            pass
         return 0, t.guid
 
     def add_task(self, url, **cfg_dict):
@@ -383,6 +393,8 @@ class xeHentai(HostInterface):
             # Cold task: lightweight state-only DB update.
             session_store.update_task_state(guid, TASK_STATE_PAUSED)
         self._task_control.mark_task_processed(guid)
+        if active is not None:
+            self._task_control._emit_ws_task_state_change(active, guid)
         return ERR_NO_ERROR, ""
 
     def resume_task(self, guid):
@@ -405,6 +417,8 @@ class xeHentai(HostInterface):
         else:
             session_store.update_task_state(guid, new_state)
         self._task_control.enqueue_waiting_task(guid)
+        if active is not None:
+            self._task_control._emit_ws_task_state_change(active, guid)
         return ERR_NO_ERROR, ""
 
     def _task_loop(self):

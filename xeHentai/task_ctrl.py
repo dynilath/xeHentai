@@ -179,6 +179,9 @@ class TaskControl:
 
     def _emit_ws_task_completed(self, task: Task, guid: str, state: str, error: str | None = None):
         """Emit WebSocket task completed/failed event."""
+        # Persist the terminal state first: WS-driven UI refreshes (dashboard)
+        # re-render from the DB, so emitting before the save would show stale rows.
+        self._host._save_session(task=True, guid=guid)
         try:
             from .web.ws import emit_task_completed
             emit_task_completed(guid, task.gid, state, error)

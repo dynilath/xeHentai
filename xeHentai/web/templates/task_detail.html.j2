@@ -78,7 +78,7 @@
     <div class="bg-white rounded-lg shadow-sm border p-6">
         {% if state == 20 %}
         <h2 class="text-lg font-semibold mb-1">Completed</h2>
-        <p class="text-sm text-gray-500">{{ done }}/{{ total }} images &middot; {{ finished_at }}</p>
+        <p class="text-sm text-gray-500">{{ done }}/{{ total }} images{% if finished_at %} &middot; {{ finished_at }}{% endif %}</p>
         {% else %}
         <h2 class="text-lg font-semibold mb-3">Progress</h2>
         <div id="progress-area">

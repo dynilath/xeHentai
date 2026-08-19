@@ -21,8 +21,12 @@ class ConnectionManager:
         """Remove a disconnected client."""
         self._connections.pop(ws, None)
 
-    async def broadcast(self, event_type: str, data: Dict[str, Any]):
-        """Push an event to all connected clients."""
+    def broadcast_sync(self, event_type: str, data: Dict[str, Any]):
+        """Enqueue an event to all clients without awaiting.
+
+        Safe from any thread: producers only put_nowait, and drain_queues()
+        polls with get_nowait() so no await-side wakeup is involved.
+        """
         payload = json.dumps({"type": event_type, **data})
         stale: List[WebSocket] = []
         for ws, queue in self._connections.items():
@@ -32,6 +36,10 @@ class ConnectionManager:
                 stale.append(ws)
         for ws in stale:
             self.disconnect(ws)
+
+    async def broadcast(self, event_type: str, data: Dict[str, Any]):
+        """Push an event to all connected clients."""
+        self.broadcast_sync(event_type, data)
 
     async def drain_queues(self):
         """Background task: drain per-client queues and send to WebSockets."""
@@ -62,39 +70,47 @@ manager = ConnectionManager()
 
 def emit_task_progress(guid: str, gid: str, state: int, done: int, total: int, title: str = ""):
     """Emit a task_progress event."""
-    asyncio.ensure_future(manager.broadcast("task_progress", {
+    manager.broadcast_sync("task_progress", {
         "guid": guid,
         "gid": gid,
         "state": state,
         "done": done,
         "total": total,
         "title": title,
-    }))
+    })
 
 
 def emit_task_state_change(guid: str, new_state: int, top_status: int):
     """Emit a task_state_change event."""
-    asyncio.ensure_future(manager.broadcast("task_state_change", {
+    manager.broadcast_sync("task_state_change", {
         "guid": guid,
         "new_state": new_state,
         "top_status": top_status,
-    }))
+    })
 
 
 def emit_task_completed(guid: str, gid: str, state: str, error: str | None = None):
     """Emit a task_completed event (finished or failed)."""
-    asyncio.ensure_future(manager.broadcast("task_completed", {
+    manager.broadcast_sync("task_completed", {
         "guid": guid,
         "gid": gid,
         "state": state,
         "error": error,
-    }))
+    })
+
+
+def emit_task_added(guid: str, gid: str):
+    """Emit a task_added event."""
+    manager.broadcast_sync("task_added", {
+        "guid": guid,
+        "gid": gid,
+    })
 
 
 def emit_system_status(waiting: int, processing: int, processed: int):
     """Emit a system_status event."""
-    asyncio.ensure_future(manager.broadcast("system_status", {
+    manager.broadcast_sync("system_status", {
         "waiting": waiting,
         "processing": processing,
         "processed": processed,
-    }))
+    })

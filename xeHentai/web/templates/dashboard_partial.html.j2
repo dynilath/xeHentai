@@ -55,7 +55,7 @@
                                 {{ t.state_name }}
                             </span>
                         </td>
-                        <td class="py-2 text-gray-500">{{ t.total }}</td>
+                        <td class="py-2 text-gray-500">{% if t.done is not none %}{{ t.done }}/{{ t.total }}{% else %}{{ t.total }}{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
