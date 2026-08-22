@@ -3,7 +3,11 @@ from dataclasses import dataclass
 import requests
 from . import util
 from .const import DEFAULT_MAX_REDIRECTS
-from .exceptions import RequestInvalidURLException, RequestRetryExhaustedException
+from .exceptions import (
+    LoginRequiredException,
+    RequestInvalidURLException,
+    RequestRetryExhaustedException,
+)
 from .i18n import i18n
 from .proxy import ProxyPool, ProxyPoolDepleted
 from .util.logger import Logger
@@ -171,6 +175,15 @@ class HttpRequest(object):
             if _is_retryable_status_code(r.status_code):
                 retry_count += 1
                 continue
+
+            # HTTP 200 with an empty HTML body means the site returned a
+            # login-required page (cookies expired): fail immediately, retry is pointless.
+            if (
+                r.status_code == 200
+                and content_length == 0
+                and "text/html" in r.headers.get("content-type", "").lower()
+            ):
+                raise LoginRequiredException(url=current_url)
 
             if proxy_control is not None:
                 if content_length < 1024 and re.search(

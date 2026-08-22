@@ -14,6 +14,7 @@ from .const import (
     TASK_STATE_ERR_IMAGE_RESAMPLED,
     TASK_STATE_ERR_IP_BANNED,
     TASK_STATE_ERR_KEY_EXPIRED,
+    TASK_STATE_ERR_LOGIN_REQUIRED,
     TASK_STATE_ERR_NO_PAGEURL_FOUND,
     TASK_STATE_ERR_ONLY_VISIBLE_EXH,
     TASK_STATE_ERR_QUOTA_EXCEEDED,
@@ -132,6 +133,21 @@ class KeyExpiredException(CrawlerException):
 
     def __init__(self, url):
         CrawlerException.__init__(self, TASK_STATE_ERR_KEY_EXPIRED, url)
+
+
+class LoginRequiredException(CrawlerException):
+    """Raised when the server returns an empty response (HTTP 200, 0 bytes,
+    content-type text/html), meaning the link requires login but the cookies
+    have expired. Should NOT retry; the user needs to refresh cookies / re-login.
+    """
+
+    def __init__(self, url):
+        CrawlerException.__init__(
+            self,
+            TASK_STATE_ERR_LOGIN_REQUIRED,
+            url,
+            "empty response (HTTP 200, 0 bytes): login required, cookies may be expired",
+        )
 
 
 class GalleryDetailPageParseException(ParseException):
