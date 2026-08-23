@@ -2,6 +2,8 @@
 
 import os
 import zipfile
+from urllib.parse import quote
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.responses import Response
@@ -111,6 +113,23 @@ async def get_image(gid: str, fid_and_hash: str, request: Request):
             xeH._dehydrate_task(guid)
 
 
+def _archive_content_disposition(title: str, gid: str) -> str:
+    """Return a browser-safe Content-Disposition for archive downloads."""
+    raw_name = str(title or gid).strip() or str(gid)
+    fallback_name = "".join(
+        ch if ch.isascii() and (ch.isalnum() or ch in " _.-") else "_"
+        for ch in raw_name
+    ).strip(" ._")[:100]
+    fallback_name = fallback_name or gid
+    if not fallback_name.lower().endswith(".zip"):
+        fallback_name = f"{fallback_name}.zip"
+
+    utf8_name = quote(raw_name, safe="!#$&+-.^_`|~")
+    if not utf8_name.lower().endswith(".zip"):
+        utf8_name = f"{utf8_name}.zip"
+    return f"attachment; filename=\"{fallback_name}\"; filename*=UTF-8''{utf8_name}"
+
+
 @router.get("/api/archive/{gid}")
 async def get_archive(gid: str, request: Request):
     """Download a gallery archive zip by gallery ID."""
@@ -142,14 +161,10 @@ async def get_archive(gid: str, request: Request):
             raise HTTPException(status_code=404, detail="Archive not available")
 
         title = task.meta.title if task.meta else gid
-        safe_title = "".join(c for c in title if c.isalnum() or c in " _.-")[:100]
-        filename = f"{safe_title}.zip" if safe_title else f"{gid}.zip"
-
         return FileResponse(
             zip_path,
             media_type="application/zip",
-            filename=filename,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": _archive_content_disposition(title, gid)},
         )
     finally:
         if cold:
