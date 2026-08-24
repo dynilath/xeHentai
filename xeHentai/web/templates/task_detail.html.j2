@@ -44,6 +44,13 @@
                 Read
             </a>
             {% endif %}
+            <button hx-post="/api/tasks/{{ guid }}/refetch_meta" hx-swap="none"
+                    hx-disabled-elt="this"
+                    hx-on:htmx:afterRequest="window._refetchMeta(event)"
+                    class="px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 border border-gray-300 disabled:opacity-50"
+                    title="Re-fetch the gallery page to refresh title, tags, and newer-version info">
+                Refetch Meta
+            </button>
             {% if subscribed %}
             <button hx-delete="/api/subscriptions/{{ subscription_id }}" hx-swap="none"
                     hx-confirm="Unsubscribe this gallery?"
@@ -162,6 +169,17 @@ window._subToggle = function(e) {
         var detail = "";
         try { detail = JSON.parse(e.detail.xhr.responseText).detail || ""; } catch (err) {}
         showToast("Subscription action failed: " + (detail || ("HTTP " + e.detail.xhr.status)), "error");
+    }
+};
+
+// Refetch Meta button handler: reload on success, toast on failure.
+window._refetchMeta = function(e) {
+    if (e.detail.successful) {
+        window.location.reload();
+    } else {
+        var detail = "";
+        try { detail = JSON.parse(e.detail.xhr.responseText).detail || ""; } catch (err) {}
+        showToast("Refetch meta failed: " + (detail || ("HTTP " + e.detail.xhr.status)), "error");
     }
 };
 

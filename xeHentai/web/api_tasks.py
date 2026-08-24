@@ -3,7 +3,9 @@
 import traceback
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
+from starlette.concurrency import run_in_threadpool
 
+from ..const import ERR_TASK_NOT_FOUND, ERR_TASK_BUSY
 from .models import (
     TaskCreateRequest,
     TaskBulkRequest,
@@ -224,6 +226,20 @@ async def resume_task(guid: str, request: Request):
     if ret != 0:
         raise HTTPException(status_code=400, detail=f"Failed to resume task (code={ret})")
     return SuccessResponse(message="Task resumed")
+
+
+@router.post("/{guid}/refetch_meta", response_model=SuccessResponse)
+async def refetch_task_meta(guid: str, request: Request):
+    """Re-fetch the gallery page now to refresh title/tags/newer-versions."""
+    xeH = request.app.state.xeH
+    ret, err = await run_in_threadpool(xeH.refetch_task_meta, guid)
+    if ret == ERR_TASK_NOT_FOUND:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if ret == ERR_TASK_BUSY:
+        raise HTTPException(status_code=409, detail="Cannot refetch meta while the task is running")
+    if ret != 0:
+        raise HTTPException(status_code=400, detail=err or "Refetch failed")
+    return SuccessResponse(message="Meta refreshed")
 
 
 @router.get("/{guid}/images", response_model=List[ImageInfo])

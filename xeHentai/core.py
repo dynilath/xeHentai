@@ -421,6 +421,49 @@ class xeHentai(HostInterface):
             self._task_control._emit_ws_task_state_change(active, guid)
         return ERR_NO_ERROR, ""
 
+    def refetch_task_meta(self, guid):
+        """Re-fetch the gallery page now and refresh title/tags/newer-version
+        info on an existing task, without touching downloaded files.
+
+        Fails while the task itself is actively running its own stages,
+        since that stage owns task.meta for the duration of the crawl.
+        """
+        row = session_store.get_task_row(guid)
+        if row is None:
+            return ERR_TASK_NOT_FOUND, None
+        active = self._active_tasks.get(guid)
+        cur_state = active.state if active is not None else int(row.get("phase_state", TASK_STATE_WAITING))
+        if TASK_STATE_PAUSED < cur_state < TASK_STATE_FINISHED:
+            return ERR_TASK_BUSY, None
+
+        cold = active is None
+        task = active if active is not None else self._hydrate_task(guid)
+        if task is None:
+            return ERR_TASK_NOT_FOUND, None
+
+        req = HttpRequest(self.headers, self.logger, logger_prefix="refetch-%s" % guid)
+        try:
+            r = req.request(
+                "GET",
+                task.url,
+                retry=self.config.get("page_retry", 3),
+                timeout=self.config.get("page_timeout", 10),
+                proxy=self.proxy,
+                proxy_wait=False,
+            )
+            meta = filters.flt_metadata(r)
+        except Exception as ex:
+            if cold:
+                self._dehydrate_task(guid)
+            return ERR_TASK_REFETCH_FAILED, str(ex)
+
+        task.update_meta(meta)
+        if cold:
+            self._dehydrate_task(guid)
+        else:
+            session_store.save_task_from_active(task)
+        return ERR_NO_ERROR, ""
+
     def _task_loop(self):
         self._task_control.run()
 

@@ -80,14 +80,26 @@ class SubscriptionManager:
         """Break the sleep so a newly-due check runs immediately."""
         self._wake.set()
 
-    def check_now(self, sub_id: int) -> bool:
-        """Schedule an immediate check for one subscription. Returns False if
-        the subscription does not exist."""
-        if session_store.get_subscription(sub_id) is None:
-            return False
-        session_store.schedule_subscription_check(sub_id, 0)
-        self.wake()
-        return True
+    def check_now_sync(self, sub_id: int) -> Optional[str]:
+        """Run a check for one subscription immediately and block until it
+        finishes, so the caller sees up-to-date status/error fields right
+        away. Returns None if the subscription does not exist."""
+        sub = session_store.get_subscription(sub_id)
+        if sub is None:
+            return None
+        with self._round_lock:
+            try:
+                return self.check_one(sub)
+            except IPBannedException:
+                self.logger.warning(
+                    i18n.SUB_ROUND_ABORT_BANNED.format(defer=SUB_BAN_DEFER_S)
+                )
+                session_store.defer_due_subscriptions(
+                    int(time.time()), SUB_BAN_DEFER_S
+                )
+                return self._record_error(
+                    int(sub["id"]), str(sub.get("gid", "")), "error", "IP banned"
+                )
 
     # ── main loop ───────────────────────────────────────────────────────
 
@@ -208,6 +220,9 @@ class SubscriptionManager:
                     added=latest.get("added", ""),
                 )
             )
+            # Mirror the in-task TaskNewVersion flow so the OLD task's own
+            # detail page also shows the "newer version" pointer.
+            self._mark_old_task_newer_version(gid, newer_versions)
 
             cfg_overrides = self._inherited_task_config(gid)
             ret, new_task_guid = self._host.add_task(new_url, **cfg_overrides)
@@ -298,3 +313,24 @@ class SubscriptionManager:
         if not isinstance(cfg, dict):
             return {}
         return {k: cfg[k] for k in _INHERITED_TASK_CONFIG_KEYS if k in cfg}
+
+    def _mark_old_task_newer_version(
+        self, old_gid: str, newer_versions: List[Dict[str, Any]]
+    ) -> None:
+        """Record the detected newer-version pointer on the OLD task, if one
+        exists, so its detail page shows the same hint a running task would
+        set for itself via the TaskNewVersion flow."""
+        old_guid = session_store.find_guid_by_gid(str(old_gid))
+        if not old_guid:
+            return
+        host = self._host
+        active = host._active_tasks.get(old_guid)
+        cold = active is None
+        task = active if active is not None else host._hydrate_task(old_guid)
+        if task is None:
+            return
+        task.meta.newer_versions = [dict(item) for item in newer_versions]
+        if cold:
+            host._dehydrate_task(old_guid)
+        else:
+            session_store.save_task_from_active(task)

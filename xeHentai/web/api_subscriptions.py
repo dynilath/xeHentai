@@ -3,6 +3,7 @@
 import re
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from .. import session_store
 from ..const import RESTR_SITE, RE_INDEX
@@ -88,11 +89,12 @@ async def delete_subscription(sub_id: int, request: Request):
 
 @router.post("/{sub_id}/check", response_model=SuccessResponse)
 async def check_subscription(sub_id: int, request: Request):
-    """Schedule an immediate check for a subscription."""
+    """Run a check for a subscription now and wait for it to finish."""
     xeH = request.app.state.xeH
-    if not xeH._subscriptions.check_now(sub_id):
+    status = await run_in_threadpool(xeH._subscriptions.check_now_sync, sub_id)
+    if status is None:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    return SuccessResponse(message="Check scheduled")
+    return SuccessResponse(message="Check complete: %s" % status)
 
 
 @router.post("/{sub_id}/pause", response_model=SuccessResponse)
