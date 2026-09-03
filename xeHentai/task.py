@@ -482,10 +482,10 @@ class Task(object):
         self.meta = GalleryMeta()
 
     def migrate_exhentai(self):
-        _ = re.findall(r"(?:https*://[g\.]*e\-hentai\.org)(.+)", self.url)
+        _ = re.findall(RE_STR_EHENTAI_MIGRATE, self.url)
         if not _:
             return False
-        self.url = "https://exhentai.org%s" % _[0]
+        self.url = HOST_EXHENTAI + _[0]
         if self.state < 0:
             self.set_phase_state(TASK_STATE_WAITING)
         return True

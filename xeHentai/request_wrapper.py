@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import requests
 from . import util
-from .const import DEFAULT_MAX_REDIRECTS
+from .const import DEFAULT_MAX_REDIRECTS, QUOTA_509_GIF_FRAGMENT
 from .exceptions import (
     LoginRequiredException,
     RequestInvalidURLException,
@@ -24,7 +24,7 @@ if urllib3.util.ssl_ and hasattr(urllib3.util.ssl_, "DEFAULT_CIPHERS"):  # type:
 
 
 def _is_509gif(content: str) -> bool:
-    return content.find("hentai.org/img/509.gif") != -1
+    return content.find(QUOTA_509_GIF_FRAGMENT) != -1
 
 
 def _is_retryable_request_exception(ex: Exception) -> bool:

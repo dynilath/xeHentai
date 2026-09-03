@@ -18,6 +18,11 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
 from xeHentai.const import TASK_STATE_FINISHED
+from xeHentai.site import (
+    EXAMPLE_GALLERY_EHENTAI,
+    EXAMPLE_GALLERY_EXHENTAI,
+    EXAMPLE_GALLERY_SUBSCRIPTION,
+)
 
 if TYPE_CHECKING:
     from ..host import HostProtocol
@@ -37,6 +42,13 @@ _jinja_env = Environment(
     auto_reload=True,      # reload on change, also disables bytecode cache
     cache_size=0,          # belt and suspenders
 )
+
+# Example site URLs rendered into input placeholders. "&#10;" keeps the
+# newline intact inside an HTML attribute (a raw "\n" would be collapsed).
+_jinja_env.globals["ADD_TASK_PLACEHOLDER"] = "&#10;".join(
+    (EXAMPLE_GALLERY_EHENTAI, EXAMPLE_GALLERY_EXHENTAI, "...")
+)
+_jinja_env.globals["SUBSCRIPTION_PLACEHOLDER"] = EXAMPLE_GALLERY_SUBSCRIPTION
 
 
 def _render(name: str, context: dict) -> HTMLResponse:

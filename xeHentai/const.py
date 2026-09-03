@@ -9,6 +9,22 @@ import re
 import sys
 import locale
 
+# Site URL literals (hosts, URLs, host-bearing regexes) all live in site.py
+from .site import (
+    DOMAIN_EHENTAI,
+    DOMAIN_EXHENTAI,
+    DOMAIN_FORUMS_EHENTAI,
+    HOST_EHENTAI,
+    HOST_EXHENTAI,
+    HOST_FORUMS_EHENTAI,
+    LOGIN_URL,
+    QUOTA_509_GIF_FRAGMENT,
+    RE_STR_EHENTAI_MIGRATE,
+    RE_STR_EXHENTAI_PREFIX,
+    RE_STR_WEBPAGE,
+    RESTR_SITE,
+)
+
 IRONPYTHON = sys.platform == 'cli'
 EXEBUNDLE = getattr(sys, 'frozen', False)
 LOCALE = locale.getdefaultlocale()[0]
@@ -37,21 +53,18 @@ RE_GALLERY = re.compile(r'\/([a-f0-9]{10})\/[^\-]+\-(\d+)')
 RE_IMGHASH = re.compile(r'\/([a-f0-9]{40})-(\d+)-(\d+)-(\d+)-([a-z]{,4})')
 RE_FULLIMG = re.compile(r'fullimg.php\?gid=([a-z0-9]+)&page=(\d+)&key=')
 
-__restr_webpage = r'^https*:\/\/([^\.]+\.)*(?:[g\.]*e-|ex)hentai.org'
-RE_URL_WEBPAGE = re.compile(__restr_webpage)
-RE_URL_IMAGE = re.compile(r'(?!%s)' % __restr_webpage)
+RE_URL_WEBPAGE = re.compile(RE_STR_WEBPAGE)
+RE_URL_IMAGE = re.compile(r'(?!%s)' % RE_STR_WEBPAGE)
 # matches all
 RE_URL_ALL = re.compile(r'.')
 
 RE_LOCAL_ADDR = re.compile(r'(^localhost)|(^127\.)|(^192\.168\.)|(^10\.)|(^172\.1[6-9]\.)|(^172\.2[0-9]\.)|(^172\.3[0-1]\.)|(^::1$)|(^[fF][cCdD])')
 
-RESTR_SITE = r"https?:\/\/(?:e-|ex)hentai\.org"
-
 FALLBACK_CF_IP = ("104.24.255.11", "104.24.254.11")
 FALLBACK_IP_MAP = {
-    'e-hentai.org': FALLBACK_CF_IP,
-    'forums.e-hentai.org': ("94.100.18.243", ),
-    'exhentai.org': ("217.23.13.91","217.23.13.45","109.236.84.136","109.236.92.143","109.236.84.145","109.236.92.166")
+    DOMAIN_EHENTAI: FALLBACK_CF_IP,
+    DOMAIN_FORUMS_EHENTAI: ("94.100.18.243", ),
+    DOMAIN_EXHENTAI: ("217.23.13.91","217.23.13.45","109.236.84.136","109.236.92.143","109.236.84.145","109.236.92.166")
 } 
 
 DEFAULT_MAX_REDIRECTS = 30

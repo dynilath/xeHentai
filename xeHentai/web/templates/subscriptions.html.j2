@@ -25,7 +25,7 @@
         <form id="sub-add-form" hx-post="/api/subscriptions" hx-ext="json-enc" hx-swap="none">
             <div class="flex gap-2">
                 <input type="text" name="url" required
-                       placeholder="https://e-hentai.org/g/1234567/somehash/"
+                       placeholder="{{ SUBSCRIPTION_PLACEHOLDER }}"
                        class="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-sm font-mono">
                 <button type="submit"
                         class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shrink-0">

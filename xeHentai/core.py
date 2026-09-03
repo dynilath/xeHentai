@@ -298,7 +298,7 @@ class xeHentai(HostInterface):
         if not re.match(r"^%s/[^/]+/\d+/[^/]+/*#*$" % RESTR_SITE, url):
             return ERR_URL_NOT_RECOGNIZED, None
 
-        if not self.has_login and re.match(r"^https*://exhentai\.org", url):
+        if not self.has_login and re.match(RE_STR_EXHENTAI_PREFIX, url):
             return ERR_CANT_DOWNLOAD_EXH, None
 
         t = Task(url, cfg, self.logger, core_config=self.config)
@@ -825,7 +825,7 @@ class xeHentai(HostInterface):
 
         r = req.request(
             "POST",
-            "https://forums.e-hentai.org/index.php?act=Login&CODE=01",
+            LOGIN_URL,
             data=logindata,
         )
 

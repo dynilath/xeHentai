@@ -156,7 +156,7 @@ def flt_quota_check(func: Callable[Concatenate[HttpRequestResult, P], R]):
                 r.final_url,
                 f"quota page content-length fingerprint ({r.content_length} bytes)",
             )
-        elif "hentai.org/img/509.gif" in r.final_url:
+        elif QUOTA_509_GIF_FRAGMENT in r.final_url:
             raise QuotaExceededException(
                 r.final_url, "509.gif detected in response URL"
             )
