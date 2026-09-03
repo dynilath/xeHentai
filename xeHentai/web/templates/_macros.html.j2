@@ -59,6 +59,21 @@
                class="text-xs px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200">
                 Read
             </a>
+            {% elif task.state == 21 %}
+            {# "has new version": Read jumps to the newest version's task, disabled until that task finishes #}
+            {% if task.read_target and task.read_target.readable and task.read_target.guid %}
+            <a href="/tasks/{{ task.read_target.guid }}/read/1" target="_blank"
+               title="Read the newer version of this gallery"
+               class="text-xs px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200">
+                Read
+            </a>
+            {% else %}
+            <button disabled
+                    title="Newer version is not finished downloading yet"
+                    class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-400 cursor-not-allowed">
+                Read
+            </button>
+            {% endif %}
             {% endif %}
             <button hx-delete="/api/tasks/{{ task.guid }}"
                     hx-confirm="Delete this task?"

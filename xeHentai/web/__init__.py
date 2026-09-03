@@ -104,6 +104,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             TASK_STATE_PAUSED, TASK_STATE_WAITING, TASK_STATE_GET_META,
             TASK_STATE_SCAN_PAGE, TASK_STATE_SCAN_IMG, TASK_STATE_SCAN_ARCHIVE,
             TASK_STATE_DOWNLOAD, TASK_STATE_MAKE_ARCHIVE, TASK_STATE_FINISHED,
+            TASK_STATE_HAS_NEW_VERSION,
             TASK_STATE_FAILED, TASK_STATE_ERR_URL_NOT_RECOGNIZED,
             TASK_STATE_ERR_CANT_DOWNLOAD_EXH, TASK_STATE_ERR_ONLY_VISIBLE_EXH,
             TASK_STATE_ERR_GALLERY_REMOVED, TASK_STATE_ERR_QUOTA_EXCEEDED,
@@ -123,6 +124,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             TASK_STATE_DOWNLOAD: "downloading",
             TASK_STATE_MAKE_ARCHIVE: "making archive",
             TASK_STATE_FINISHED: "finished",
+            TASK_STATE_HAS_NEW_VERSION: "has new version",
             TASK_STATE_FAILED: "failed",
             TASK_STATE_ERR_URL_NOT_RECOGNIZED: "url not recognized",
             TASK_STATE_ERR_CANT_DOWNLOAD_EXH: "cant download exh",
@@ -141,9 +143,14 @@ def create_app(xeH: HostProtocol) -> FastAPI:
         return names.get(state, f"error {state}" if state < 0 else f"state {state}")
 
     def _state_css(state: int) -> str:
-        from ..const import TASK_STATE_FINISHED, TASK_STATE_FAILED, TASK_STATE_PAUSED
+        from ..const import (
+            TASK_STATE_FINISHED, TASK_STATE_FAILED, TASK_STATE_PAUSED,
+            TASK_STATE_HAS_NEW_VERSION,
+        )
         if state == TASK_STATE_FINISHED:
             return "bg-green-100 text-green-800"
+        if state == TASK_STATE_HAS_NEW_VERSION:
+            return "bg-amber-100 text-amber-800"
         if state < 0 or state == TASK_STATE_FAILED:
             return "bg-red-100 text-red-800"
         if state == TASK_STATE_PAUSED:
@@ -172,6 +179,45 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             "exh_only": ("exh only", "bg-orange-100 text-orange-800"),
             "error": ("error", "bg-red-100 text-red-800"),
         }.get(str(sub.get("last_status", "")), (str(sub.get("last_status", "")) or "unknown", "bg-gray-100 text-gray-600"))
+
+    def _read_target_for_versions(versions) -> dict:
+        """Resolve the newest entry of a task's newer_versions into a read
+        target for the "has new version" state: {"guid", "readable"}.
+
+        guid is the task of the newest newer version (None when that gallery
+        has no task yet); readable is True only when that task is FINISHED,
+        so the UI can disable the Read button while the new version is still
+        downloading.
+        """
+        from .. import session_store
+
+        versions = [v for v in (versions or []) if isinstance(v, dict)]
+        if not versions:
+            return {"guid": None, "readable": False}
+        try:
+            latest = max(versions, key=lambda x: int(x.get("gid", 0) or 0))
+        except (TypeError, ValueError):
+            return {"guid": None, "readable": False}
+        nv_guid = session_store.find_guid_by_gid(str(latest.get("gid", "")))
+        readable = False
+        if nv_guid:
+            active = xeH._get_active_task(nv_guid)
+            if active is not None:
+                readable = active.state == TASK_STATE_FINISHED
+            else:
+                row = session_store.get_task_row(nv_guid)
+                readable = row is not None and int(row.get("phase_state", 0)) == TASK_STATE_FINISHED
+        return {"guid": nv_guid, "readable": readable}
+
+    def _cold_task_versions(guid: str) -> list:
+        """newer_versions of a cold task, read from its DB payload."""
+        from .. import session_store
+
+        payload = session_store.load_task_payload(guid)
+        if not payload:
+            return []
+        meta = payload.get("meta")
+        return meta.get("newer_versions", []) if isinstance(meta, dict) else []
 
     @app.get("/", response_class=HTMLResponse)
     async def ui_dashboard(request: Request):
@@ -242,7 +288,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
     ):
         xeH = request.app.state.xeH
         from .. import session_store
-        from ..const import TASK_STATE_FINISHED
+        from ..const import TASK_STATE_FINISHED, TASK_STATE_HAS_NEW_VERSION
         from .api_tasks import _parse_states
 
         if order_by not in ("gid", "updated_at"):
@@ -280,6 +326,15 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             if state < 0:
                 retryable_guids.append(guid)
 
+            read_target = None
+            if state == TASK_STATE_HAS_NEW_VERSION:
+                versions = (
+                    active.meta.newer_versions
+                    if active is not None and active.meta
+                    else _cold_task_versions(guid)
+                )
+                read_target = _read_target_for_versions(versions)
+
             items.append({
                 "guid": guid,
                 "gid": row.get("gid", ""),
@@ -290,6 +345,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 "state_css": _state_css(state),
                 "total": total_pages,
                 "done": done,
+                "read_target": read_target,
             })
 
         # Available states for filter dropdown
@@ -297,6 +353,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             TASK_STATE_PAUSED, TASK_STATE_WAITING, TASK_STATE_GET_META,
             TASK_STATE_SCAN_PAGE, TASK_STATE_SCAN_IMG, TASK_STATE_DOWNLOAD,
             TASK_STATE_MAKE_ARCHIVE, TASK_STATE_FINISHED, TASK_STATE_FAILED,
+            TASK_STATE_HAS_NEW_VERSION,
             TASK_STATE_ERR_URL_NOT_RECOGNIZED, TASK_STATE_ERR_CANT_DOWNLOAD_EXH,
             TASK_STATE_ERR_ONLY_VISIBLE_EXH, TASK_STATE_ERR_GALLERY_REMOVED,
             TASK_STATE_ERR_QUOTA_EXCEEDED, TASK_STATE_ERR_KEY_EXPIRED,
@@ -313,6 +370,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             (TASK_STATE_DOWNLOAD, "downloading"),
             (TASK_STATE_MAKE_ARCHIVE, "making archive"),
             (TASK_STATE_FINISHED, "finished"),
+            (TASK_STATE_HAS_NEW_VERSION, "has new version"),
             (TASK_STATE_FAILED, "failed"),
             (TASK_STATE_PAUSED, "paused"),
             (TASK_STATE_ERR_URL_NOT_RECOGNIZED, "err: url not recognized"),
@@ -366,9 +424,14 @@ def create_app(xeH: HostProtocol) -> FastAPI:
             total = task.meta.total if task.meta else 0
             done = len(task._flist_done)
             # _flist_done is not serialized; cold finished tasks hydrate with done=0
-            from ..const import TASK_STATE_FINISHED
+            from ..const import TASK_STATE_FINISHED, TASK_STATE_HAS_NEW_VERSION
             if done == 0 and task.state == TASK_STATE_FINISHED:
                 done = total
+            read_target = None
+            if task.state == TASK_STATE_HAS_NEW_VERSION:
+                read_target = _read_target_for_versions(
+                    task.meta.newer_versions if task.meta else []
+                )
             return _render("task_row.html.j2", {
                 "guid": task.guid,
                 "gid": task.gid,
@@ -379,6 +442,7 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 "state_css": _state_css(task.state),
                 "total": total,
                 "done": done,
+                "read_target": read_target,
             })
         finally:
             if cold:
@@ -596,6 +660,9 @@ def create_app(xeH: HostProtocol) -> FastAPI:
                 "finished_at": finished_at,
                 "tag_groups": _tag_groups,
                 "newer_versions": nv_enriched,
+                "read_target": _read_target_for_versions(
+                    task.meta.newer_versions if task.meta else []
+                ),
                 "subscription_id": subscription_id,
                 "subscribed": subscription_id is not None,
                 "all_images": all_images,

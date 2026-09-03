@@ -85,8 +85,8 @@ DF_FULLY_MATCHED_UP_TO_DATE = "[guid={guid}] 任务压缩包已经是最新，�
 DF_FULLY_MATCHED_UPDATED = "[guid={guid}] 任务压缩包元数据已更新，新压缩包位于 {path}"
 DF_STATE_START_SCAN_PAGE = "[guid={guid} gid={gid}] 任务开始扫描页面"
 DF_FILE_DOWNLOADED_SKIPPED = "[guid={guid}] 跳过下载图片 fid={fid} {reason}"
-DF_MIGRATE_NEW_VERSION = "[guid={guid} gid={gid}] 图集迁移到新版本，新的任务地址: {url}"
-DF_MIGRATE_NEW_VERSION_FAIL = "[guid={guid} gid={gid}] 图集迁移到新版本失败 [result={ret}]，地址: {url}"
+DF_MIGRATE_NEW_VERSION = "[guid={guid} gid={gid}] 检测到新版本图集，任务已标记为“有新版本”，新任务地址: {url}"
+DF_MIGRATE_NEW_VERSION_FAIL = "[guid={guid} gid={gid}] 检测到新版本图集，任务已标记为“有新版本”，但添加新任务失败 [result={ret}]，地址: {url}"
 
 # control flows
 CF_SCANDOWNLOADSKIP_DUPLICATE = "发现重复文件，跳过下载"

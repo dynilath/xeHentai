@@ -20,6 +20,7 @@ from .const import (
     TASK_STATE_FAILED,
     TASK_STATE_FINISHED,
     TASK_STATE_GET_META,
+    TASK_STATE_HAS_NEW_VERSION,
     TASK_STATE_MAKE_ARCHIVE,
     TASK_STATE_PAUSED,
     TASK_STATE_SCAN_IMG,
@@ -123,7 +124,12 @@ class TaskControl:
             # Cold task: no runtime status recorded. Treat as waiting so the run
             # loop picks it up; finished/failed/paused tasks are not enqueued.
             return TASK_TOP_STATUS_WAITING
-        if task.state in (TASK_STATE_FINISHED, TASK_STATE_FAILED, TASK_STATE_PAUSED) or task.state < 0:
+        if task.state in (
+            TASK_STATE_FINISHED,
+            TASK_STATE_HAS_NEW_VERSION,
+            TASK_STATE_FAILED,
+            TASK_STATE_PAUSED,
+        ) or task.state < 0:
             return TASK_TOP_STATUS_PROCESSED
         return TASK_TOP_STATUS_WAITING
 
@@ -880,8 +886,11 @@ class TaskControl:
                 except TaskNewVersion as ex:
                     task = self._host._active_tasks.get(task_guid)
                     if task:
-                        task.set_phase_state(TASK_STATE_FINISHED)
+                        # Terminal "has new version" state, NOT finished: the
+                        # read UI links to the new version's task instead.
+                        task.set_phase_state(TASK_STATE_HAS_NEW_VERSION)
                         self.mark_task_processed(task_guid)
+                        self._emit_ws_task_state_change(task, task_guid)
 
                         ret, new_guid = self._host._add_task(
                             ex.new_version_url, enqueue_existed=False, **task.config.to_local_dict()

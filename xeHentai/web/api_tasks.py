@@ -37,11 +37,13 @@ def _parse_states(states_str: Optional[str]) -> Optional[List[int]]:
             from ..const import (
                 TASK_STATE_FINISHED, TASK_STATE_FAILED, TASK_STATE_PAUSED,
                 TASK_STATE_WAITING, TASK_STATE_DOWNLOAD,
+                TASK_STATE_HAS_NEW_VERSION,
             )
             _map = {
                 "finished": TASK_STATE_FINISHED, "failed": TASK_STATE_FAILED,
                 "paused": TASK_STATE_PAUSED, "waiting": TASK_STATE_WAITING,
                 "download": TASK_STATE_DOWNLOAD,
+                "has_new_version": TASK_STATE_HAS_NEW_VERSION,
             }
             mapped = _map.get(part.strip().lower())
             if mapped is not None:

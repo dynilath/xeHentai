@@ -84,6 +84,9 @@ TASK_STATE_SCAN_ARCHIVE = 5
 TASK_STATE_DOWNLOAD = 10
 TASK_STATE_MAKE_ARCHIVE = 19
 TASK_STATE_FINISHED = 20
+# Terminal state: gallery page listed a newer version during GET_META, the
+# newest version was added as its own task. Read UI should jump to that task.
+TASK_STATE_HAS_NEW_VERSION = 21
 TASK_STATE_FAILED = -1
 
 TASK_STATE_ERR_URL_NOT_RECOGNIZED = -1000

@@ -43,6 +43,21 @@
                class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">
                 Read
             </a>
+            {% elif state == 21 %}
+            {# "has new version": Read jumps to the newest version's task, disabled until that task finishes #}
+            {% if read_target and read_target.readable and read_target.guid %}
+            <a href="/tasks/{{ read_target.guid }}/read/1"
+               title="Read the newer version of this gallery"
+               class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">
+                Read New Version
+            </a>
+            {% else %}
+            <button disabled
+                    title="Newer version is not finished downloading yet"
+                    class="px-4 py-2 bg-gray-300 text-gray-500 text-sm rounded-lg cursor-not-allowed">
+                Read New Version
+            </button>
+            {% endif %}
             {% endif %}
             <button hx-post="/api/tasks/{{ guid }}/refetch_meta" hx-swap="none"
                     hx-disabled-elt="this"

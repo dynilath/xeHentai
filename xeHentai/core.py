@@ -40,6 +40,7 @@ state_2_names = {
     TASK_STATE_DOWNLOAD: "downloading",
     TASK_STATE_MAKE_ARCHIVE: "making archive",
     TASK_STATE_FINISHED: "finished",
+    TASK_STATE_HAS_NEW_VERSION: "has new version",
     TASK_STATE_FAILED: "failed",
     TASK_STATE_ERR_GALLERY_REMOVED: "gallery removed",
     TASK_STATE_ERR_GALLERY_NOT_FOUND: "gallery not found",
@@ -88,7 +89,12 @@ def _derive_top_status(state: int) -> int:
     """
     if state == TASK_STATE_WAITING:
         return TASK_TOP_STATUS_WAITING
-    if state == TASK_STATE_FINISHED or state < 0 or state == TASK_STATE_PAUSED:
+    if (
+        state == TASK_STATE_FINISHED
+        or state == TASK_STATE_HAS_NEW_VERSION
+        or state < 0
+        or state == TASK_STATE_PAUSED
+    ):
         return TASK_TOP_STATUS_PROCESSED
     return TASK_TOP_STATUS_PROCESSING
 
